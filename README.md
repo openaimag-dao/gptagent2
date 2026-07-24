@@ -5,10 +5,10 @@ market, US equities and the macro economy. This is not a price bot — the end
 goal (later phases) is a Telegram assistant that explains **why** markets are
 moving, not just that they moved.
 
-This repository is being built phase by phase. This first module delivers
-**Phase 1: live market data collection** plus the foundational
-infrastructure every later phase depends on (config, database, caching,
-scheduling).
+This repository is being built phase by phase. So far it delivers
+**Phase 1: live market data collection** and **Phase 2: the news engine**,
+plus the foundational infrastructure every later phase depends on (config,
+database, caching, scheduling).
 
 ## What's implemented so far
 
@@ -32,13 +32,30 @@ scheduling).
   collection run to Postgres and caches the latest snapshot in Redis.
 - **Scheduler** (`app/scheduler`) — APScheduler job that triggers a
   collection run on a fixed interval, immediately on startup.
-- **API** (`app/api/market.py`) — minimal endpoints to verify the pipeline:
-  `GET /health`, `GET /api/market`, `GET /api/market/{symbol}/history`. The
-  full dashboard API is Phase 10.
+- **News providers** (`app/services/news`) — one `RSSNewsSource` class reused
+  across 8 real feeds spanning all 6 required categories:
+  - Federal Reserve — federalreserve.gov press releases
+  - SEC — sec.gov press releases
+  - ETF — ETF Database
+  - Crypto — CoinDesk, Cointelegraph
+  - Stocks — CNBC Top News, Investing.com Stock Market News
+  - Macro — Investing.com Economy News
+- **Sentiment classifier** (`app/services/news/classifier.py`) — a
+  deterministic bullish/bearish/neutral lexicon classifier (Loughran-McDonald
+  style phrase counting over title + summary). Zero-cost and needs no LLM
+  key; Phase 6's AI Analysis will layer richer narrative reasoning on top of
+  this same classified feed.
+- **News aggregator/repository** (`app/services/news`) — same
+  concurrent-and-fault-tolerant pattern as the market aggregator, with
+  URL-based deduplication (`ON CONFLICT DO NOTHING`) so re-running collection
+  never inserts the same story twice.
+- **API** — `GET /health`, `GET /api/market`, `GET /api/market/{symbol}/history`,
+  `GET /api/news` (optional `category`/`limit` query params). The full
+  dashboard API is Phase 10.
 
-Not yet built: news engine, correlation engine, regime detection, signal
-engine, AI analysis/report generation, Telegram bot, automatic reports. These
-land in later phases per the project roadmap.
+Not yet built: correlation engine, regime detection, signal engine, AI
+analysis/report generation, Telegram bot, automatic reports. These land in
+later phases per the project roadmap.
 
 ## Architecture
 
@@ -55,6 +72,14 @@ app/
       macro/         Yahoo Finance + FRED macro providers
       aggregator.py  Concurrent, fault-tolerant collection
       repository.py  Postgres persistence + Redis cache
+    news/
+      schemas.py     RawNewsItem / ClassifiedNewsItem (Pydantic)
+      base.py         NewsSource interface
+      rss_source.py   Generic RSS/Atom feed source
+      sources.py      Registry of the 8 configured feeds
+      classifier.py   Deterministic bullish/bearish/neutral lexicon
+      aggregator.py   Concurrent, fault-tolerant collection
+      repository.py   Postgres persistence with URL dedup
   scheduler/        APScheduler job wiring
   api/              FastAPI routers
   utils/            Logging, shared HTTP client + retry policy
@@ -81,14 +106,24 @@ separate crypto/stock/macro tables) so that the correlation engine (Phase 3)
 can query any symbol's time series with one simple `WHERE symbol = ...`
 query, and so new asset types never require a schema change.
 
+News gets its own table:
+
+- `news_items` — one row per deduplicated story (`source`, `category`,
+  `title`, `url` unique, `summary`, `sentiment`, `sentiment_score`,
+  `published_at`, `fetched_at`).
+
 ### Resilience
 
-The aggregator runs all providers concurrently via `asyncio.gather(...,
-return_exceptions=True)`. A provider that raises (missing API key, rate
-limit, network error) is logged and skipped — collection continues with
-whatever data the other providers returned, and the snapshot records which
-providers failed in `errors`. The whole run only fails if *every* provider
-fails.
+Both aggregators (market data and news) run their sources concurrently via
+`asyncio.gather(..., return_exceptions=True)`. A source that raises (missing
+API key, rate limit, feed down, network error) is logged and skipped —
+collection continues with whatever the other sources returned. The whole run
+only fails if *every* source fails.
+
+News deduplication happens at insert time: `NewsRepository.save_new_items()`
+uses a single `INSERT ... ON CONFLICT (url) DO NOTHING`, so re-running
+collection on overlapping feed content never creates duplicate rows and
+never races across concurrent runs.
 
 ## Known operational limitation: Yahoo Finance
 
@@ -148,10 +183,13 @@ uvicorn app.main:app --reload
 curl http://localhost:8000/health
 curl http://localhost:8000/api/market
 curl "http://localhost:8000/api/market/BTC/history?days=7"
+curl http://localhost:8000/api/news
+curl "http://localhost:8000/api/news?category=crypto&limit=10"
 ```
 
-The scheduler runs a collection immediately on startup, then every
-`MARKET_DATA_INTERVAL_MINUTES` (default 5).
+The scheduler runs both collectors immediately on startup, then market data
+every `MARKET_DATA_INTERVAL_MINUTES` (default 5) and news every
+`NEWS_COLLECTION_INTERVAL_MINUTES` (default 10).
 
 ### Tests
 
@@ -176,10 +214,11 @@ that the aggregator logs and skips, rather than fabricating data.
 | `TELEGRAM_BOT_TOKEN` | Telegram bot (later phase) | not yet used |
 | `OPENAI_API_KEY` | AI analysis (later phase) | not yet used |
 | `MARKET_DATA_INTERVAL_MINUTES` | scheduler | default `5` |
+| `NEWS_COLLECTION_INTERVAL_MINUTES` | scheduler | default `10` |
 
 ## Roadmap
 
-Phase 1 (this PR) → Phase 2 News Engine → Phase 3 Correlation Engine →
+Phase 1 Market Data ✅ → Phase 2 News Engine ✅ → Phase 3 Correlation Engine →
 Phase 4 Market Regime Detection → Phase 5 Signal Engine → Phase 6 AI
 Analysis → Phase 7 Telegram Commands → Phase 8 Automatic Reports → Phase 9
 Database (already largely in place) → Phase 10 Dashboard API.

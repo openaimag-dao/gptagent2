@@ -36,4 +36,5 @@ class Settings(BaseSettings):
 
     # ---- Scheduling / networking ----
     market_data_interval_minutes: int = 5
+    news_collection_interval_minutes: int = 10
     http_timeout_seconds: float = 15.0

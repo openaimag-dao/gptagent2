@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.market import router as market_router
+from app.api.news import router as news_router
 from app.config import get_settings
 from app.scheduler.jobs import shutdown_scheduler, start_scheduler
 from app.utils.logging import configure_logging
@@ -29,6 +30,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(market_router)
+app.include_router(news_router)
 
 
 @app.get("/health", tags=["system"])
