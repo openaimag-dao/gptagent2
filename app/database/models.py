@@ -171,3 +171,23 @@ class SignalSnapshot(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class Report(Base):
+    """A full AI-generated market intelligence report: raw data + LLM narrative."""
+
+    __tablename__ = "reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(), primary_key=True, default=uuid.uuid4)
+    report_type: Mapped[str] = mapped_column(String(30), index=True)
+    regime: Mapped[str] = mapped_column(String(30))
+    risk_level: Mapped[str] = mapped_column(String(20))
+    bull_score: Mapped[int] = mapped_column()
+    bear_score: Mapped[int] = mapped_column()
+    confidence_pct: Mapped[int] = mapped_column()
+    market_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    correlations_summary: Mapped[list] = mapped_column(JSON, default=list)
+    analysis: Mapped[dict] = mapped_column(JSON, default=dict)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
