@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     # ---- Telegram ----
     telegram_bot_token: str | None = None
+    # Comma-separated chat IDs automatic reports are broadcast to, e.g. "123456789,-100987654321"
+    telegram_broadcast_chat_ids: str | None = None
 
     # ---- LLM (OpenAI-compatible) ----
     openai_api_key: str | None = None
@@ -36,4 +38,7 @@ class Settings(BaseSettings):
 
     # ---- Scheduling / networking ----
     market_data_interval_minutes: int = 5
+    news_collection_interval_minutes: int = 10
+    analysis_interval_minutes: int = 30
+    report_interval_minutes: int = 30
     http_timeout_seconds: float = 15.0
