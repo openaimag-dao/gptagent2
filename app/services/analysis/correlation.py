@@ -98,25 +98,23 @@ class CorrelationEngine:
             for symbol_a, symbol_b in self._pairs:
                 for window_days in self._windows_days:
                     since = datetime.now(UTC) - timedelta(days=window_days + 1)
-                    try:
-                        for symbol in (symbol_a, symbol_b):
-                            key = (symbol, window_days)
-                            if key not in closes_cache:
-                                closes_cache[key] = await _daily_closes(session, symbol, since)
 
-                        result = compute_correlation(
-                            closes_cache[(symbol_a, window_days)],
-                            closes_cache[(symbol_b, window_days)],
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Correlation calc failed for %s/%s (%dd window)",
-                            symbol_a,
-                            symbol_b,
-                            window_days,
-                            exc_info=True,
-                        )
-                        continue
+                    # No try/except here on purpose: _daily_closes only raises for
+                    # genuine infrastructure failures (DB unreachable, bad query) --
+                    # missing/insufficient price data is handled gracefully by
+                    # returning {} / None, never by raising. A real exception means
+                    # every remaining pair/window will fail identically, so let it
+                    # propagate once to the caller (scheduler/jobs.py) rather than
+                    # logging the same traceback dozens of times in this loop.
+                    for symbol in (symbol_a, symbol_b):
+                        key = (symbol, window_days)
+                        if key not in closes_cache:
+                            closes_cache[key] = await _daily_closes(session, symbol, since)
+
+                    result = compute_correlation(
+                        closes_cache[(symbol_a, window_days)],
+                        closes_cache[(symbol_b, window_days)],
+                    )
 
                     if result is None:
                         continue

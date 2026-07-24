@@ -1,4 +1,5 @@
 import logging
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -18,11 +19,18 @@ from app.utils.logging import configure_logging
 logger = logging.getLogger(__name__)
 
 
+def _redact_url(url: str) -> str:
+    """Strips credentials from a connection URL so it's safe to log."""
+    return re.sub(r"://[^@/]+@", "://***:***@", url)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
     configure_logging(settings.log_level)
     logger.info("Starting AI Market Intelligence Bot (env=%s)", settings.app_env)
+    logger.info("Resolved DATABASE_URL: %s", _redact_url(settings.database_url))
+    logger.info("Resolved REDIS_URL: %s", _redact_url(settings.redis_url))
     start_scheduler()
     yield
     shutdown_scheduler()
