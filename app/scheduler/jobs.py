@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.analysis.correlation import CorrelationEngine
+from app.services.analysis.regime import RegimeDetector
 from app.services.market.aggregator import MarketDataAggregator
 from app.services.market.repository import MarketRepository
 from app.services.news.aggregator import NewsAggregator
@@ -20,6 +21,7 @@ _scheduler: AsyncIOScheduler | None = None
 MARKET_DATA_JOB_ID = "collect_market_data"
 NEWS_JOB_ID = "collect_news"
 CORRELATION_JOB_ID = "compute_correlations"
+REGIME_JOB_ID = "detect_regime"
 
 
 def build_market_aggregator() -> MarketDataAggregator:
@@ -34,6 +36,11 @@ def build_news_aggregator() -> NewsAggregator:
 
 def build_correlation_engine() -> CorrelationEngine:
     return CorrelationEngine(get_session_factory())
+
+
+def build_regime_detector() -> RegimeDetector:
+    market_repository = MarketRepository(get_session_factory(), get_redis())
+    return RegimeDetector(get_session_factory(), market_repository)
 
 
 async def collect_market_data_job() -> None:
@@ -67,6 +74,15 @@ async def compute_correlations_job() -> None:
         logger.exception("Correlation computation job failed")
 
 
+async def detect_regime_job() -> None:
+    detector = build_regime_detector()
+    try:
+        snapshot = await detector.compute_and_store()
+        logger.info("Market regime detected: %s", snapshot.regime.value)
+    except Exception:
+        logger.exception("Regime detection job failed")
+
+
 def start_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler is not None:
@@ -94,6 +110,14 @@ def start_scheduler() -> AsyncIOScheduler:
         compute_correlations_job,
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
         id=CORRELATION_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        detect_regime_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=REGIME_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,

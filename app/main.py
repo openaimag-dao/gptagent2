@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app.api.correlations import router as correlations_router
 from app.api.market import router as market_router
 from app.api.news import router as news_router
+from app.api.regime import router as regime_router
 from app.config import get_settings
 from app.scheduler.jobs import shutdown_scheduler, start_scheduler
 from app.utils.logging import configure_logging
@@ -33,6 +34,7 @@ app = FastAPI(
 app.include_router(market_router)
 app.include_router(news_router)
 app.include_router(correlations_router)
+app.include_router(regime_router)
 
 
 @app.get("/health", tags=["system"])

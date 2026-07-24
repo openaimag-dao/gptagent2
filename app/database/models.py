@@ -127,3 +127,31 @@ class Correlation(Base):
     calculated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class MarketRegimeType(str, enum.Enum):
+    RISK_ON = "risk_on"
+    RISK_OFF = "risk_off"
+    NEUTRAL = "neutral"
+    LIQUIDITY_EXPANSION = "liquidity_expansion"
+    LIQUIDITY_CONTRACTION = "liquidity_contraction"
+    FLIGHT_TO_SAFETY = "flight_to_safety"
+
+
+class MarketRegimeSnapshot(Base):
+    """The detected market regime at a point in time, with the inputs that drove it."""
+
+    __tablename__ = "market_regime_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    regime: Mapped[MarketRegimeType] = mapped_column(
+        Enum(
+            MarketRegimeType,
+            name="market_regime_type",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        )
+    )
+    inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
