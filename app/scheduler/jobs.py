@@ -7,6 +7,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from app.config import get_settings
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
+from app.services.analysis.correlation import CorrelationEngine
 from app.services.market.aggregator import MarketDataAggregator
 from app.services.market.repository import MarketRepository
 from app.services.news.aggregator import NewsAggregator
@@ -18,6 +19,7 @@ _scheduler: AsyncIOScheduler | None = None
 
 MARKET_DATA_JOB_ID = "collect_market_data"
 NEWS_JOB_ID = "collect_news"
+CORRELATION_JOB_ID = "compute_correlations"
 
 
 def build_market_aggregator() -> MarketDataAggregator:
@@ -28,6 +30,10 @@ def build_market_aggregator() -> MarketDataAggregator:
 def build_news_aggregator() -> NewsAggregator:
     repository = NewsRepository(get_session_factory())
     return NewsAggregator(repository)
+
+
+def build_correlation_engine() -> CorrelationEngine:
+    return CorrelationEngine(get_session_factory())
 
 
 async def collect_market_data_job() -> None:
@@ -50,6 +56,15 @@ async def collect_news_job() -> None:
         logger.info("News collected: %d new items stored", inserted)
     except Exception:
         logger.exception("News collection job failed")
+
+
+async def compute_correlations_job() -> None:
+    engine = build_correlation_engine()
+    try:
+        rows = await engine.compute_and_store()
+        logger.info("Correlations computed: %d pair/window combinations", len(rows))
+    except Exception:
+        logger.exception("Correlation computation job failed")
 
 
 def start_scheduler() -> AsyncIOScheduler:
@@ -75,12 +90,21 @@ def start_scheduler() -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        compute_correlations_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=CORRELATION_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
     _scheduler = scheduler
     logger.info(
-        "Scheduler started: market data every %d minute(s), news every %d minute(s)",
+        "Scheduler started: market data every %d min, news every %d min, analysis every %d min",
         settings.market_data_interval_minutes,
         settings.news_collection_interval_minutes,
+        settings.analysis_interval_minutes,
     )
     return scheduler
 

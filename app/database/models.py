@@ -111,3 +111,19 @@ class NewsItem(Base):
     fetched_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class Correlation(Base):
+    """A rolling Pearson correlation between two symbols' daily returns over one window."""
+
+    __tablename__ = "correlations"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol_a: Mapped[str] = mapped_column(String(20), index=True)
+    symbol_b: Mapped[str] = mapped_column(String(20), index=True)
+    window_days: Mapped[int] = mapped_column()
+    correlation: Mapped[float] = mapped_column(Numeric(6, 4))
+    data_points: Mapped[int] = mapped_column()
+    calculated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

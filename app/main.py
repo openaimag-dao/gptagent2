@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.correlations import router as correlations_router
 from app.api.market import router as market_router
 from app.api.news import router as news_router
 from app.config import get_settings
@@ -31,6 +32,7 @@ app = FastAPI(
 )
 app.include_router(market_router)
 app.include_router(news_router)
+app.include_router(correlations_router)
 
 
 @app.get("/health", tags=["system"])
