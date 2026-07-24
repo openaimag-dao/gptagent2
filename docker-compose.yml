@@ -42,5 +42,23 @@ services:
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
+  bot:
+    build: .
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://market_intel:market_intel@postgres:5432/market_intel
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      app:
+        condition: service_started
+    # Runs as its own process (not inside the API) so scaling the API never
+    # spins up a second long-polling instance fighting over the same token.
+    command: python -m app.telegram.main
+
 volumes:
   postgres_data:
