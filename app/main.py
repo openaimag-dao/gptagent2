@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.btc import router as btc_router
 from app.api.correlations import router as correlations_router
 from app.api.market import router as market_router
 from app.api.news import router as news_router
@@ -34,6 +35,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(market_router)
+app.include_router(btc_router)
 app.include_router(news_router)
 app.include_router(correlations_router)
 app.include_router(regime_router)
