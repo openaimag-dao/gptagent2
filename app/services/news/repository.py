@@ -1,6 +1,7 @@
 import logging
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -47,7 +48,12 @@ class NewsRepository:
             await session.commit()
             return inserted
 
-    async def get_recent(self, category: str | None = None, limit: int = 50) -> list[NewsItem]:
+    async def get_recent(
+        self,
+        category: str | None = None,
+        limit: int = 50,
+        since: datetime | None = None,
+    ) -> list[NewsItem]:
         async with self._session_factory() as session:
             query = (
                 select(NewsItem)
@@ -56,5 +62,10 @@ class NewsRepository:
             )
             if category is not None:
                 query = query.where(NewsItem.category == category)
+            if since is not None:
+                # published_at is sometimes missing from a feed; fall back to fetched_at.
+                query = query.where(
+                    or_(NewsItem.published_at >= since, NewsItem.fetched_at >= since)
+                )
             result = await session.scalars(query)
             return list(result)

@@ -155,3 +155,19 @@ class MarketRegimeSnapshot(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class SignalSnapshot(Base):
+    """A Bull/Bear signal score computed from the weighted factor table."""
+
+    __tablename__ = "signal_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    bull_score: Mapped[int] = mapped_column()
+    bear_score: Mapped[int] = mapped_column()
+    net_score: Mapped[int] = mapped_column()
+    confidence_pct: Mapped[int] = mapped_column()
+    factors: Mapped[dict] = mapped_column(JSON, default=dict)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

@@ -13,6 +13,7 @@ from app.services.market.aggregator import MarketDataAggregator
 from app.services.market.repository import MarketRepository
 from app.services.news.aggregator import NewsAggregator
 from app.services.news.repository import NewsRepository
+from app.services.signals.engine import SignalEngine
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ MARKET_DATA_JOB_ID = "collect_market_data"
 NEWS_JOB_ID = "collect_news"
 CORRELATION_JOB_ID = "compute_correlations"
 REGIME_JOB_ID = "detect_regime"
+SIGNAL_JOB_ID = "compute_signals"
 
 
 def build_market_aggregator() -> MarketDataAggregator:
@@ -41,6 +43,12 @@ def build_correlation_engine() -> CorrelationEngine:
 def build_regime_detector() -> RegimeDetector:
     market_repository = MarketRepository(get_session_factory(), get_redis())
     return RegimeDetector(get_session_factory(), market_repository)
+
+
+def build_signal_engine() -> SignalEngine:
+    market_repository = MarketRepository(get_session_factory(), get_redis())
+    news_repository = NewsRepository(get_session_factory())
+    return SignalEngine(get_session_factory(), market_repository, news_repository)
 
 
 async def collect_market_data_job() -> None:
@@ -83,6 +91,21 @@ async def detect_regime_job() -> None:
         logger.exception("Regime detection job failed")
 
 
+async def compute_signals_job() -> None:
+    engine = build_signal_engine()
+    try:
+        snapshot = await engine.compute_and_store()
+        logger.info(
+            "Signal computed: bull=%d bear=%d net=%d confidence=%d%%",
+            snapshot.bull_score,
+            snapshot.bear_score,
+            snapshot.net_score,
+            snapshot.confidence_pct,
+        )
+    except Exception:
+        logger.exception("Signal computation job failed")
+
+
 def start_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler is not None:
@@ -118,6 +141,14 @@ def start_scheduler() -> AsyncIOScheduler:
         detect_regime_job,
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
         id=REGIME_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_signals_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=SIGNAL_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,
