@@ -21,6 +21,8 @@ class Settings(BaseSettings):
 
     # ---- Telegram ----
     telegram_bot_token: str | None = None
+    # Comma-separated chat IDs automatic reports are broadcast to, e.g. "123456789,-100987654321"
+    telegram_broadcast_chat_ids: str | None = None
 
     # ---- LLM (OpenAI-compatible) ----
     openai_api_key: str | None = None

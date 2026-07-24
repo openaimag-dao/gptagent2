@@ -2,8 +2,10 @@ import logging
 from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from app.api.reports import build_report_generator
 from app.config import get_settings
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
@@ -14,6 +16,7 @@ from app.services.market.repository import MarketRepository
 from app.services.news.aggregator import NewsAggregator
 from app.services.news.repository import NewsRepository
 from app.services.signals.engine import SignalEngine
+from app.telegram.broadcast import broadcast_report
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,19 @@ NEWS_JOB_ID = "collect_news"
 CORRELATION_JOB_ID = "compute_correlations"
 REGIME_JOB_ID = "detect_regime"
 SIGNAL_JOB_ID = "compute_signals"
+REPORT_JOB_ID = "generate_scheduled_report"
+
+# Named session reports and their fire time in UTC. Approximate, DST-naive by
+# design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
+# ~8am GMT), Morning (US pre-market, ~7am ET), US Open (NYSE bell, ~9:30am
+# ET), Daily Summary (US close, ~4pm ET).
+SESSION_REPORTS: tuple[tuple[str, int, int], ...] = (
+    ("asia", 0, 0),
+    ("europe", 7, 0),
+    ("morning", 11, 0),
+    ("us_open", 13, 30),
+    ("daily_summary", 21, 0),
+)
 
 
 def build_market_aggregator() -> MarketDataAggregator:
@@ -106,6 +122,21 @@ async def compute_signals_job() -> None:
         logger.exception("Signal computation job failed")
 
 
+async def generate_report_job(report_type: str) -> None:
+    generator = build_report_generator()
+    try:
+        report = await generator.generate_and_store(report_type=report_type)
+        logger.info("Report generated: type=%s regime=%s", report_type, report.regime)
+    except Exception:
+        logger.exception("Report generation job failed (type=%s)", report_type)
+        return
+
+    try:
+        await broadcast_report(report)
+    except Exception:
+        logger.exception("Report broadcast failed (type=%s)", report_type)
+
+
 def start_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler is not None:
@@ -153,13 +184,34 @@ def start_scheduler() -> AsyncIOScheduler:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        generate_report_job,
+        trigger=IntervalTrigger(minutes=settings.report_interval_minutes),
+        id=REPORT_JOB_ID,
+        args=["scheduled"],
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    for name, hour, minute in SESSION_REPORTS:
+        scheduler.add_job(
+            generate_report_job,
+            trigger=CronTrigger(hour=hour, minute=minute, timezone="UTC"),
+            id=f"generate_{name}_report",
+            args=[name],
+            max_instances=1,
+            coalesce=True,
+        )
     scheduler.start()
     _scheduler = scheduler
     logger.info(
-        "Scheduler started: market data every %d min, news every %d min, analysis every %d min",
+        "Scheduler started: market data every %d min, news every %d min, analysis every %d min, "
+        "reports every %d min plus %d daily session reports",
         settings.market_data_interval_minutes,
         settings.news_collection_interval_minutes,
         settings.analysis_interval_minutes,
+        settings.report_interval_minutes,
+        len(SESSION_REPORTS),
     )
     return scheduler
 
