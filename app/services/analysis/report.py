@@ -12,6 +12,7 @@ from app.database.models import (
     AssetPrice,
     Correlation,
     CryptoHistory,
+    GlobalMarketScore,
     MarketRegimeSnapshot,
     NewsItem,
     Report,
@@ -21,11 +22,14 @@ from app.llm.client import get_llm_client
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import MarketRegime, RegimeDetector
 from app.services.analysis.schemas import AIAnalysisContent
+from app.services.etf.engine import ETFIntelligenceEngine
+from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.schemas import Timeframe
 from app.services.knowledge.engine import KnowledgeEngine, build_grounding_text
 from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
 from app.services.signals.engine import SignalEngine
+from app.services.whales.engine import WhaleIntelligenceEngine
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +74,14 @@ which lists real past dates with similar technical conditions and what actually 
 next. Reference those real dates and outcomes rather than a generic or invented comparison. \
 If no analogs are available, say so explicitly.
 
+For "liquidity_and_risk": ground it in the GLOBAL MARKET SCORE section (liquidity, fear/greed, \
+risk-on/off sub-scores) -- explain what those already-computed numbers mean, don't recompute \
+or contradict them. For "institutional_behavior": also incorporate the ETF FLOW PROXY and \
+WHALE ACTIVITY sections; if either says data is unavailable, say so plainly instead of \
+guessing. "scenarios" should describe 2-3 concrete near-term paths (not just bull/bear labels) \
+consistent with the probability split. "actionable_insights" should be practical and specific \
+to what changed today, not generic trading advice.
+
 Respond with a single JSON object with exactly these fields (all strings except the three \
 probability fields, which are integers 0-100 that must sum to 100):
 {
@@ -79,8 +91,11 @@ probability fields, which are integers 0-100 that must sum to 100):
   "institutional_behavior": "...",
   "macro_explanation": "...",
   "historical_comparison": "...",
+  "liquidity_and_risk": "...",
   "main_risks": "...",
   "key_events_today": "...",
+  "scenarios": "...",
+  "actionable_insights": "...",
   "probability_bullish_pct": 0,
   "probability_bearish_pct": 0,
   "probability_neutral_pct": 0
@@ -126,6 +141,60 @@ def _format_correlation_lines(correlations: list[Correlation]) -> list[str]:
     ]
 
 
+def _serialize_global_score(row: GlobalMarketScore | None) -> dict | None:
+    if row is None:
+        return None
+    return {
+        "risk_on_score": row.risk_on_score,
+        "risk_off_score": row.risk_off_score,
+        "liquidity_score": row.liquidity_score,
+        "fear_score": row.fear_score,
+        "greed_score": row.greed_score,
+        "macro_pressure_score": row.macro_pressure_score,
+        "institutional_activity_score": row.institutional_activity_score,
+        "crypto_strength_score": row.crypto_strength_score,
+        "stock_strength_score": row.stock_strength_score,
+        "global_score": row.global_score,
+    }
+
+
+def _format_global_score_lines(global_score: dict | None) -> list[str]:
+    if global_score is None:
+        return ["- Not yet computed."]
+    return [
+        f"- Global score: {global_score['global_score']}/100",
+        f"- Risk-On {global_score['risk_on_score']} / Risk-Off {global_score['risk_off_score']}",
+        f"- Liquidity {global_score['liquidity_score']}",
+        f"- Fear {global_score['fear_score']} / Greed {global_score['greed_score']}",
+        f"- Macro pressure {global_score['macro_pressure_score']}",
+        f"- Institutional activity {global_score['institutional_activity_score']}",
+        f"- Crypto strength {global_score['crypto_strength_score']}",
+        f"- Stock strength {global_score['stock_strength_score']}",
+    ]
+
+
+def _format_etf_proxy_lines(etf_proxy: dict | None) -> list[str]:
+    if etf_proxy is None or not etf_proxy.get("available"):
+        reason = (etf_proxy or {}).get("reason", "Not available.")
+        return [f"- {reason}"]
+    return [
+        "- Proxy only (news sentiment, not confirmed dollar flows):",
+        f"- Classification: {etf_proxy['classification']}",
+        (
+            f"- {etf_proxy['bullish_items']} bullish / {etf_proxy['bearish_items']} bearish / "
+            f"{etf_proxy['neutral_items']} neutral ETF-category items in the last "
+            f"{etf_proxy['window_hours']}h"
+        ),
+    ]
+
+
+def _format_whale_lines(whale_snapshot: dict | None) -> list[str]:
+    if whale_snapshot is None or not whale_snapshot.get("available"):
+        reason = (whale_snapshot or {}).get("reason", "Not available.")
+        return [f"- {reason}"]
+    return [f"- {k}: {v}" for k, v in whale_snapshot.items() if k not in ("available", "symbol")]
+
+
 def build_user_prompt(
     assets: list[AssetPrice],
     news: list[NewsItem],
@@ -133,6 +202,9 @@ def build_user_prompt(
     regime_snapshot: MarketRegimeSnapshot,
     signal_snapshot: SignalSnapshot,
     historical_grounding: str = "- Historical analog data unavailable.",
+    global_score: dict | None = None,
+    etf_proxy: dict | None = None,
+    whale_snapshot: dict | None = None,
 ) -> str:
     """Builds the LLM user prompt from already-computed, real data. Pure and unit-testable."""
     return "\n\n".join(
@@ -150,10 +222,16 @@ def build_user_prompt(
                 f"Confidence: {signal_snapshot.confidence_pct}%"
             ),
             f"- Factor breakdown: {json.dumps(signal_snapshot.factors)}",
+            "GLOBAL MARKET SCORE",
+            "\n".join(_format_global_score_lines(global_score)),
             "ROLLING CORRELATIONS",
             "\n".join(_format_correlation_lines(correlations)),
             "HISTORICAL ANALOGS (real past episodes with similar technical conditions)",
             historical_grounding,
+            "ETF FLOW PROXY",
+            "\n".join(_format_etf_proxy_lines(etf_proxy)),
+            "WHALE ACTIVITY",
+            "\n".join(_format_whale_lines(whale_snapshot)),
             "RECENT NEWS (most recent first)",
             "\n".join(_format_news_lines(news)),
         ]
@@ -172,6 +250,9 @@ class ReportGenerator:
         regime_detector: RegimeDetector,
         signal_engine: SignalEngine,
         knowledge_engine: KnowledgeEngine | None = None,
+        global_score_engine: GlobalScoreEngine | None = None,
+        etf_engine: ETFIntelligenceEngine | None = None,
+        whale_engine: WhaleIntelligenceEngine | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._market_repository = market_repository
@@ -180,6 +261,11 @@ class ReportGenerator:
         self._regime_detector = regime_detector
         self._signal_engine = signal_engine
         self._knowledge_engine = knowledge_engine or KnowledgeEngine(session_factory)
+        self._global_score_engine = global_score_engine or GlobalScoreEngine(
+            session_factory, market_repository, regime_detector, signal_engine
+        )
+        self._etf_engine = etf_engine or ETFIntelligenceEngine(news_repository)
+        self._whale_engine = whale_engine or WhaleIntelligenceEngine()
 
     async def generate_and_store(self, report_type: str = "scheduled") -> Report:
         assets = await self._market_repository.get_latest()
@@ -203,8 +289,21 @@ class ReportGenerator:
             analogs = []
         historical_grounding = build_grounding_text("BTC", analogs)
 
+        global_score_row = await self._global_score_engine.compute_and_store()
+        global_score = _serialize_global_score(global_score_row)
+        etf_proxy = await self._etf_engine.get_flow_proxy()
+        whale_snapshot = await self._whale_engine.get_snapshot("BTC")
+
         user_prompt = build_user_prompt(
-            assets, news, correlations, regime_snapshot, signal_snapshot, historical_grounding
+            assets,
+            news,
+            correlations,
+            regime_snapshot,
+            signal_snapshot,
+            historical_grounding,
+            global_score,
+            etf_proxy,
+            whale_snapshot,
         )
 
         settings = get_settings()
@@ -252,6 +351,11 @@ class ReportGenerator:
             confidence_pct=signal_snapshot.confidence_pct,
             market_summary=market_summary,
             correlations_summary=correlations_summary,
+            institutional_summary={
+                "global_score": global_score,
+                "etf_flow_proxy": etf_proxy,
+                "whale_activity": whale_snapshot,
+            },
             analysis=analysis.model_dump(),
         )
 

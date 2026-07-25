@@ -2,6 +2,7 @@ from app.database.models import (
     AssetClass,
     AssetPrice,
     Correlation,
+    GlobalMarketScore,
     HistoricalEvent,
     MarketRegimeSnapshot,
     NewsItem,
@@ -248,3 +249,82 @@ def format_knowledge(symbol: str, analogs: list[dict]) -> str:
             line += f" -- {titles}"
         lines.append(line)
     return "\n".join(lines)
+
+
+def format_global_score(row: GlobalMarketScore | None) -> str:
+    if row is None:
+        return "Not enough data yet -- regime detection and signal scoring need to run first."
+    return "\n".join(
+        [
+            "*GLOBAL MARKET SCORE*",
+            "",
+            f"Global score: {row.global_score}/100",
+            f"Risk-On {row.risk_on_score} / Risk-Off {row.risk_off_score}",
+            f"Liquidity: {row.liquidity_score}",
+            f"Fear {row.fear_score} / Greed {row.greed_score}",
+            f"Macro pressure: {row.macro_pressure_score}",
+            f"Institutional activity: {row.institutional_activity_score}",
+            f"Crypto strength: {row.crypto_strength_score}",
+            f"Stock strength: {row.stock_strength_score}",
+        ]
+    )
+
+
+def format_similar_periods(symbol: str, matches: list[dict], limit: int = 5) -> str:
+    if not matches:
+        return f"Not enough synced history for {symbol} to find similar periods yet."
+    lines = [f"*{symbol} SIMILAR HISTORICAL PERIODS*", ""]
+    for m in matches[:limit]:
+        date_str = m["date"].date().isoformat()
+        regime = m["market_regime"] or "unknown"
+        forward_1d = m["forward_returns_pct"]["1d"]
+        forward_30d = m["forward_returns_pct"]["30d"]
+        f1 = f"{forward_1d:+.2f}%" if forward_1d is not None else "n/a"
+        f30 = f"{forward_30d:+.2f}%" if forward_30d is not None else "n/a"
+        lines.append(
+            f"{date_str} (similarity {m['similarity']}, regime {regime}): "
+            f"1d {f1} | 30d {f30}"
+        )
+    return "\n".join(lines)
+
+
+def format_etf_proxy(data: dict) -> str:
+    if not data.get("available"):
+        return f"ETF flow proxy unavailable: {data.get('reason', 'no data')}"
+    return "\n".join(
+        [
+            "*ETF FLOW PROXY* (news-sentiment based, not confirmed dollar flows)",
+            "",
+            f"Classification: {data['classification']}",
+            (
+                f"{data['bullish_items']} bullish / {data['bearish_items']} bearish / "
+                f"{data['neutral_items']} neutral items ({data['window_hours']}h window)"
+            ),
+        ]
+    )
+
+
+def format_whale_snapshot(data: dict) -> str:
+    if not data.get("available"):
+        return f"Whale Intelligence unavailable: {data.get('reason', 'no data')}"
+    lines = ["*WHALE ACTIVITY*", ""]
+    lines.extend(f"{k}: {v}" for k, v in data.items() if k not in ("available", "symbol"))
+    return "\n".join(lines)
+
+
+def format_backtest_result(result: dict | None) -> str:
+    if result is None:
+        return "No historical occurrences of this rule found."
+    return "\n".join(
+        [
+            f"*BACKTEST: {result['target_symbol']}* ({result['timeframe']}, "
+            f"{result['horizon_periods']}-period horizon)",
+            "",
+            f"Occurrences: {result['occurrences']}",
+            f"Win rate: {result['win_rate_pct']}%",
+            f"Avg return: {result['avg_return_pct']}%",
+            f"Max drawdown: {result['max_drawdown_pct']}%",
+            f"Profit factor: {result['profit_factor']}",
+            f"Sharpe ratio: {result['sharpe_ratio']}",
+        ]
+    )

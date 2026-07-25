@@ -16,8 +16,11 @@ class AIAnalysisContent(BaseModel):
     institutional_behavior: str
     macro_explanation: str
     historical_comparison: str
+    liquidity_and_risk: str
     main_risks: str
     key_events_today: str
+    scenarios: str
+    actionable_insights: str
     probability_bullish_pct: int = Field(ge=0, le=100)
     probability_bearish_pct: int = Field(ge=0, le=100)
     probability_neutral_pct: int = Field(ge=0, le=100)

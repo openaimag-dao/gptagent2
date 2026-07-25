@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # ---- Macro data (FRED) ----
     fred_api_key: str | None = None
 
+    # ---- Whale/on-chain data (optional; no provider implemented yet) ----
+    whale_api_key: str | None = None
+
     # ---- Scheduling / networking ----
     market_data_interval_minutes: int = 5
     news_collection_interval_minutes: int = 10

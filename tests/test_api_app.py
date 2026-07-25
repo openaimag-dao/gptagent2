@@ -22,6 +22,12 @@ EXPECTED_PREFIXES = {
     "/api/probability",
     "/api/patterns",
     "/api/knowledge",
+    "/api/brain",
+    "/api/similar",
+    "/api/backtest",
+    "/api/etf",
+    "/api/whales",
+    "/api/global-score",
 }
 
 
@@ -49,3 +55,26 @@ def test_openapi_schema_builds_without_error():
     schema = app.openapi()
     assert schema["info"]["title"] == "AI Market Intelligence Bot"
     assert len(schema["paths"]) >= len(EXPECTED_PREFIXES)
+
+
+def test_knowledge_rules_routes_registered_before_symbol_catch_all():
+    """/api/knowledge/rules must be declared before /api/knowledge/{symbol} --
+    Starlette matches routes in registration order, so a wrong order would
+    make "rules" get swallowed as a symbol name."""
+    knowledge_routes = [
+        r for r in app.routes if getattr(r, "path", "").startswith("/api/knowledge")
+    ]
+    paths_in_order = [r.path for r in knowledge_routes]
+    rules_index = paths_in_order.index("/api/knowledge/rules")
+    symbol_index = paths_in_order.index("/api/knowledge/{symbol}")
+    assert rules_index < symbol_index
+
+
+def test_backtest_route_is_post_only():
+    methods = {
+        method
+        for route in app.routes
+        if getattr(route, "path", "") == "/api/backtest"
+        for method in getattr(route, "methods", set())
+    }
+    assert methods == {"POST"}

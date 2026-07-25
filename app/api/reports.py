@@ -38,6 +38,7 @@ def _serialize(report) -> dict:
         "confidence_pct": report.confidence_pct,
         "market_summary": report.market_summary,
         "correlations_summary": report.correlations_summary,
+        "institutional_summary": report.institutional_summary,
         "analysis": report.analysis,
         "generated_at": report.generated_at.isoformat(),
     }
