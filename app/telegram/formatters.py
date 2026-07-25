@@ -104,7 +104,8 @@ def format_signal(snapshot: SignalSnapshot | None) -> str:
             state = "not triggered"
         else:
             state = "no data"
-        lines.append(f"- {name} ({data['points']:+d}): {state}")
+        label = name.replace("_", " ").capitalize()
+        lines.append(f"- {label} ({data['points']:+d}): {state}")
     return "\n".join(lines)
 
 

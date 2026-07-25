@@ -80,7 +80,8 @@ def test_format_signal_present():
     )
     text = format_signal(snapshot)
     assert "Bull score: 5" in text
-    assert "nasdaq_up" in text
+    assert "Nasdaq up" in text
+    assert "_" not in text
 
 
 def test_format_regime_present():
