@@ -5,9 +5,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.backtest import router as backtest_router
+from app.api.brain import router as brain_router
 from app.api.btc import router as btc_router
 from app.api.correlations import router as correlations_router
+from app.api.etf import router as etf_router
 from app.api.events import router as events_router
+from app.api.global_score import router as global_score_router
 from app.api.history import router as history_router
 from app.api.knowledge import router as knowledge_router
 from app.api.market import router as market_router
@@ -17,6 +21,8 @@ from app.api.probability import router as probability_router
 from app.api.regime import router as regime_router
 from app.api.reports import router as reports_router
 from app.api.signals import router as signals_router
+from app.api.similar import router as similar_router
+from app.api.whales import router as whales_router
 from app.config import get_settings
 from app.scheduler.jobs import shutdown_scheduler, start_scheduler
 from app.utils.logging import configure_logging
@@ -59,6 +65,12 @@ app.include_router(events_router)
 app.include_router(probability_router)
 app.include_router(patterns_router)
 app.include_router(knowledge_router)
+app.include_router(brain_router)
+app.include_router(similar_router)
+app.include_router(backtest_router)
+app.include_router(etf_router)
+app.include_router(whales_router)
+app.include_router(global_score_router)
 
 
 @app.get("/health", tags=["system"])

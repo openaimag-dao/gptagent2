@@ -11,6 +11,11 @@ from app.database.models import AssetClass, HistoricalEvent
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.analysis.correlation import CorrelationEngine
+from app.services.analysis.regime import RegimeDetector
+from app.services.backtest.conditions import Condition
+from app.services.backtest.engine import BacktestEngine
+from app.services.etf.engine import ETFIntelligenceEngine
+from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
@@ -20,10 +25,15 @@ from app.services.news.repository import NewsRepository
 from app.services.patterns.engine import PatternEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.signals.engine import SignalEngine
+from app.services.similar_market.engine import SimilarMarketEngine
+from app.services.whales.engine import WhaleIntelligenceEngine
 from app.telegram.formatters import (
     format_asset_class,
+    format_backtest_result,
     format_correlations,
+    format_etf_proxy,
     format_events,
+    format_global_score,
     format_history,
     format_knowledge,
     format_market_summary,
@@ -32,7 +42,9 @@ from app.telegram.formatters import (
     format_probability,
     format_report,
     format_signal,
+    format_similar_periods,
     format_single_asset,
+    format_whale_snapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,7 +73,14 @@ HELP_TEXT = (
     "/events -- curated historical market events\n"
     "/probability SYMBOL -- empirical next-day up/down probability\n"
     "/patterns SYMBOL -- detected technical patterns\n"
-    "/knowledge SYMBOL -- similar historical episodes for current conditions"
+    "/knowledge SYMBOL -- similar historical episodes for current conditions\n"
+    "/brain -- AI Brain: latest institutional-grade synthesis report (alias of /report)\n"
+    "/similar SYMBOL [timeframe] -- 25 most similar historical periods\n"
+    "/backtest SYMBOL SYMBOL:field:op:value [...] [horizon] -- backtest a rule "
+    "(e.g. /backtest BTC BTC:rsi:lt:30 1)\n"
+    "/whales -- whale/on-chain intelligence (requires a configured data source)\n"
+    "/etf -- ETF flow proxy from ETF-category news sentiment\n"
+    "/score -- Global Market Score"
 )
 
 
@@ -240,3 +259,93 @@ async def cmd_knowledge(message: Message, command: CommandObject) -> None:
     engine = KnowledgeEngine(get_session_factory())
     analogs = await engine.find_analogs(config.symbol, config.model, timeframe)
     await _answer(message, format_knowledge(config.symbol, analogs))
+
+
+@router.message(Command("brain"))
+async def cmd_brain(message: Message) -> None:
+    """AI Brain -- alias of /report; same institutional synthesis, different name."""
+    await cmd_report(message)
+
+
+@router.message(Command("score"))
+async def cmd_score(message: Message) -> None:
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    news_repository = NewsRepository(session_factory)
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    engine = GlobalScoreEngine(session_factory, market_repository, regime_detector, signal_engine)
+    row = await engine.compute_and_store()
+    await _answer(message, format_global_score(row))
+
+
+@router.message(Command("similar"))
+async def cmd_similar(message: Message, command: CommandObject) -> None:
+    symbol, timeframe, timeframe_arg = _parse_symbol_and_timeframe(command)
+    config = find_symbol_config(symbol)
+    if config is None or timeframe not in config.timeframes:
+        await _answer(message, f"No historical data available for {symbol}/{timeframe_arg}.")
+        return
+
+    engine = SimilarMarketEngine(get_session_factory())
+    matches = await engine.find_and_store(config.symbol, config.model, timeframe)
+    await _answer(message, format_similar_periods(config.symbol, matches))
+
+
+@router.message(Command("whales"))
+async def cmd_whales(message: Message, command: CommandObject) -> None:
+    symbol = (command.args or "BTC").strip().upper()
+    engine = WhaleIntelligenceEngine()
+    snapshot = await engine.get_snapshot(symbol)
+    await _answer(message, format_whale_snapshot(snapshot))
+
+
+@router.message(Command("etf"))
+async def cmd_etf(message: Message) -> None:
+    engine = ETFIntelligenceEngine(NewsRepository(get_session_factory()))
+    data = await engine.get_flow_proxy()
+    await _answer(message, format_etf_proxy(data))
+
+
+def _parse_condition(token: str) -> Condition | None:
+    parts = token.split(":")
+    if len(parts) != 4:
+        return None
+    symbol, field, operator, raw_value = parts
+    try:
+        value = float(raw_value)
+        return Condition(symbol=symbol.upper(), field=field, operator=operator, value=value)
+    except ValueError:
+        return None
+
+
+@router.message(Command("backtest"))
+async def cmd_backtest(message: Message, command: CommandObject) -> None:
+    parts = (command.args or "").split()
+    if len(parts) < 2:
+        await _answer(
+            message,
+            "Usage: /backtest SYMBOL SYMBOL:field:op:value [...] [horizon]\n"
+            "Example: /backtest BTC BTC:rsi:lt:30 1",
+        )
+        return
+
+    target_symbol = parts[0].upper()
+    horizon = 1
+    condition_tokens = parts[1:]
+    if condition_tokens and condition_tokens[-1].isdigit():
+        horizon = int(condition_tokens[-1])
+        condition_tokens = condition_tokens[:-1]
+
+    conditions = [_parse_condition(t) for t in condition_tokens]
+    if not condition_tokens or any(c is None for c in conditions):
+        await _answer(
+            message,
+            "Couldn't parse conditions. Use SYMBOL:field:op:value, e.g. BTC:rsi:lt:30 "
+            "(field: rsi/return_pct/sma_50/sma_200/...; op: gt/lt/gte/lte).",
+        )
+        return
+
+    engine = BacktestEngine(get_session_factory())
+    result = await engine.run(conditions, target_symbol, horizon=horizon)
+    await _answer(message, format_backtest_result(result))

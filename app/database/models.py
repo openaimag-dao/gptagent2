@@ -197,6 +197,9 @@ class Report(Base):
     confidence_pct: Mapped[int] = mapped_column()
     market_summary: Mapped[dict] = mapped_column(JSON, default=dict)
     correlations_summary: Mapped[list] = mapped_column(JSON, default=list)
+    # Raw (never LLM-generated) Global Market Score + ETF flow proxy + Whale
+    # Intelligence snapshots that grounded this report's prompt.
+    institutional_summary: Mapped[dict] = mapped_column(JSON, default=dict)
     analysis: Mapped[dict] = mapped_column(JSON, default=dict)
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
@@ -347,6 +350,13 @@ class ProbabilitySnapshot(Base):
     )
     horizon_periods: Mapped[int] = mapped_column(default=1)
     reference_rsi: Mapped[float] = mapped_column(Numeric(6, 2))
+    # The candle this prediction was made from -- lets the Self-Learning
+    # Engine look up what actually happened `horizon_periods` later and
+    # compare it against the prediction, instead of only ever guessing from
+    # wall-clock `computed_at`.
+    reference_timestamp: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
     sample_size: Mapped[int] = mapped_column()
     prob_up_pct: Mapped[int] = mapped_column()
     prob_down_pct: Mapped[int] = mapped_column()
@@ -395,4 +405,108 @@ class PatternSignal(Base):
         UniqueConstraint(
             "symbol", "timeframe", "timestamp", "pattern_name", name="uq_pattern_signal"
         ),
+    )
+
+
+class GlobalMarketScore(Base):
+    """A deterministic composite score (0-100 per sub-score) aggregating the
+    live regime, signal and market snapshots -- see
+    app/services/global_score/engine.py for the exact, documented formula
+    behind every number here."""
+
+    __tablename__ = "global_market_scores"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    risk_on_score: Mapped[int] = mapped_column()
+    risk_off_score: Mapped[int] = mapped_column()
+    liquidity_score: Mapped[int] = mapped_column()
+    fear_score: Mapped[int] = mapped_column()
+    greed_score: Mapped[int] = mapped_column()
+    macro_pressure_score: Mapped[int] = mapped_column()
+    institutional_activity_score: Mapped[int] = mapped_column()
+    crypto_strength_score: Mapped[int] = mapped_column()
+    stock_strength_score: Mapped[int] = mapped_column()
+    global_score: Mapped[int] = mapped_column()
+    inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class RuleCategory(str, enum.Enum):
+    THEORY = "theory"
+    RULE = "rule"
+    MACRO_IDEA = "macro_idea"
+    CRYPTO_IDEA = "crypto_idea"
+
+
+class KnowledgeRule(Base):
+    """A user-submitted trading theory/rule, automatically backtested against
+    real stored history (see app/services/knowledge/rules.py and
+    app/services/backtest/). Backtest columns stay NULL until the first
+    backtest run completes."""
+
+    __tablename__ = "knowledge_rules"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str] = mapped_column(Text)
+    category: Mapped[RuleCategory] = mapped_column(
+        Enum(
+            RuleCategory,
+            name="rule_category",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        index=True,
+    )
+    author: Mapped[str] = mapped_column(String(100))
+    target_symbol: Mapped[str] = mapped_column(String(20), index=True)
+    conditions: Mapped[list] = mapped_column(JSON, default=list)
+    horizon_periods: Mapped[int] = mapped_column(default=1)
+
+    occurrences: Mapped[int | None] = mapped_column(nullable=True)
+    win_rate_pct: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    avg_return_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    max_drawdown_pct: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    profit_factor: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    sharpe_ratio: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    confidence_pct: Mapped[int | None] = mapped_column(nullable=True)
+    last_backtested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class SimilarMarketMatch(Base):
+    """One stored comparison from the Similar Market Engine: a historical
+    date whose technical conditions matched a symbol's conditions as of
+    `reference_timestamp`, plus what actually happened next."""
+
+    __tablename__ = "similar_market_matches"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    timeframe: Mapped[HistoryTimeframe] = mapped_column(
+        Enum(
+            HistoryTimeframe,
+            name="history_timeframe",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        index=True,
+    )
+    reference_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    match_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    similarity_score: Mapped[float] = mapped_column(Numeric(6, 2))
+    market_regime: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    btc_result_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    nasdaq_result_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    forward_return_1d_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    forward_return_3d_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    forward_return_7d_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    forward_return_30d_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
     )

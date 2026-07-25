@@ -94,6 +94,7 @@ class ProbabilityEngine:
             timeframe=timeframe.value,
             horizon_periods=horizon,
             reference_rsi=reference_rsi,
+            reference_timestamp=rows[-1].timestamp,
             **result,
         )
         async with self._session_factory() as session:
@@ -115,3 +116,24 @@ class ProbabilityEngine:
                 .order_by(ProbabilitySnapshot.computed_at.desc())
                 .limit(1)
             )
+
+
+def label_probability(snapshot: ProbabilitySnapshot) -> dict:
+    """Bullish/Bearish/Neutral framing over the same up/down/flat numbers --
+    a presentation alias, not a second model."""
+    return {
+        "bullish_pct": snapshot.prob_up_pct,
+        "bearish_pct": snapshot.prob_down_pct,
+        "neutral_pct": snapshot.prob_flat_pct,
+    }
+
+
+def contributing_indicators(signal_factors: dict[str, dict]) -> list[dict]:
+    """Which Signal Engine factors actually fired, for "why this probability"
+    context -- reuses the existing factor breakdown rather than a second
+    indicator model."""
+    return [
+        {"indicator": name, "points": data.get("points"), "triggered": data.get("triggered")}
+        for name, data in signal_factors.items()
+        if data.get("triggered") is not None
+    ]

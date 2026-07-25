@@ -63,6 +63,29 @@ are daily-only).
 All three return 404 with an explanatory message if there isn't enough
 synced history yet to compute a result -- run `sync_history.py` first.
 
+## AI Market Intelligence Brain (Sprint 9)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/brain` | Latest report -- alias of `/api/report`, same engine |
+| POST | `/api/brain/generate` | Generate a fresh report on demand -- alias of `/api/report/generate` |
+| GET | `/api/similar/{symbol}?timeframe=1d&k=25` | 25 most similar historical periods, 1/3/7/30d forward returns, reconstructed regime |
+| POST | `/api/backtest` | Backtest a structured rule. Body: `{"target_symbol", "conditions": [{"symbol","field","operator","value"}], "timeframe", "horizon"}` |
+| POST | `/api/knowledge/rules` | Create a user knowledge-base rule; auto-backtested on creation |
+| GET | `/api/knowledge/rules` | List all rules |
+| GET | `/api/knowledge/rules/{id}` | Get one rule + its latest backtest result |
+| POST | `/api/knowledge/rules/{id}/backtest` | Re-run a rule's backtest |
+| GET | `/api/etf?window_hours=72` | ETF news-sentiment flow proxy (`"proxy_only": true` -- not confirmed dollar flows) |
+| GET | `/api/whales?symbol=BTC` | Whale/on-chain snapshot -- `"available": false` unless `WHALE_API_KEY` is set *and* a provider is implemented |
+| GET | `/api/global-score` | Deterministic Risk-On/Off, Liquidity, Fear/Greed, Macro Pressure, Institutional Activity, Crypto/Stock Strength + one global 0-100 score |
+
+`Condition.operator` is one of `gt`, `lt`, `gte`, `lte`. `Condition.field` is
+any of: `close`, `return_pct`, `volatility`, `atr`, `rsi`, `macd`,
+`macd_signal`, `macd_histogram`, `sma_20`, `sma_50`, `sma_200`,
+`volume_change_pct`. A rule with conditions on multiple symbols is
+evaluated with all symbols' history aligned by timestamp; missing data on
+any referenced symbol/date means that date never fires (never guessed).
+
 ## Error shape
 
 FastAPI's default `HTTPException` shape:
@@ -71,6 +94,7 @@ FastAPI's default `HTTPException` shape:
 {"detail": "No BTC data collected yet"}
 ```
 
-`400` = bad request parameter (invalid timeframe). `404` = valid request,
-no data yet. `503` = `/api/report/generate` only, when regime/signal
-detection hasn't run at least once yet.
+`400` = bad request parameter (invalid timeframe/operator). `404` = valid
+request, no data yet. `503` = `/api/report(/brain)/generate` only, when
+regime/signal detection hasn't run at least once yet or `OPENAI_API_KEY`
+is unset.

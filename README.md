@@ -24,6 +24,15 @@ dates instead of LLM improvisation) -- see [Sprint 3: Probability, Pattern
 Recognition & Knowledge
 Engines](#sprint-3-probability-pattern-recognition--knowledge-engines) below.
 
+Sprint 9 (the "AI Market Intelligence Brain") extends every engine above into
+an institutional-grade platform: a Global Market Score, a rule Backtest
+Engine, a user-submitted Knowledge Rules base with automatic backtesting, a
+25-period Similar Market Engine, a Self-Learning accuracy tracker, and an
+honestly-scoped ETF/Whale Intelligence layer -- see [Sprint 9: AI Market
+Intelligence Brain](#sprint-9-ai-market-intelligence-brain) below, including
+which two engines needed a paid data source this project doesn't have and
+what they do instead of fabricating numbers.
+
 ## Architecture
 
 ```
@@ -63,23 +72,39 @@ app/
     knowledge/
       analysis.py           Pure nearest-historical-analog search (z-score distance)
       engine.py              Orchestration + LLM grounding-text builder
+      rules.py                Sprint 9: user rules CRUD + auto-backtest
+    global_score/
+      engine.py               Sprint 9: deterministic Global Market Score composite
+    backtest/
+      conditions.py            Sprint 9: safe structured rule DSL (no eval)
+      metrics.py                Sprint 9: win rate / drawdown / profit factor / Sharpe
+      engine.py                  Sprint 9: runs a rule over full stored history
+    similar_market/
+      engine.py                  Sprint 9: 25-period historical analog search + regime reconstruction
+    learning/
+      engine.py                   Sprint 9: prediction-vs-reality accuracy tracker
+    etf/
+      engine.py                    Sprint 9: ETF news-sentiment flow proxy (honest, not fabricated $ flows)
+    whales/
+      engine.py                    Sprint 9: on-chain data interface (honest "not configured" without a key)
   llm/
     client.py            OpenAI-compatible async client factory
   telegram/
     bot.py                aiogram Bot/Dispatcher wiring
     handlers.py            /start /help /market /btc /macro /stocks /crypto /news /signals
                             /correlations /report /history /events /probability /patterns
-                            /knowledge
+                            /knowledge /brain /similar /backtest /whales /etf /score
     formatters.py          Pure functions: ORM rows -> Markdown text
     broadcast.py           Sends generated reports to configured chat IDs
     main.py                Entrypoint for the bot's own process
   scheduler/            APScheduler job wiring (collectors, analysis, reports)
   api/                  FastAPI routers -- market, btc, news, correlations, regime,
-                         signals, report, history, events, probability, patterns, knowledge
+                         signals, report, history, events, probability, patterns, knowledge,
+                         brain, similar, backtest, etf, whales, global-score
   utils/                Logging, shared HTTP client + retry policy
   main.py               FastAPI app + lifespan-managed scheduler
-alembic/                DB migrations (14 tables across 8 revisions)
-tests/                  pytest suite -- 100 tests, all pure-function/logic paths
+alembic/                DB migrations (17 tables across 9 revisions)
+tests/                  pytest suite -- 142 tests, all pure-function/logic paths
                         + DB-free FastAPI route-wiring smoke tests
 ```
 
@@ -103,6 +128,9 @@ data came from.
 | `historical_events` | Sprint 2 | Curated real market milestones (halvings, crashes, ...) |
 | `probability_snapshots` | Sprint 3 | Empirical RSI-conditioned forward-return probabilities |
 | `pattern_signals` | Sprint 3 | Detected candlestick / crossover patterns |
+| `global_market_scores` | Sprint 9 | Deterministic Risk-On/Off, Liquidity, Fear/Greed, ... composite |
+| `knowledge_rules` | Sprint 9 | User-submitted rules/theories + their auto-backtest results |
+| `similar_market_matches` | Sprint 9 | Every Similar Market Engine comparison, stored for audit |
 
 `asset_prices` is intentionally one wide table (not separate crypto/stock/macro
 tables) so the correlation engine can query any symbol's time series with a
@@ -333,6 +361,178 @@ four new API endpoints (`/api/history`, `/api/events`, `/api/probability`,
 live-started FastAPI app, including a 404 check for an unknown symbol.
 Migration 0008 was verified with a full upgrade/downgrade/upgrade cycle.
 
+## Sprint 9: AI Market Intelligence Brain
+
+Ten engines were requested; every one is addressed below -- eight fully
+built on real data, two (Whale and ETF Intelligence) honestly scoped down
+because full real-time on-chain/derivatives and ETF-flow data both require
+paid providers not configured in this project. Nothing here fabricates a
+number it can't back with real, already-computed data.
+
+### 1. AI Brain Engine
+
+Not a new implementation -- `ReportGenerator` (Sprint 1-3) already *was* the
+brain engine (WHY/WHO's-driving/institutional/macro synthesis grounded in
+real data). Sprint 9 enriches its inputs (Global Market Score, ETF proxy,
+Whale snapshot) and output schema (`liquidity_and_risk`, `scenarios`,
+`actionable_insights` fields added to `AIAnalysisContent`), and exposes it
+under `/api/brain` + `/brain` as an explicit alias -- same engine, matching
+name.
+
+### 2. Similar Market Engine
+
+Extends Sprint 3's Knowledge Engine analog search (same z-score nearest-
+neighbor logic, not reimplemented) to 25 matches by default, 4 forward
+horizons (1/3/7/30 periods), and -- new -- historical market regime
+reconstruction: `detect_regime()` (Phase 4, unchanged) is re-run against
+`market_history`/`crypto_history`/`macro_history` rows for each matched
+date, so a historical regime tag means exactly the same thing as a live
+one. Every comparison is persisted to `similar_market_matches`.
+
+```
+GET /api/similar/{symbol}?timeframe=1d&k=25
+/similar BTC [timeframe]
+```
+
+### 3. Probability Engine
+
+Sprint 3's engine, relabeled Bullish/Bearish/Neutral (`label_probability()`)
+and extended with `contributing_indicators()` (pulls the Signal Engine's own
+factor breakdown -- which real factors are driving the read) and real
+historical-accuracy tracking (see Self-Learning Engine below). `/probability`
+and `/api/probability` are unchanged endpoints, richer underlying engine.
+
+### 4. Knowledge Engine (user rules)
+
+A second, distinctly-named concept living in the same package as Sprint 3's
+analog search (`app/services/knowledge/rules.py`): users submit a Theory,
+Rule, Macro Idea or Crypto Idea as a structured condition (see Backtest
+Engine's DSL below), and it's automatically backtested on creation and
+whenever `POST /api/knowledge/rules/{id}/backtest` is called again. Every
+rule stores occurrences, win rate, average return, drawdown, profit factor,
+Sharpe ratio and a **confidence score that scales down with few historical
+occurrences** (`compute_confidence_pct()`) -- two wins out of two never
+reads as "100% confident."
+
+```
+POST /api/knowledge/rules   {"title", "description", "category", "author",
+                              "target_symbol", "conditions": [...], "horizon_periods"}
+GET  /api/knowledge/rules
+GET  /api/knowledge/rules/{id}
+POST /api/knowledge/rules/{id}/backtest
+```
+
+### 5. Backtest Engine
+
+A small, deliberately safe condition DSL (`app/services/backtest/conditions.py`)
+-- `Condition(symbol, field, operator, value)`, AND-combined, evaluated
+against already-computed history fields (rsi, sma_50, return_pct, ...). Not
+a free-text parser and not `eval()` -- structured input only. Runs any rule
+over a target symbol's full stored history and returns win rate, average
+return, max drawdown (peak-to-trough on the compounded trade sequence),
+profit factor and annualized Sharpe ratio -- every metric returns `None`
+rather than a fabricated number when the sample can't support it (no
+losing trades for profit factor, fewer than 2 trades for Sharpe, zero
+matches at all).
+
+```
+POST /api/backtest   {"target_symbol", "conditions": [...], "timeframe", "horizon"}
+/backtest SYMBOL SYMBOL:field:op:value [...] [horizon]   (e.g. /backtest BTC BTC:rsi:lt:30 1)
+```
+
+### 6. Whale Intelligence -- honestly unavailable
+
+Exchange inflow/outflow, large-wallet tracking, funding rate, open interest,
+liquidations, long/short ratio and stablecoin supply all require a paid
+on-chain/derivatives data source (Glassnode, CryptoQuant, Coinglass) that
+isn't configured anywhere in this project, and there's no reliable free
+equivalent. `WhaleIntelligenceEngine` reports this honestly (`"available":
+false`, a clear reason, and the exact response shape a real provider would
+need to fill in) rather than inventing accumulation/distribution numbers --
+the same principle that keeps `FredMacroProvider` from inventing a Fed Funds
+Rate when `FRED_API_KEY` is unset. Setting `WHALE_API_KEY` is the wiring
+point for a future provider.
+
+```
+GET /api/whales?symbol=BTC
+/whales [symbol]
+```
+
+### 7. ETF Intelligence -- real proxy, not fabricated flows
+
+Real ETF creation/redemption dollar flows need a paid source too (Farside
+Investors, SoSoValue). Instead of inventing a flow number, this surfaces
+the one real signal already being collected: aggregate sentiment of
+ETF-category news (the same proxy the Signal Engine's `etf_inflow` factor
+already relies on), explicitly labeled `"proxy_only": true` in every
+response so it's never mistaken for confirmed flow data. Verified live:
+33 real ETF-category news items, correctly classified.
+
+```
+GET /api/etf?window_hours=72
+/etf
+```
+
+### 8. Self-Learning Engine
+
+`ProbabilitySnapshot` now stores `reference_timestamp` (the exact candle a
+prediction was made from, not just wall-clock time). `LearningEngine`
+compares every past prediction whose `horizon_periods` have actually
+elapsed in stored history against what really happened, and reports real,
+measured accuracy -- a prediction only counts once enough time has passed
+for its outcome to exist. This is the honestly-scoped version of "self
+learning": real measurement and comparison, not an unverified claim of
+automatic weight retraining.
+
+### 9. Global Market Score
+
+A deterministic composite (`app/services/global_score/engine.py`) --
+every sub-score traces to an already-computed input, nothing new is
+fetched: Risk-On/Off from the regime classification, Liquidity from the
+Fed Funds Rate direction, Fear/Greed from VIX, Macro Pressure from
+DXY/US10Y, Institutional Activity from the Signal Engine's `etf_inflow`
+factor, Crypto/Stock Strength from live price changes. One weighted
+0-100 global score ties them together.
+
+```
+GET /api/global-score
+/score
+```
+
+### 10. AI Daily Report
+
+The existing `/report` (now also `/brain`) already covers most of the
+requested structure (market/macro/crypto/stock summaries, correlations,
+news, AI conclusion, probability, risks). Sprint 9 adds the remaining
+sections: `liquidity_and_risk`, `scenarios` and `actionable_insights` to
+`AIAnalysisContent`, plus a real (never LLM-generated) `institutional_summary`
+JSON field on every `Report` row combining the Global Market Score, ETF flow
+proxy and Whale Intelligence snapshot that grounded that report's prompt.
+
+### What was actually verified live
+
+Every new engine was run against real Postgres with the real FRED-sourced
+`US10Y` history synced during Sprint 2/3 testing:
+- `/api/global-score` returned a real composite (institutional_activity=75
+  because the ETF factor was genuinely triggered; crypto_strength=43 from
+  real live BTC/ETH/SOL data).
+- `/api/similar/US10Y` returned 5 real historical matches with real 1/3/7/30d
+  forward returns (regime tags were `null` for most, honestly, since this
+  sandbox never synced the full SPX/BTC/VIX/DXY set needed to reconstruct
+  one -- exactly the documented degrade-gracefully behavior, not a bug).
+- `/api/etf` returned 33 real, freshly-collected ETF-category news items,
+  correctly classified bullish/bearish/neutral.
+- `/api/whales` correctly reported unavailable with a clear reason.
+- `/api/backtest` and creating a Knowledge Rule with the identical condition
+  produced **identical results** (38 occurrences, 34.21% win rate) --
+  confirming the rule engine actually calls the same backtest engine rather
+  than a second implementation.
+- `/api/brain` correctly 404s with no report yet, and `/api/brain/generate`
+  correctly 503s without `OPENAI_API_KEY` -- the same honest-failure
+  behavior as the pre-existing `/api/report/generate`.
+- Migration 0009 was verified with a full upgrade/downgrade/upgrade cycle.
+- 142 tests pass (36 new this sprint), `ruff check` clean.
+
 ## Known operational limitation: Yahoo Finance
 
 `YFinanceStockProvider` and the DXY/Gold/Silver part of `YFinanceMacroProvider`
@@ -416,6 +616,14 @@ curl http://localhost:8000/api/events
 curl "http://localhost:8000/api/probability/BTC?timeframe=1d"
 curl "http://localhost:8000/api/patterns/BTC?timeframe=1d"
 curl "http://localhost:8000/api/knowledge/BTC?timeframe=1d&k=5"
+curl http://localhost:8000/api/brain                                  # alias of /api/report
+curl "http://localhost:8000/api/similar/BTC?timeframe=1d&k=25"
+curl http://localhost:8000/api/global-score
+curl http://localhost:8000/api/etf
+curl http://localhost:8000/api/whales
+curl -X POST http://localhost:8000/api/backtest -H "Content-Type: application/json" -d \
+  '{"target_symbol":"BTC","conditions":[{"symbol":"BTC","field":"rsi","operator":"lt","value":30}]}'
+curl http://localhost:8000/api/knowledge/rules
 ```
 
 Full interactive API documentation (every endpoint, params, response
@@ -439,17 +647,21 @@ pytest
 ruff check .
 ```
 
-100 tests cover every pure-logic path: sentiment classification, correlation
+142 tests cover every pure-logic path: sentiment classification, correlation
 math, regime rules, signal scoring, report prompt construction, Telegram
 formatters and Markdown-fallback behavior, both aggregators' fault-tolerance
 (partial and total failure), the historical intelligence engine's technical
 indicators, gap/duplicate detection, resampling and symbol registry, the
 probability engine's forward-return bucketing, the pattern engine's
 candlestick/crossover detectors, the knowledge engine's nearest-analog
-search, and a DB-free smoke test that every FastAPI router is actually
-mounted. Every phase was additionally verified live against a real
-Postgres + Redis instance during development (see commit history for the
-specific checks performed per phase).
+search, the Sprint 9 backtest metrics/condition DSL, the Global Market
+Score's deterministic formula, the Similar Market Engine's historical-regime
+reconstruction, the Self-Learning Engine's direction comparison, the
+Knowledge Rules confidence formula, and a DB-free smoke test that every
+FastAPI router (including route-ordering for `/api/knowledge/rules` vs
+`/api/knowledge/{symbol}`) is actually mounted. Every phase was additionally
+verified live against a real Postgres + Redis instance during development
+(see commit history for the specific checks performed per phase).
 
 ## Further documentation
 
