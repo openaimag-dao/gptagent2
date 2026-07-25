@@ -2,7 +2,17 @@ import enum
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Numeric, String, Text, Uuid
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base
@@ -191,3 +201,124 @@ class Report(Base):
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class HistoryTimeframe(str, enum.Enum):
+    DAILY = "1d"
+    FOUR_HOUR = "4h"
+    ONE_HOUR = "1h"
+
+
+class _HistoryCandleMixin:
+    """Shared OHLCV + indicator columns for the market/crypto/stock/macro history tables.
+
+    Indicators are computed once by the sync engine and persisted here rather
+    than recomputed on read -- `indicators_computed` marks that a row has
+    already been through indicator calculation so a re-sync never redoes it.
+    """
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    timeframe: Mapped[HistoryTimeframe] = mapped_column(
+        Enum(
+            HistoryTimeframe,
+            name="history_timeframe",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        index=True,
+    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    open: Mapped[float] = mapped_column(Numeric(24, 8))
+    high: Mapped[float] = mapped_column(Numeric(24, 8))
+    low: Mapped[float] = mapped_column(Numeric(24, 8))
+    close: Mapped[float] = mapped_column(Numeric(24, 8))
+    volume: Mapped[float | None] = mapped_column(Numeric(30, 2), nullable=True)
+
+    return_pct: Mapped[float | None] = mapped_column(Numeric(14, 8), nullable=True)
+    volatility: Mapped[float | None] = mapped_column(Numeric(14, 8), nullable=True)
+    atr: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    rsi: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    macd: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    macd_signal: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    macd_histogram: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    sma_20: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    sma_50: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    sma_200: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    volume_change_pct: Mapped[float | None] = mapped_column(Numeric(14, 8), nullable=True)
+    indicators_computed: Mapped[bool] = mapped_column(default=False, index=True)
+
+    source: Mapped[str] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class MarketHistory(_HistoryCandleMixin, Base):
+    """OHLCV + indicator history for broad market indices (NASDAQ, S&P 500, Dow, Russell 2000)."""
+
+    __tablename__ = "market_history"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "timestamp", name="uq_market_history_bar"),
+    )
+
+
+class CryptoHistory(_HistoryCandleMixin, Base):
+    """OHLCV + indicator history for crypto assets (BTC, ETH, SOL)."""
+
+    __tablename__ = "crypto_history"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "timestamp", name="uq_crypto_history_bar"),
+    )
+
+
+class StockHistory(_HistoryCandleMixin, Base):
+    """OHLCV + indicator history for individual equities (the Magnificent 7)."""
+
+    __tablename__ = "stock_history"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "timestamp", name="uq_stock_history_bar"),
+    )
+
+
+class MacroHistory(_HistoryCandleMixin, Base):
+    """OHLCV(-equivalent) + indicator history for macro indicators.
+
+    Single-value series (Fed Rate, CPI, M2, yields sourced from FRED) are
+    stored with open == high == low == close == the observed value -- a
+    standard adaptation that keeps ATR/RSI/MACD computable uniformly across
+    every history table without a separate code path for non-OHLC sources.
+    """
+
+    __tablename__ = "macro_history"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "timestamp", name="uq_macro_history_bar"),
+    )
+
+
+class HistoricalEventCategory(str, enum.Enum):
+    HALVING = "halving"
+    CRASH = "crash"
+    MACRO_POLICY = "macro_policy"
+    REGULATORY = "regulatory"
+    BLACK_SWAN = "black_swan"
+
+
+class HistoricalEvent(Base):
+    """A curated, factual market-moving event, giving the AI historical context."""
+
+    __tablename__ = "historical_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    category: Mapped[HistoricalEventCategory] = mapped_column(
+        Enum(
+            HistoricalEventCategory,
+            name="historical_event_category",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        index=True,
+    )
+    description: Mapped[str] = mapped_column(Text)
+    symbols_affected: Mapped[list] = mapped_column(JSON, default=list)
+    source: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
