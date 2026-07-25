@@ -15,6 +15,15 @@ US equities/indices and macro indicators, synced via `python
 sync_history.py` -- see [Sprint 2: Historical Intelligence
 Engine](#sprint-2-historical-intelligence-engine) below.
 
+Sprint 3 adds three more deterministic engines on top of that historical
+database -- a **Probability Engine** (empirical RSI-conditioned forward-return
+odds), a **Pattern Recognition Engine** (candlestick + moving-average
+crossover detection) and a **Knowledge Engine** (nearest-historical-analog
+search that now grounds the AI report's historical comparison in real past
+dates instead of LLM improvisation) -- see [Sprint 3: Probability, Pattern
+Recognition & Knowledge
+Engines](#sprint-3-probability-pattern-recognition--knowledge-engines) below.
+
 ## Architecture
 
 ```
@@ -45,20 +54,33 @@ app/
       report.py          ReportGenerator -- ties everything together for the LLM
     signals/
       engine.py          Bull/Bear weighted signal scoring
+    history/             Sprint 2 -- see below
+    probability/
+      engine.py           Empirical RSI-conditioned forward-return probability
+    patterns/
+      detectors.py         Pure candlestick + SMA-crossover pattern functions
+      engine.py             Scans history, upserts detected patterns
+    knowledge/
+      analysis.py           Pure nearest-historical-analog search (z-score distance)
+      engine.py              Orchestration + LLM grounding-text builder
   llm/
     client.py            OpenAI-compatible async client factory
   telegram/
     bot.py                aiogram Bot/Dispatcher wiring
-    handlers.py            /start /help /market /btc /macro /stocks /crypto /news /signals /report
+    handlers.py            /start /help /market /btc /macro /stocks /crypto /news /signals
+                            /correlations /report /history /events /probability /patterns
+                            /knowledge
     formatters.py          Pure functions: ORM rows -> Markdown text
     broadcast.py           Sends generated reports to configured chat IDs
     main.py                Entrypoint for the bot's own process
   scheduler/            APScheduler job wiring (collectors, analysis, reports)
-  api/                  FastAPI routers (market, btc, news, correlations, regime, signals, report)
+  api/                  FastAPI routers -- market, btc, news, correlations, regime,
+                         signals, report, history, events, probability, patterns, knowledge
   utils/                Logging, shared HTTP client + retry policy
   main.py               FastAPI app + lifespan-managed scheduler
-alembic/                DB migrations (12 tables across 7 revisions)
-tests/                  pytest suite -- 76 tests, all pure-function/logic paths
+alembic/                DB migrations (14 tables across 8 revisions)
+tests/                  pytest suite -- 100 tests, all pure-function/logic paths
+                        + DB-free FastAPI route-wiring smoke tests
 ```
 
 Every market/news source implements one interface (`MarketDataProvider` /
@@ -77,6 +99,10 @@ data came from.
 | `market_regime_snapshots` | Phase 4 | Detected regime + the inputs that drove it |
 | `signal_snapshots` | Phase 5 | Bull/Bear score + factor breakdown |
 | `reports` | Phase 6 | Full AI-generated report: raw data + LLM narrative |
+| `market_history` / `crypto_history` / `stock_history` / `macro_history` | Sprint 2 | Daily/4h/1h OHLCV + indicators |
+| `historical_events` | Sprint 2 | Curated real market milestones (halvings, crashes, ...) |
+| `probability_snapshots` | Sprint 3 | Empirical RSI-conditioned forward-return probabilities |
+| `pattern_signals` | Sprint 3 | Detected candlestick / crossover patterns |
 
 `asset_prices` is intentionally one wide table (not separate crypto/stock/macro
 tables) so the correlation engine can query any symbol's time series with a
@@ -230,6 +256,83 @@ incremental-resume and never-recalculate behavior end to end, not just in
 unit tests. Migration 0007 was also verified with a full
 upgrade/downgrade/upgrade cycle.
 
+## Sprint 3: Probability, Pattern Recognition & Knowledge Engines
+
+Three more deterministic engines built directly on Sprint 2's stored history
+-- no new external data sources, no ML black boxes, no LLM guessing. Every
+number either comes from real synced history or is honestly reported as
+unavailable.
+
+### Probability Engine (`app/services/probability/`)
+
+Empirical, RSI-conditioned forward-return probability: buckets a symbol's own
+historical RSI readings around its current value and measures what fraction
+of those past occurrences were followed by a positive / negative / flat
+return over the next N periods. Requires at least 8 matching historical
+episodes or it returns nothing rather than a low-confidence guess.
+
+```
+GET /api/probability/{symbol}?timeframe=1d
+/probability BTC [timeframe]
+```
+
+### Pattern Recognition Engine (`app/services/patterns/`)
+
+Deterministic rule-based detectors over OHLCV + the moving averages already
+computed in Sprint 2: Doji, Hammer, Bullish/Bearish Engulfing (classic
+candlestick definitions), and Golden Cross / Death Cross (SMA 50 crossing SMA
+200). Scans a symbol's full stored history and upserts every match, so
+`/api/patterns` and `/patterns` return a real historical catalog, not just
+the latest candle.
+
+```
+GET /api/patterns/{symbol}?timeframe=1d&limit=10
+/patterns BTC [timeframe]
+```
+
+### Knowledge Engine (`app/services/knowledge/`)
+
+Nearest-historical-analog search: z-score normalizes a symbol's RSI and
+volatility history, finds the K most similar past candles to today's reading,
+and reports what actually happened next (forward return) plus any curated
+`historical_events` nearby. This is what fixed a real gap in the AI report:
+before Sprint 3, `historical_comparison` was pure LLM improvisation with zero
+real data behind it. Now `ReportGenerator` calls the Knowledge Engine for BTC
+before every report and feeds the LLM a "HISTORICAL ANALOGS" section of real
+dates and real outcomes, with an explicit instruction to ground its answer in
+that data (or say plainly that no analog was found).
+
+```
+GET /api/knowledge/{symbol}?timeframe=1d&k=5
+/knowledge BTC [timeframe]
+```
+
+### Known limitations
+
+- Both the Probability and Knowledge engines need real variance in the
+  underlying RSI/volatility series to produce a meaningful result (a flat or
+  too-short series returns nothing, not a fabricated number).
+- FRED-sourced macro symbols store flat OHLC (open == high == low == close,
+  since FRED gives one value per day -- see Sprint 2), so candlestick
+  patterns other than the SMA crossovers structurally can't fire on them;
+  this was confirmed during live testing (`/api/patterns/US10Y` correctly
+  returns zero patterns over a real 249-row window with FRED's flat OHLC).
+- A full FastAPI `TestClient` + test-database integration suite is still a
+  known gap for the whole project, not just these three engines -- see the
+  audit for details.
+
+### What was actually verified live
+
+All three engines were run against the real `US10Y` history synced during
+Sprint 2 testing (249 real FRED daily candles): the Probability Engine found
+12 matching historical episodes and computed a real 42% up / 58% down split;
+the Pattern Engine scanned the full series without error; the Knowledge
+Engine returned 5 real historical analog dates with real forward returns. All
+four new API endpoints (`/api/history`, `/api/events`, `/api/probability`,
+`/api/patterns`, `/api/knowledge`) were then hit directly over HTTP against a
+live-started FastAPI app, including a 404 check for an unknown symbol.
+Migration 0008 was verified with a full upgrade/downgrade/upgrade cycle.
+
 ## Known operational limitation: Yahoo Finance
 
 `YFinanceStockProvider` and the DXY/Gold/Silver part of `YFinanceMacroProvider`
@@ -274,6 +377,13 @@ services: `app` (FastAPI + scheduler) on `http://localhost:8000`, and `bot`
 to receive commands; set `TELEGRAM_BROADCAST_CHAT_IDS` too if you want
 scheduled reports pushed automatically.
 
+To backfill the Historical Intelligence Engine (a one-off, not part of the
+default startup):
+
+```bash
+docker compose --profile history run --rm history-sync
+```
+
 ### Option B: Local Python
 
 ```bash
@@ -301,7 +411,15 @@ curl http://localhost:8000/api/regime
 curl http://localhost:8000/api/signals
 curl http://localhost:8000/api/report
 curl -X POST http://localhost:8000/api/report/generate   # requires OPENAI_API_KEY
+curl "http://localhost:8000/api/history/BTC?timeframe=1d&limit=10"   # requires sync_history.py to have run
+curl http://localhost:8000/api/events
+curl "http://localhost:8000/api/probability/BTC?timeframe=1d"
+curl "http://localhost:8000/api/patterns/BTC?timeframe=1d"
+curl "http://localhost:8000/api/knowledge/BTC?timeframe=1d&k=5"
 ```
+
+Full interactive API documentation (every endpoint, params, response
+schemas) is auto-generated by FastAPI at `http://localhost:8000/docs`.
 
 The scheduler runs every collector/analyzer immediately on startup, then on
 its own interval:
@@ -321,14 +439,22 @@ pytest
 ruff check .
 ```
 
-76 tests cover every pure-logic path: sentiment classification, correlation
+100 tests cover every pure-logic path: sentiment classification, correlation
 math, regime rules, signal scoring, report prompt construction, Telegram
 formatters and Markdown-fallback behavior, both aggregators' fault-tolerance
-(partial and total failure), and the historical intelligence engine's
-technical indicators, gap/duplicate detection, resampling and symbol
-registry. Every phase was additionally verified live against a real
+(partial and total failure), the historical intelligence engine's technical
+indicators, gap/duplicate detection, resampling and symbol registry, the
+probability engine's forward-return bucketing, the pattern engine's
+candlestick/crossover detectors, the knowledge engine's nearest-analog
+search, and a DB-free smoke test that every FastAPI router is actually
+mounted. Every phase was additionally verified live against a real
 Postgres + Redis instance during development (see commit history for the
 specific checks performed per phase).
+
+## Further documentation
+
+- [`docs/API.md`](docs/API.md) -- full endpoint reference (also live at `/docs` on a running instance)
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) -- Railway + Docker Compose deployment guide, including every real pitfall hit and fixed during this project's actual rollout
 
 ## Configuration
 

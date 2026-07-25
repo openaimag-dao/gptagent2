@@ -7,8 +7,13 @@ from fastapi import FastAPI
 
 from app.api.btc import router as btc_router
 from app.api.correlations import router as correlations_router
+from app.api.events import router as events_router
+from app.api.history import router as history_router
+from app.api.knowledge import router as knowledge_router
 from app.api.market import router as market_router
 from app.api.news import router as news_router
+from app.api.patterns import router as patterns_router
+from app.api.probability import router as probability_router
 from app.api.regime import router as regime_router
 from app.api.reports import router as reports_router
 from app.api.signals import router as signals_router
@@ -49,6 +54,11 @@ app.include_router(correlations_router)
 app.include_router(regime_router)
 app.include_router(signals_router)
 app.include_router(reports_router)
+app.include_router(history_router)
+app.include_router(events_router)
+app.include_router(probability_router)
+app.include_router(patterns_router)
+app.include_router(knowledge_router)
 
 
 @app.get("/health", tags=["system"])

@@ -65,5 +65,7 @@ def test_build_user_prompt_includes_all_sections_and_handles_missing_data():
     assert "Bull score: 5" in prompt
     assert "ROLLING CORRELATIONS" in prompt
     assert "No correlation data available yet." in prompt
+    assert "HISTORICAL ANALOGS" in prompt
+    assert "Historical analog data unavailable." in prompt
     assert "RECENT NEWS" in prompt
     assert "Bitcoin rallies" in prompt

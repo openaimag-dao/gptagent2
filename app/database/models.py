@@ -322,3 +322,77 @@ class HistoricalEvent(Base):
     symbols_affected: Mapped[list] = mapped_column(JSON, default=list)
     source: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ProbabilitySnapshot(Base):
+    """An empirical, historically-grounded probability read for one symbol/timeframe.
+
+    Computed by bucketing the symbol's own stored RSI history and measuring
+    what fraction of similar-RSI past occurrences were followed by a positive
+    / negative / flat forward return -- never a fabricated or LLM-guessed
+    number.
+    """
+
+    __tablename__ = "probability_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    timeframe: Mapped[HistoryTimeframe] = mapped_column(
+        Enum(
+            HistoryTimeframe,
+            name="history_timeframe",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        index=True,
+    )
+    horizon_periods: Mapped[int] = mapped_column(default=1)
+    reference_rsi: Mapped[float] = mapped_column(Numeric(6, 2))
+    sample_size: Mapped[int] = mapped_column()
+    prob_up_pct: Mapped[int] = mapped_column()
+    prob_down_pct: Mapped[int] = mapped_column()
+    prob_flat_pct: Mapped[int] = mapped_column()
+    avg_forward_return_pct: Mapped[float] = mapped_column(Numeric(10, 4))
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class PatternDirection(str, enum.Enum):
+    BULLISH = "bullish"
+    BEARISH = "bearish"
+    NEUTRAL = "neutral"
+
+
+class PatternSignal(Base):
+    """A detected technical pattern (candlestick or moving-average crossover)
+    at a specific historical candle -- deterministic rule-based detection,
+    stored once per (symbol, timeframe, timestamp, pattern_name)."""
+
+    __tablename__ = "pattern_signals"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    timeframe: Mapped[HistoryTimeframe] = mapped_column(
+        Enum(
+            HistoryTimeframe,
+            name="history_timeframe",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        index=True,
+    )
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    pattern_name: Mapped[str] = mapped_column(String(50))
+    direction: Mapped[PatternDirection] = mapped_column(
+        Enum(
+            PatternDirection,
+            name="pattern_direction",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        )
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "symbol", "timeframe", "timestamp", "pattern_name", name="uq_pattern_signal"
+        ),
+    )

@@ -4,20 +4,32 @@ from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
+from sqlalchemy import select
 
 from app.api.reports import build_report_generator
-from app.database.models import AssetClass
+from app.database.models import AssetClass, HistoricalEvent
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.analysis.correlation import CorrelationEngine
+from app.services.history.registry import find_symbol_config
+from app.services.history.repository import get_series
+from app.services.history.schemas import Timeframe
+from app.services.knowledge.engine import KnowledgeEngine
 from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
+from app.services.patterns.engine import PatternEngine
+from app.services.probability.engine import ProbabilityEngine
 from app.services.signals.engine import SignalEngine
 from app.telegram.formatters import (
     format_asset_class,
     format_correlations,
+    format_events,
+    format_history,
+    format_knowledge,
     format_market_summary,
     format_news,
+    format_patterns,
+    format_probability,
     format_report,
     format_signal,
     format_single_asset,
@@ -43,7 +55,13 @@ HELP_TEXT = (
     "/macro -- macro indicators (DXY, Gold, VIX, yields, Fed rate)\n"
     "/news -- latest classified news\n"
     "/signals -- current bull/bear signal score\n"
-    "/report -- latest AI market analysis report"
+    "/correlations -- rolling BTC/ETH/SOL correlations\n"
+    "/report -- latest AI market analysis report\n"
+    "/history SYMBOL [timeframe] -- historical OHLCV + indicators (e.g. /history BTC 1d)\n"
+    "/events -- curated historical market events\n"
+    "/probability SYMBOL -- empirical next-day up/down probability\n"
+    "/patterns SYMBOL -- detected technical patterns\n"
+    "/knowledge SYMBOL -- similar historical episodes for current conditions"
 )
 
 
@@ -148,3 +166,77 @@ async def cmd_report(message: Message) -> None:
     text = format_report(report)
     # Telegram caps messages at 4096 chars; trim defensively rather than error out.
     await _answer(message, text[:4090])
+
+
+def _parse_symbol_and_timeframe(command: CommandObject, default_symbol: str = "BTC") -> tuple:
+    parts = (command.args or "").split()
+    symbol = (parts[0] if parts else default_symbol).upper()
+    timeframe_arg = parts[1] if len(parts) > 1 else "1d"
+    try:
+        timeframe = Timeframe(timeframe_arg)
+    except ValueError:
+        timeframe = Timeframe.DAILY
+        timeframe_arg = "1d"
+    return symbol, timeframe, timeframe_arg
+
+
+@router.message(Command("history"))
+async def cmd_history(message: Message, command: CommandObject) -> None:
+    symbol, timeframe, timeframe_arg = _parse_symbol_and_timeframe(command)
+    config = find_symbol_config(symbol)
+    if config is None or timeframe not in config.timeframes:
+        await _answer(message, f"No historical data available for {symbol}/{timeframe_arg}.")
+        return
+
+    rows = await get_series(get_session_factory(), config.model, config.symbol, timeframe)
+    await _answer(message, format_history(config.symbol, timeframe_arg, rows))
+
+
+@router.message(Command("events"))
+async def cmd_events(message: Message) -> None:
+    async with get_session_factory()() as session:
+        events = list(
+            await session.scalars(select(HistoricalEvent).order_by(HistoricalEvent.event_date))
+        )
+    await _answer(message, format_events(events))
+
+
+@router.message(Command("probability"))
+async def cmd_probability(message: Message, command: CommandObject) -> None:
+    symbol, timeframe, timeframe_arg = _parse_symbol_and_timeframe(command)
+    config = find_symbol_config(symbol)
+    if config is None or timeframe not in config.timeframes:
+        await _answer(message, f"No historical data available for {symbol}/{timeframe_arg}.")
+        return
+
+    engine = ProbabilityEngine(get_session_factory())
+    snapshot = await engine.compute_and_store(config.symbol, config.model, timeframe)
+    await _answer(message, format_probability(snapshot))
+
+
+@router.message(Command("patterns"))
+async def cmd_patterns(message: Message, command: CommandObject) -> None:
+    symbol, timeframe, timeframe_arg = _parse_symbol_and_timeframe(command)
+    config = find_symbol_config(symbol)
+    if config is None or timeframe not in config.timeframes:
+        await _answer(message, f"No historical data available for {symbol}/{timeframe_arg}.")
+        return
+
+    session_factory = get_session_factory()
+    engine = PatternEngine(session_factory)
+    await engine.compute_and_store(config.symbol, config.model, timeframe)
+    patterns = await engine.get_latest(config.symbol, timeframe)
+    await _answer(message, format_patterns(config.symbol, patterns))
+
+
+@router.message(Command("knowledge"))
+async def cmd_knowledge(message: Message, command: CommandObject) -> None:
+    symbol, timeframe, timeframe_arg = _parse_symbol_and_timeframe(command)
+    config = find_symbol_config(symbol)
+    if config is None or timeframe not in config.timeframes:
+        await _answer(message, f"No historical data available for {symbol}/{timeframe_arg}.")
+        return
+
+    engine = KnowledgeEngine(get_session_factory())
+    analogs = await engine.find_analogs(config.symbol, config.model, timeframe)
+    await _answer(message, format_knowledge(config.symbol, analogs))
