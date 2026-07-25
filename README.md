@@ -9,6 +9,12 @@ collection, a news engine, a correlation engine, market regime detection, a
 bull/bear signal engine, LLM-driven AI analysis, a Telegram bot, automatic
 scheduled reports, full data persistence, and a dashboard API.
 
+Sprint 2 adds a **Historical Intelligence Engine**: a resumable, 10-year
+historical OHLCV + technical-indicator database (daily/4h/1h) across crypto,
+US equities/indices and macro indicators, synced via `python
+sync_history.py` -- see [Sprint 2: Historical Intelligence
+Engine](#sprint-2-historical-intelligence-engine) below.
+
 ## Architecture
 
 ```
@@ -51,8 +57,8 @@ app/
   api/                  FastAPI routers (market, btc, news, correlations, regime, signals, report)
   utils/                Logging, shared HTTP client + retry policy
   main.py               FastAPI app + lifespan-managed scheduler
-alembic/                DB migrations (7 tables across 6 revisions)
-tests/                  pytest suite -- 44 tests, all pure-function/logic paths
+alembic/                DB migrations (12 tables across 7 revisions)
+tests/                  pytest suite -- 76 tests, all pure-function/logic paths
 ```
 
 Every market/news source implements one interface (`MarketDataProvider` /
@@ -118,6 +124,111 @@ fabricated value.
 10. **Dashboard API** -- `GET /api/market`, `/api/btc`, `/api/news`,
     `/api/signals`, `/api/report` (plus `/api/correlations`, `/api/regime`
     and `POST /api/report/generate` as bonuses).
+
+## Sprint 2: Historical Intelligence Engine
+
+A second, independent build on top of the ten phases above: a resumable,
+deep historical database, not just raw candles. Every stored bar also
+carries return %, rolling volatility, ATR, RSI, MACD (line/signal/histogram),
+SMA 20/50/200 and volume change, computed once and persisted -- a row's
+indicators are never recalculated once set (`indicators_computed`).
+
+```
+app/services/history/
+  schemas.py            Timeframe (1d/4h/1h), Candle (Pydantic)
+  base.py                HistoricalDataProvider interface
+  providers/
+    coingecko.py           BTC/ETH/SOL daily + hourly (resampled to 4h)
+    yfinance_provider.py    Indices, Magnificent 7, DXY/Gold/Silver
+    fred.py                  Fed Rate/VIX/US10Y/US30Y/Oil/CPI/M2 (daily only)
+  indicators.py          Pure functions: returns, volatility, ATR, RSI, MACD, SMA, volume change
+  registry.py            The full symbol -> (table, provider, timeframes) universe
+  repository.py          Upsert (dedup via unique constraint), fill-once indicators
+  sync.py                HistorySyncEngine -- resumable, fault-tolerant per symbol/timeframe
+  validation.py          Pure gap/duplicate detection over stored timestamps
+  repair.py              Deletes duplicates, re-fetches candles across detected gaps
+  events.py              Curated seed of well-documented market events (halvings, crashes, ...)
+sync_history.py          CLI entrypoint
+```
+
+### Data model
+
+| Table | Symbols |
+|---|---|
+| `market_history` | NASDAQ, S&P 500, Dow Jones, Russell 2000 |
+| `stock_history` | AAPL, MSFT, NVDA, TSLA, AMZN, META, GOOGL |
+| `crypto_history` | BTC, ETH, SOL |
+| `macro_history` | DXY, Gold, Silver, Oil, US10Y, US30Y, VIX, Fed Rate, CPI, M2 |
+| `historical_events` | Curated milestone events (halvings, COVID crash, FTX, SVB, ETF approval, ...) |
+
+All four OHLCV tables share the same columns (open/high/low/close/volume plus
+every indicator above) and a `UNIQUE(symbol, timeframe, timestamp)`
+constraint, which is what actually enforces "no duplicates" --
+`upsert_candles()` uses `INSERT ... ON CONFLICT DO NOTHING` against it, so
+re-running a sync over an already-covered range is always a safe no-op.
+
+### Usage
+
+```bash
+python sync_history.py                  # sync everything, 10y lookback
+python sync_history.py --years 5
+python sync_history.py --symbol BTC --timeframe 1d
+python sync_history.py --validate-only  # just check for gaps/duplicates
+python sync_history.py --no-repair      # report gaps/duplicates without fixing them
+python sync_history.py --seed-events    # load the curated historical-events seed
+```
+
+Each run is resumable: `HistorySyncEngine` only asks a provider for candles
+after the latest timestamp already stored for that symbol/timeframe, so a
+daily cron of `python sync_history.py` never re-fetches or re-computes what
+it already has. After syncing, it validates every synced symbol/timeframe for
+gaps (a real hole in the data) and duplicates (structurally prevented by the
+unique constraint going forward, but checked as a safety net for
+pre-existing/imported data) and repairs what it can -- deleting duplicate
+rows and re-fetching candles across detected gaps.
+
+Gap detection is tolerance-aware: crypto trades 24/7 so any hole past 1.5x
+the timeframe's step is flagged, but equities/macro close on weekends and
+holidays, so their tolerance is 4x the step -- a normal Friday-to-Monday gap
+is not a false positive.
+
+### Known limitations (documented, not fabricated)
+
+Consistent with this project's rule of never fabricating data, a few real
+source constraints are documented rather than worked around with guesses:
+
+- **TOTAL market cap and BTC dominance have no historical backfill.**
+  CoinGecko's free API only exposes these via the live `/global` snapshot,
+  not a historical endpoint -- they're excluded from `crypto_history` rather
+  than approximated.
+- **CoinGecko's historical endpoint is auth/rate-limited from this sandbox.**
+  `/coins/{id}/market_chart` returned HTTP 401 then 429 during development
+  here -- an undocumented tightening of CoinGecko's free tier, similar in
+  spirit to the Yahoo Finance issue below. Expected to work with a
+  `COINGECKO_API_KEY` or a less-restricted egress IP; the pipeline itself was
+  instead verified end-to-end against FRED (see below).
+- **4h candles are resampled, not native.** Neither CoinGecko's free tier nor
+  yfinance offers a native 4-hour bar; `resample.py` aggregates 1h bars up to
+  4h, so 4h history is bounded by whatever 1h history is available.
+- **yfinance intraday history is capped at roughly 730 days** by Yahoo
+  itself, regardless of the requested period -- daily history has no such
+  cap. The same shared-IP blocking risk documented for the live phase below
+  applies here too, and reproduced during development.
+- **FRED-sourced macro series (Fed Rate, VIX, US10Y, US30Y, Oil, CPI, M2) are
+  daily/monthly only** -- FRED has no intraday data, so the registry never
+  requests 4h/1h for them.
+
+### What was actually verified live
+
+Beyond the pure-function unit tests, the full pipeline was run against real
+Postgres in this sandbox: `python sync_history.py --symbol US10Y --timeframe
+1d --years 1` fetched 249 real FRED observations, inserted all 249, and
+computed indicators for all 249 rows. Re-running the identical command
+immediately after fetched 1 candle, inserted 0 (deduplicated) and recomputed
+0 indicators (`indicators_computed` already `True`) -- confirming
+incremental-resume and never-recalculate behavior end to end, not just in
+unit tests. Migration 0007 was also verified with a full
+upgrade/downgrade/upgrade cycle.
 
 ## Known operational limitation: Yahoo Finance
 
@@ -210,10 +321,12 @@ pytest
 ruff check .
 ```
 
-44 tests cover every pure-logic path: sentiment classification, correlation
+76 tests cover every pure-logic path: sentiment classification, correlation
 math, regime rules, signal scoring, report prompt construction, Telegram
-formatters, and both aggregators' fault-tolerance (partial and total
-failure). Every phase was additionally verified live against a real
+formatters and Markdown-fallback behavior, both aggregators' fault-tolerance
+(partial and total failure), and the historical intelligence engine's
+technical indicators, gap/duplicate detection, resampling and symbol
+registry. Every phase was additionally verified live against a real
 Postgres + Redis instance during development (see commit history for the
 specific checks performed per phase).
 
