@@ -9,13 +9,19 @@ from app.api.reports import build_report_generator
 from app.config import get_settings
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
+from app.services.alerts.engine import build_alert_engine
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
+from app.services.etf.engine import ETFIntelligenceEngine
+from app.services.global_score.engine import GlobalScoreEngine
 from app.services.market.aggregator import MarketDataAggregator
 from app.services.market.repository import MarketRepository
 from app.services.news.aggregator import NewsAggregator
 from app.services.news.repository import NewsRepository
+from app.services.scenarios.engine import ScenarioEngine
+from app.services.sentiment.engine import SentimentEngine
 from app.services.signals.engine import SignalEngine
+from app.services.whales.engine import WhaleIntelligenceEngine
 from app.telegram.broadcast import broadcast_report
 
 logger = logging.getLogger(__name__)
@@ -27,6 +33,11 @@ NEWS_JOB_ID = "collect_news"
 CORRELATION_JOB_ID = "compute_correlations"
 REGIME_JOB_ID = "detect_regime"
 SIGNAL_JOB_ID = "compute_signals"
+GLOBAL_SCORE_JOB_ID = "compute_global_score"
+SENTIMENT_JOB_ID = "compute_sentiment"
+SCENARIO_JOB_ID = "compute_scenarios"
+WHALE_ETF_SNAPSHOT_JOB_ID = "snapshot_whale_etf"
+ALERT_CHECK_JOB_ID = "check_alerts"
 REPORT_JOB_ID = "generate_scheduled_report"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
@@ -65,6 +76,29 @@ def build_signal_engine() -> SignalEngine:
     market_repository = MarketRepository(get_session_factory(), get_redis())
     news_repository = NewsRepository(get_session_factory())
     return SignalEngine(get_session_factory(), market_repository, news_repository)
+
+
+def build_global_score_engine() -> GlobalScoreEngine:
+    market_repository = MarketRepository(get_session_factory(), get_redis())
+    return GlobalScoreEngine(
+        get_session_factory(), market_repository, build_regime_detector(), build_signal_engine()
+    )
+
+
+def build_sentiment_engine() -> SentimentEngine:
+    return SentimentEngine(get_session_factory(), NewsRepository(get_session_factory()))
+
+
+def build_scenario_engine() -> ScenarioEngine:
+    return ScenarioEngine(get_session_factory(), build_global_score_engine())
+
+
+def build_whale_engine() -> WhaleIntelligenceEngine:
+    return WhaleIntelligenceEngine(get_session_factory())
+
+
+def build_etf_engine() -> ETFIntelligenceEngine:
+    return ETFIntelligenceEngine(NewsRepository(get_session_factory()), get_session_factory())
 
 
 async def collect_market_data_job() -> None:
@@ -120,6 +154,60 @@ async def compute_signals_job() -> None:
         )
     except Exception:
         logger.exception("Signal computation job failed")
+
+
+async def compute_global_score_job() -> None:
+    engine = build_global_score_engine()
+    try:
+        row = await engine.compute_and_store()
+        logger.info(
+            "Global Market Score: %s",
+            row.global_score if row is not None else "skipped (no regime/signal yet)",
+        )
+    except Exception:
+        logger.exception("Global Market Score job failed")
+
+
+async def compute_sentiment_job() -> None:
+    engine = build_sentiment_engine()
+    try:
+        snapshot = await engine.compute_and_store()
+        logger.info("Sentiment computed: global=%s", snapshot.global_sentiment_score)
+    except Exception:
+        logger.exception("Sentiment job failed")
+
+
+async def compute_scenarios_job() -> None:
+    engine = build_scenario_engine()
+    try:
+        row = await engine.compute_and_store()
+        logger.info("Scenarios: %s", "skipped (no global score yet)" if row is None else "computed")
+    except Exception:
+        logger.exception("Scenario job failed")
+
+
+async def snapshot_whale_etf_job() -> None:
+    try:
+        await build_whale_engine().compute_and_store("BTC")
+    except Exception:
+        logger.exception("Whale snapshot job failed")
+    try:
+        await build_etf_engine().compute_and_store()
+    except Exception:
+        logger.exception("ETF snapshot job failed")
+
+
+async def check_alerts_job() -> None:
+    engine = build_alert_engine()
+    try:
+        alerts = await engine.check_and_broadcast()
+        logger.info(
+            "Alert check: %d detections, %d broadcast",
+            len(alerts),
+            sum(1 for a in alerts if a.broadcast),
+        )
+    except Exception:
+        logger.exception("Alert check job failed")
 
 
 async def generate_report_job(report_type: str) -> None:
@@ -180,6 +268,46 @@ def start_scheduler() -> AsyncIOScheduler:
         compute_signals_job,
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
         id=SIGNAL_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_global_score_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=GLOBAL_SCORE_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_sentiment_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=SENTIMENT_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_scenarios_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=SCENARIO_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        snapshot_whale_etf_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=WHALE_ETF_SNAPSHOT_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        check_alerts_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=ALERT_CHECK_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,

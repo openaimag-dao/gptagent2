@@ -19,9 +19,12 @@ from app.database.models import (
     SignalSnapshot,
 )
 from app.llm.client import get_llm_client
+from app.services.agents.base import AgentOutput
+from app.services.agents.orchestrator import AgentOrchestrator, build_agent_orchestrator
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import MarketRegime, RegimeDetector
 from app.services.analysis.schemas import AIAnalysisContent
+from app.services.common.formatting import format_asset_lines
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.schemas import Timeframe
@@ -82,6 +85,13 @@ guessing. "scenarios" should describe 2-3 concrete near-term paths (not just bul
 consistent with the probability split. "actionable_insights" should be practical and specific \
 to what changed today, not generic trading advice.
 
+You are also given a MULTI-AGENT SUMMARIES section: independent read-outs already produced by \
+a Macro Agent, a Crypto Agent, an Equity Agent, a News Agent and a Sentiment Agent. You are the \
+Reasoning Agent -- your job is to synthesize their outputs into one coherent narrative, not to \
+just concatenate or restate them. Where two agents disagree (e.g. macro liquidity improving \
+while crypto whale data shows distribution), call that tension out explicitly in "why" or \
+"main_risks" rather than smoothing it over.
+
 Respond with a single JSON object with exactly these fields (all strings except the three \
 probability fields, which are integers 0-100 that must sum to 100):
 {
@@ -111,16 +121,7 @@ def derive_risk_level(regime: MarketRegime) -> str:
 
 
 def _format_market_lines(assets: list[AssetPrice]) -> list[str]:
-    by_symbol = {a.symbol: a for a in assets}
-    lines = []
-    for symbol in _KEY_SYMBOLS:
-        asset = by_symbol.get(symbol)
-        if asset is None:
-            lines.append(f"- {symbol}: not available")
-            continue
-        change = f"{asset.change_pct_24h:+.2f}%" if asset.change_pct_24h is not None else "n/a"
-        lines.append(f"- {symbol}: {float(asset.price):,.2f} ({change} 24h)")
-    return lines
+    return format_asset_lines(assets, _KEY_SYMBOLS)
 
 
 def _format_news_lines(news: list[NewsItem]) -> list[str]:
@@ -195,6 +196,12 @@ def _format_whale_lines(whale_snapshot: dict | None) -> list[str]:
     return [f"- {k}: {v}" for k, v in whale_snapshot.items() if k not in ("available", "symbol")]
 
 
+def _format_agent_summaries(agent_outputs: dict[str, AgentOutput] | None) -> str:
+    if not agent_outputs:
+        return "- Not yet computed."
+    return "\n\n".join(output.summary for output in agent_outputs.values())
+
+
 def build_user_prompt(
     assets: list[AssetPrice],
     news: list[NewsItem],
@@ -205,10 +212,13 @@ def build_user_prompt(
     global_score: dict | None = None,
     etf_proxy: dict | None = None,
     whale_snapshot: dict | None = None,
+    agent_outputs: dict[str, AgentOutput] | None = None,
 ) -> str:
     """Builds the LLM user prompt from already-computed, real data. Pure and unit-testable."""
     return "\n\n".join(
         [
+            "MULTI-AGENT SUMMARIES (Macro / Crypto / Equity / News / Sentiment agents)",
+            _format_agent_summaries(agent_outputs),
             "MARKET SNAPSHOT",
             "\n".join(_format_market_lines(assets)),
             "DETECTED MARKET REGIME",
@@ -253,6 +263,7 @@ class ReportGenerator:
         global_score_engine: GlobalScoreEngine | None = None,
         etf_engine: ETFIntelligenceEngine | None = None,
         whale_engine: WhaleIntelligenceEngine | None = None,
+        agent_orchestrator: AgentOrchestrator | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._market_repository = market_repository
@@ -266,6 +277,7 @@ class ReportGenerator:
         )
         self._etf_engine = etf_engine or ETFIntelligenceEngine(news_repository)
         self._whale_engine = whale_engine or WhaleIntelligenceEngine()
+        self._agent_orchestrator = agent_orchestrator or build_agent_orchestrator()
 
     async def generate_and_store(self, report_type: str = "scheduled") -> Report:
         assets = await self._market_repository.get_latest()
@@ -294,6 +306,12 @@ class ReportGenerator:
         etf_proxy = await self._etf_engine.get_flow_proxy()
         whale_snapshot = await self._whale_engine.get_snapshot("BTC")
 
+        try:
+            agent_outputs = await self._agent_orchestrator.run_all()
+        except Exception:
+            logger.warning("Agent orchestrator failed; continuing without it", exc_info=True)
+            agent_outputs = None
+
         user_prompt = build_user_prompt(
             assets,
             news,
@@ -304,6 +322,7 @@ class ReportGenerator:
             global_score,
             etf_proxy,
             whale_snapshot,
+            agent_outputs,
         )
 
         settings = get_settings()
@@ -355,6 +374,11 @@ class ReportGenerator:
                 "global_score": global_score,
                 "etf_flow_proxy": etf_proxy,
                 "whale_activity": whale_snapshot,
+                "agents": (
+                    {name: output.to_dict() for name, output in agent_outputs.items()}
+                    if agent_outputs
+                    else None
+                ),
             },
             analysis=analysis.model_dump(),
         )

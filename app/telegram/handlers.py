@@ -10,10 +10,12 @@ from app.api.reports import build_report_generator
 from app.database.models import AssetClass, HistoricalEvent
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
+from app.services.agents.orchestrator import build_agent_orchestrator
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
 from app.services.backtest.conditions import Condition
 from app.services.backtest.engine import BacktestEngine
+from app.services.conviction.engine import ConvictionEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.registry import find_symbol_config
@@ -21,26 +23,36 @@ from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
 from app.services.knowledge.engine import KnowledgeEngine
 from app.services.market.repository import MarketRepository
+from app.services.memory.engine import CATEGORY_NAMES, MemoryEngine
 from app.services.news.repository import NewsRepository
 from app.services.patterns.engine import PatternEngine
+from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
+from app.services.scenarios.engine import ScenarioEngine
+from app.services.sentiment.engine import SentimentEngine
 from app.services.signals.engine import SignalEngine
 from app.services.similar_market.engine import SimilarMarketEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
 from app.telegram.formatters import (
+    format_agent_outputs,
     format_asset_class,
     format_backtest_result,
+    format_conviction,
     format_correlations,
     format_etf_proxy,
     format_events,
     format_global_score,
     format_history,
     format_knowledge,
+    format_liquidity,
     format_market_summary,
     format_news,
     format_patterns,
+    format_portfolio,
     format_probability,
     format_report,
+    format_scenarios,
+    format_sentiment,
     format_signal,
     format_similar_periods,
     format_single_asset,
@@ -80,7 +92,14 @@ HELP_TEXT = (
     "(e.g. /backtest BTC BTC:rsi:lt:30 1)\n"
     "/whales -- whale/on-chain intelligence (requires a configured data source)\n"
     "/etf -- ETF flow proxy from ETF-category news sentiment\n"
-    "/score -- Global Market Score"
+    "/score -- Global Market Score\n"
+    "/agents -- Macro/Crypto/Equity/News/Sentiment agent read-outs\n"
+    "/scenarios -- probability-weighted forward scenarios\n"
+    "/sentiment -- Fear & Greed + news sentiment\n"
+    "/liquidity -- liquidity + macro pressure sub-scores\n"
+    "/conviction [symbol] -- confidence tier for the latest signal/probability\n"
+    "/memory [category] -- recent entries from any stored history category\n"
+    "/portfolio [add SYMBOL QTY [entry_price]] -- virtual portfolio health"
 )
 
 
@@ -349,3 +368,131 @@ async def cmd_backtest(message: Message, command: CommandObject) -> None:
     engine = BacktestEngine(get_session_factory())
     result = await engine.run(conditions, target_symbol, horizon=horizon)
     await _answer(message, format_backtest_result(result))
+
+
+@router.message(Command("agents"))
+async def cmd_agents(message: Message) -> None:
+    orchestrator = build_agent_orchestrator()
+    outputs = await orchestrator.run_all()
+    await _answer(message, format_agent_outputs(outputs)[:4090])
+
+
+@router.message(Command("scenarios"))
+async def cmd_scenarios(message: Message) -> None:
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    news_repository = NewsRepository(session_factory)
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    global_score_engine = GlobalScoreEngine(
+        session_factory, market_repository, regime_detector, signal_engine
+    )
+    engine = ScenarioEngine(session_factory, global_score_engine)
+    row = await engine.compute_and_store()
+    await _answer(message, format_scenarios(row))
+
+
+@router.message(Command("sentiment"))
+async def cmd_sentiment(message: Message) -> None:
+    session_factory = get_session_factory()
+    engine = SentimentEngine(session_factory, NewsRepository(session_factory))
+    row = await engine.compute_and_store()
+    await _answer(message, format_sentiment(row))
+
+
+@router.message(Command("liquidity"))
+async def cmd_liquidity(message: Message) -> None:
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    news_repository = NewsRepository(session_factory)
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    engine = GlobalScoreEngine(session_factory, market_repository, regime_detector, signal_engine)
+    row = await engine.compute_and_store()
+    if row is None:
+        await _answer(message, "Not enough data yet -- run /score first.")
+        return
+    await _answer(
+        message,
+        format_liquidity(
+            {
+                "liquidity_score": row.liquidity_score,
+                "macro_pressure_score": row.macro_pressure_score,
+                "risk_on_score": row.risk_on_score,
+                "risk_off_score": row.risk_off_score,
+            }
+        ),
+    )
+
+
+@router.message(Command("conviction"))
+async def cmd_conviction(message: Message, command: CommandObject) -> None:
+    symbol = (command.args or "BTC").strip().upper()
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    news_repository = NewsRepository(session_factory)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    probability_engine = ProbabilityEngine(session_factory)
+    engine = ConvictionEngine(signal_engine, probability_engine)
+    signal_conviction = await engine.evaluate_signal()
+    probability_conviction = await engine.evaluate_probability(symbol, Timeframe.DAILY)
+    await _answer(
+        message,
+        format_conviction(
+            {
+                "signal": signal_conviction,
+                "probability": (
+                    {"symbol": symbol, **probability_conviction}
+                    if probability_conviction is not None
+                    else None
+                ),
+            }
+        ),
+    )
+
+
+@router.message(Command("memory"))
+async def cmd_memory(message: Message, command: CommandObject) -> None:
+    category = (command.args or "").strip() or None
+    engine = MemoryEngine(get_session_factory())
+    if category is not None and category not in CATEGORY_NAMES:
+        await _answer(
+            message,
+            f"Unknown category '{category}'. Valid: {', '.join(CATEGORY_NAMES)}",
+        )
+        return
+
+    entries = (
+        await engine.get_category(category, limit=10)
+        if category is not None
+        else await engine.get_timeline(limit=10)
+    )
+    if not entries:
+        await _answer(message, "No memory entries yet for this category.")
+        return
+
+    lines = ["*MARKET MEMORY*", ""]
+    for entry in entries:
+        lines.append(f"[{entry['category']}] {entry['timestamp']}: {entry['summary']}")
+    await _answer(message, "\n".join(lines)[:4090])
+
+
+@router.message(Command("portfolio"))
+async def cmd_portfolio(message: Message, command: CommandObject) -> None:
+    session_factory = get_session_factory()
+    engine = PortfolioEngine(session_factory, _market_repository())
+    portfolio = await engine.get_or_create("main")
+
+    parts = (command.args or "").split()
+    if parts and parts[0].lower() == "add" and len(parts) >= 3:
+        symbol, quantity_raw = parts[1], parts[2]
+        entry_price = float(parts[3]) if len(parts) > 3 else None
+        try:
+            quantity = float(quantity_raw)
+            await engine.add_position(portfolio.id, symbol, quantity, entry_price)
+        except ValueError as exc:
+            await _answer(message, f"Couldn't add position: {exc}")
+            return
+
+    health = await engine.compute_health(portfolio.id)
+    await _answer(message, format_portfolio(health)[:4090])

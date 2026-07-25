@@ -2,24 +2,33 @@ import logging
 import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
+from app.api.agents import router as agents_router
 from app.api.backtest import router as backtest_router
 from app.api.brain import router as brain_router
 from app.api.btc import router as btc_router
+from app.api.conviction import router as conviction_router
 from app.api.correlations import router as correlations_router
 from app.api.etf import router as etf_router
 from app.api.events import router as events_router
 from app.api.global_score import router as global_score_router
 from app.api.history import router as history_router
 from app.api.knowledge import router as knowledge_router
+from app.api.liquidity import router as liquidity_router
 from app.api.market import router as market_router
+from app.api.memory import router as memory_router
 from app.api.news import router as news_router
 from app.api.patterns import router as patterns_router
+from app.api.portfolio import router as portfolio_router
 from app.api.probability import router as probability_router
 from app.api.regime import router as regime_router
 from app.api.reports import router as reports_router
+from app.api.scenarios import router as scenarios_router
+from app.api.sentiment import router as sentiment_router
 from app.api.signals import router as signals_router
 from app.api.similar import router as similar_router
 from app.api.whales import router as whales_router
@@ -71,6 +80,16 @@ app.include_router(backtest_router)
 app.include_router(etf_router)
 app.include_router(whales_router)
 app.include_router(global_score_router)
+app.include_router(sentiment_router)
+app.include_router(agents_router)
+app.include_router(memory_router)
+app.include_router(scenarios_router)
+app.include_router(conviction_router)
+app.include_router(portfolio_router)
+app.include_router(liquidity_router)
+
+_DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
+app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")
 
 
 @app.get("/health", tags=["system"])

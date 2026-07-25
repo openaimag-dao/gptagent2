@@ -433,6 +433,137 @@ class GlobalMarketScore(Base):
     )
 
 
+class Portfolio(Base):
+    """A named virtual portfolio -- no real brokerage integration, purely
+    for tracking hypothetical exposure/risk against real live prices."""
+
+    __tablename__ = "portfolios"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    positions: Mapped[list["PortfolioPosition"]] = relationship(
+        back_populates="portfolio", cascade="all, delete-orphan"
+    )
+
+
+class PortfolioPosition(Base):
+    """One holding in a virtual portfolio. `entry_price` is optional (unrealized
+    P&L is simply omitted when unknown, never guessed)."""
+
+    __tablename__ = "portfolio_positions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        ForeignKey("portfolios.id", ondelete="CASCADE"), index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    quantity: Mapped[float] = mapped_column(Numeric(24, 8))
+    entry_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    portfolio: Mapped["Portfolio"] = relationship(back_populates="positions")
+
+
+class AlertLog(Base):
+    """Every Smart Alert Engine detection, broadcast or not -- `broadcast`
+    records whether it actually cleared the conviction gate and was pushed
+    to Telegram, so Market Memory has a full audit trail including
+    near-misses, not just what users were actually notified about."""
+
+    __tablename__ = "alert_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    alert_type: Mapped[str] = mapped_column(String(40), index=True)
+    message: Mapped[str] = mapped_column(Text)
+    conviction_tier: Mapped[str] = mapped_column(String(20))
+    confidence_pct: Mapped[int] = mapped_column()
+    broadcast: Mapped[bool] = mapped_column(default=False, index=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    triggered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class ScenarioSnapshot(Base):
+    """A set of named, probability-weighted forward scenarios (Soft Landing /
+    Risk Off / Liquidity Expansion / Black Swan), deterministically derived
+    from the Global Market Score at `computed_at` -- see
+    app/services/scenarios/engine.py for the exact weighting formula."""
+
+    __tablename__ = "scenario_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    scenarios: Mapped[list] = mapped_column(JSON, default=list)
+    global_score: Mapped[int] = mapped_column()
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class WhaleSnapshot(Base):
+    """A persisted Whale Intelligence read -- including the honest
+    "unavailable" responses, so Market Memory and the Smart Alert Engine
+    have a real history of "we checked, no data source configured" rather
+    than silently losing that information."""
+
+    __tablename__ = "whale_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    available: Mapped[bool] = mapped_column(default=False)
+    classification: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class EtfFlowSnapshot(Base):
+    """A persisted ETF Intelligence read (news-sentiment proxy, never
+    confirmed dollar flows -- see app/services/etf/engine.py). Stored so
+    the Smart Alert Engine can detect a real change in classification over
+    time instead of only ever comparing against a single in-memory call."""
+
+    __tablename__ = "etf_flow_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    available: Mapped[bool] = mapped_column(default=False)
+    classification: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    bullish_items: Mapped[int | None] = mapped_column(nullable=True)
+    bearish_items: Mapped[int | None] = mapped_column(nullable=True)
+    neutral_items: Mapped[int | None] = mapped_column(nullable=True)
+    items_analyzed: Mapped[int] = mapped_column(default=0)
+    window_hours: Mapped[int] = mapped_column(default=0)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class SentimentSnapshot(Base):
+    """Sentiment Agent output: real Crypto Fear & Greed Index + news
+    sentiment balance. Social (Twitter/X, Reddit) and options-market
+    sentiment have no configured data source, so they're never blended into
+    `global_sentiment_score` -- `social_sentiment_available` stays False and
+    `social_sentiment_reason` explains why, every time."""
+
+    __tablename__ = "sentiment_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    fear_greed_value: Mapped[int | None] = mapped_column(nullable=True)
+    fear_greed_classification: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    news_sentiment_score: Mapped[int | None] = mapped_column(nullable=True)
+    news_items_analyzed: Mapped[int] = mapped_column(default=0)
+    social_sentiment_available: Mapped[bool] = mapped_column(default=False)
+    social_sentiment_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    global_sentiment_score: Mapped[int | None] = mapped_column(nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
 class RuleCategory(str, enum.Enum):
     THEORY = "theory"
     RULE = "rule"

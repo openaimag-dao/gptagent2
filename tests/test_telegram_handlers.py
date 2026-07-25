@@ -1,9 +1,10 @@
 from unittest.mock import AsyncMock
 
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import CommandObject
 from aiogram.methods import SendMessage
 
-from app.telegram.handlers import _answer
+from app.telegram.handlers import _answer, cmd_memory
 
 
 def _bad_request() -> TelegramBadRequest:
@@ -29,3 +30,14 @@ async def test_answer_falls_back_to_plain_text_on_bad_markdown():
 
     assert message.answer.await_count == 2
     message.answer.assert_awaited_with("nasdaq_up broke it")
+
+
+async def test_cmd_memory_rejects_unknown_category_without_touching_db():
+    message = AsyncMock()
+    command = CommandObject(args="not_a_real_category")
+
+    await cmd_memory(message, command)
+
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "Unknown category 'not_a_real_category'" in text

@@ -69,3 +69,26 @@ def test_build_user_prompt_includes_all_sections_and_handles_missing_data():
     assert "Historical analog data unavailable." in prompt
     assert "RECENT NEWS" in prompt
     assert "Bitcoin rallies" in prompt
+    assert "MULTI-AGENT SUMMARIES" in prompt
+    assert "Not yet computed." in prompt
+
+
+def test_build_user_prompt_includes_agent_summaries_when_provided():
+    from app.services.agents.base import AgentOutput
+
+    assets = [_asset("BTC", 65000.0, 2.5)]
+    regime_snapshot = MarketRegimeSnapshot(
+        regime=MarketRegime.RISK_ON, inputs={"btc_change_pct": 2.5}
+    )
+    signal_snapshot = SignalSnapshot(
+        bull_score=5, bear_score=0, net_score=5, confidence_pct=100, factors={}
+    )
+    agent_outputs = {
+        "macro": AgentOutput(agent="macro", summary="*MACRO SUMMARY*\n\nDXY down."),
+    }
+
+    prompt = build_user_prompt(
+        assets, [], [], regime_snapshot, signal_snapshot, agent_outputs=agent_outputs
+    )
+
+    assert "DXY down." in prompt
