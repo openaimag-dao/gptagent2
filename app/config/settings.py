@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,6 +19,18 @@ class Settings(BaseSettings):
     # ---- Infrastructure (sensible local/docker-compose defaults) ----
     database_url: str = "postgresql+asyncpg://market_intel:market_intel@localhost:5432/market_intel"
     redis_url: str = "redis://localhost:6379/0"
+
+    @field_validator("database_url")
+    @classmethod
+    def _ensure_asyncpg_driver(cls, value: str) -> str:
+        """Normalizes bare postgres(ql):// URLs (e.g. Railway's DATABASE_URL) to
+        use the asyncpg driver our engine requires, so pointing DATABASE_URL at
+        a hosting platform's own connection string just works without having
+        to manually reassemble it with a "+asyncpg" suffix."""
+        for prefix in ("postgresql://", "postgres://"):
+            if value.startswith(prefix):
+                return "postgresql+asyncpg://" + value[len(prefix):]
+        return value
 
     # ---- Telegram ----
     telegram_bot_token: str | None = None
