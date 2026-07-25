@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.database.models import (
     AssetPrice,
     Correlation,
+    CryptoHistory,
     MarketRegimeSnapshot,
     NewsItem,
     Report,
@@ -20,6 +21,8 @@ from app.llm.client import get_llm_client
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import MarketRegime, RegimeDetector
 from app.services.analysis.schemas import AIAnalysisContent
+from app.services.history.schemas import Timeframe
+from app.services.knowledge.engine import KnowledgeEngine, build_grounding_text
 from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
 from app.services.signals.engine import SignalEngine
@@ -28,9 +31,23 @@ logger = logging.getLogger(__name__)
 
 # Symbols worth summarizing in every report, in display order.
 _KEY_SYMBOLS: tuple[str, ...] = (
-    "BTC", "ETH", "SOL", "TOTAL", "BTC.D",
-    "NASDAQ", "SPX", "DJI", "RUT",
-    "DXY", "GOLD", "SILVER", "OIL", "VIX", "US10Y", "US30Y", "FEDRATE",
+    "BTC",
+    "ETH",
+    "SOL",
+    "TOTAL",
+    "BTC.D",
+    "NASDAQ",
+    "SPX",
+    "DJI",
+    "RUT",
+    "DXY",
+    "GOLD",
+    "SILVER",
+    "OIL",
+    "VIX",
+    "US10Y",
+    "US30Y",
+    "FEDRATE",
 )
 
 _HIGH_RISK_REGIMES = frozenset(
@@ -47,6 +64,11 @@ Your job is to explain WHY markets are moving -- never simply state that an asse
 or down. Ground every claim in the data provided below. If a section's underlying data is \
 unavailable, say so explicitly (e.g. "US Treasury yield data was unavailable this cycle") \
 rather than inventing detail.
+
+For "historical_comparison" specifically: base it on the HISTORICAL ANALOGS section below, \
+which lists real past dates with similar technical conditions and what actually happened \
+next. Reference those real dates and outcomes rather than a generic or invented comparison. \
+If no analogs are available, say so explicitly.
 
 Respond with a single JSON object with exactly these fields (all strings except the three \
 probability fields, which are integers 0-100 that must sum to 100):
@@ -110,6 +132,7 @@ def build_user_prompt(
     correlations: list[Correlation],
     regime_snapshot: MarketRegimeSnapshot,
     signal_snapshot: SignalSnapshot,
+    historical_grounding: str = "- Historical analog data unavailable.",
 ) -> str:
     """Builds the LLM user prompt from already-computed, real data. Pure and unit-testable."""
     return "\n\n".join(
@@ -129,6 +152,8 @@ def build_user_prompt(
             f"- Factor breakdown: {json.dumps(signal_snapshot.factors)}",
             "ROLLING CORRELATIONS",
             "\n".join(_format_correlation_lines(correlations)),
+            "HISTORICAL ANALOGS (real past episodes with similar technical conditions)",
+            historical_grounding,
             "RECENT NEWS (most recent first)",
             "\n".join(_format_news_lines(news)),
         ]
@@ -146,6 +171,7 @@ class ReportGenerator:
         correlation_engine: CorrelationEngine,
         regime_detector: RegimeDetector,
         signal_engine: SignalEngine,
+        knowledge_engine: KnowledgeEngine | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._market_repository = market_repository
@@ -153,6 +179,7 @@ class ReportGenerator:
         self._correlation_engine = correlation_engine
         self._regime_detector = regime_detector
         self._signal_engine = signal_engine
+        self._knowledge_engine = knowledge_engine or KnowledgeEngine(session_factory)
 
     async def generate_and_store(self, report_type: str = "scheduled") -> Report:
         assets = await self._market_repository.get_latest()
@@ -167,8 +194,17 @@ class ReportGenerator:
                 "have run at least once"
             )
 
+        try:
+            analogs = await self._knowledge_engine.find_analogs(
+                "BTC", CryptoHistory, Timeframe.DAILY
+            )
+        except Exception:
+            logger.warning("Knowledge engine lookup failed; continuing without it", exc_info=True)
+            analogs = []
+        historical_grounding = build_grounding_text("BTC", analogs)
+
         user_prompt = build_user_prompt(
-            assets, news, correlations, regime_snapshot, signal_snapshot
+            assets, news, correlations, regime_snapshot, signal_snapshot, historical_grounding
         )
 
         settings = get_settings()

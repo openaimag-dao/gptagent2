@@ -79,3 +79,13 @@ def build_registry() -> list[HistorySymbolConfig]:
             HistorySymbolConfig(symbol, MacroHistory, fred_provider, _DAILY_ONLY, "equity")
         )
     return registry
+
+
+def find_symbol_config(symbol: str) -> HistorySymbolConfig | None:
+    """Looks up a symbol's table/provider/timeframes -- shared by every API
+    router and Telegram handler that needs to resolve a symbol to its table."""
+    symbol = symbol.upper()
+    for config in build_registry():
+        if config.symbol == symbol:
+            return config
+    return None

@@ -60,5 +60,23 @@ services:
     # spins up a second long-polling instance fighting over the same token.
     command: python -m app.telegram.main
 
+  # One-off Historical Intelligence Engine sync -- not part of the default
+  # `docker compose up`. Run explicitly with:
+  #   docker compose --profile history run --rm history-sync
+  # (add flags after the service name, e.g. `-- --years 5 --symbol BTC`).
+  history-sync:
+    build: .
+    profiles: ["history"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://market_intel:market_intel@postgres:5432/market_intel
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head && python sync_history.py"
+
 volumes:
   postgres_data:

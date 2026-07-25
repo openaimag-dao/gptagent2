@@ -2,8 +2,11 @@ from app.database.models import (
     AssetClass,
     AssetPrice,
     Correlation,
+    HistoricalEvent,
     MarketRegimeSnapshot,
     NewsItem,
+    PatternSignal,
+    ProbabilitySnapshot,
     Report,
     SignalSnapshot,
 )
@@ -173,4 +176,75 @@ def format_report(report: Report | None) -> str:
         "",
         f"_Generated at {report.generated_at.isoformat()}_",
     ]
+    return "\n".join(lines)
+
+
+def format_history(symbol: str, timeframe: str, rows: list, limit: int = 10) -> str:
+    if not rows:
+        return f"No {symbol} history synced yet for {timeframe} -- run sync_history.py."
+    lines = [f"*{symbol} history ({timeframe})*", ""]
+    for row in rows[-limit:]:
+        rsi = f"{float(row.rsi):.1f}" if row.rsi is not None else "n/a"
+        change = f"{float(row.return_pct) * 100:+.2f}%" if row.return_pct is not None else "n/a"
+        date_str = row.timestamp.date().isoformat()
+        lines.append(f"{date_str}: {float(row.close):,.2f} ({change}) RSI {rsi}")
+    return "\n".join(lines)
+
+
+def format_events(events: list[HistoricalEvent]) -> str:
+    if not events:
+        return "No historical events seeded yet -- run sync_history.py --seed-events."
+    lines = ["*HISTORICAL EVENTS*", ""]
+    for event in events:
+        symbols = ", ".join(event.symbols_affected) if event.symbols_affected else "n/a"
+        lines.append(f"{event.event_date.date().isoformat()} -- {event.title} ({symbols})")
+    return "\n".join(lines)
+
+
+def format_probability(snapshot: ProbabilitySnapshot | None) -> str:
+    if snapshot is None:
+        return "Not enough synced history to compute a probability yet."
+    header = (
+        f"*{snapshot.symbol} PROBABILITY* "
+        f"({snapshot.timeframe}, {snapshot.horizon_periods}-period)"
+    )
+    up_down_flat = (
+        f"Up: {snapshot.prob_up_pct}% | "
+        f"Down: {snapshot.prob_down_pct}% | "
+        f"Flat: {snapshot.prob_flat_pct}%"
+    )
+    lines = [
+        header,
+        "",
+        f"Reference RSI: {float(snapshot.reference_rsi):.1f}",
+        f"Sample size: {snapshot.sample_size} similar historical episodes",
+        up_down_flat,
+        f"Avg forward return: {float(snapshot.avg_forward_return_pct):+.2f}%",
+    ]
+    return "\n".join(lines)
+
+
+def format_patterns(symbol: str, patterns: list[PatternSignal]) -> str:
+    if not patterns:
+        return f"No patterns detected yet for {symbol}."
+    lines = [f"*{symbol} PATTERNS*", ""]
+    for pattern in patterns:
+        date_str = pattern.timestamp.date().isoformat()
+        lines.append(f"{date_str}: {pattern.pattern_name} ({pattern.direction.value})")
+    return "\n".join(lines)
+
+
+def format_knowledge(symbol: str, analogs: list[dict]) -> str:
+    if not analogs:
+        return f"No similar historical episodes found yet for {symbol}."
+    lines = [f"*{symbol} SIMILAR HISTORICAL EPISODES*", ""]
+    for analog in analogs:
+        date_str = analog["timestamp"].date().isoformat()
+        forward = analog["forward_return_pct"]
+        forward_str = f"{forward:+.2f}%" if forward is not None else "n/a"
+        line = f"{date_str} (RSI {analog['rsi']:.1f}): next move {forward_str}"
+        if analog["nearby_events"]:
+            titles = ", ".join(e["title"] for e in analog["nearby_events"])
+            line += f" -- {titles}"
+        lines.append(line)
     return "\n".join(lines)
