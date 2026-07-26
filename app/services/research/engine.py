@@ -8,50 +8,22 @@ instead of an indicator condition evaluating True.
 
 import logging
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database.models import (
-    EconomicCalendarCategory,
-    EconomicCalendarEvent,
-    HistoricalEvent,
-    HistoricalEventCategory,
-)
 from app.services.backtest.metrics import compute_backtest_metrics
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
 from app.services.probability.engine import compute_forward_returns
+from app.services.research.events_lookup import get_event_dates
 from app.services.research.matching import nearest_bar_index
 
 logger = logging.getLogger(__name__)
-
-_CALENDAR_CATEGORIES = {c.value for c in EconomicCalendarCategory}
-_HISTORICAL_CATEGORIES = {c.value for c in HistoricalEventCategory}
 
 
 class ResearchEngine:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
-
-    async def _event_dates(self, event_category: str) -> list:
-        category = event_category.lower()
-        async with self._session_factory() as session:
-            if category in _CALENDAR_CATEGORIES:
-                rows = await session.scalars(
-                    select(EconomicCalendarEvent.event_date)
-                    .where(EconomicCalendarEvent.category == category)
-                    .order_by(EconomicCalendarEvent.event_date)
-                )
-                return list(rows)
-            if category in _HISTORICAL_CATEGORIES:
-                rows = await session.scalars(
-                    select(HistoricalEvent.event_date)
-                    .where(HistoricalEvent.category == category)
-                    .order_by(HistoricalEvent.event_date)
-                )
-                return list(rows)
-        return []
 
     async def test_hypothesis(
         self,
@@ -65,7 +37,7 @@ class ResearchEngine:
         for target_symbol's forward return around every historical
         occurrence of event_category. None if the category is unknown, no
         events are on record, or the symbol has no stored history."""
-        event_dates = await self._event_dates(event_category)
+        event_dates = await get_event_dates(self._session_factory, event_category)
         if not event_dates:
             return None
 
