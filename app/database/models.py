@@ -146,6 +146,13 @@ class MarketRegimeType(str, enum.Enum):
     LIQUIDITY_EXPANSION = "liquidity_expansion"
     LIQUIDITY_CONTRACTION = "liquidity_contraction"
     FLIGHT_TO_SAFETY = "flight_to_safety"
+    BULL = "bull"
+    BEAR = "bear"
+    ACCUMULATION = "accumulation"
+    DISTRIBUTION = "distribution"
+    CAPITULATION = "capitulation"
+    RECOVERY = "recovery"
+    SIDEWAYS = "sideways"
 
 
 class MarketRegimeSnapshot(Base):

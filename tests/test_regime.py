@@ -90,3 +90,101 @@ def test_neutral_when_signals_disagree():
 
 def test_neutral_when_data_missing():
     assert detect_regime([])[0] is MarketRegime.NEUTRAL
+
+
+def test_capitulation_on_extreme_drop_and_vix_spike():
+    assets = [asset("BTC", change_pct_24h=-9.0), asset("VIX", change_pct_24h=20.0)]
+
+    regime, _ = detect_regime(assets)
+
+    assert regime is MarketRegime.CAPITULATION
+
+
+def test_capitulation_takes_priority_over_risk_off():
+    assets = [
+        asset("SPX", change_pct_24h=-2.0),
+        asset("BTC", change_pct_24h=-9.0),
+        asset("VIX", change_pct_24h=20.0),
+        asset("DXY", change_pct_24h=0.5),
+    ]
+
+    regime, _ = detect_regime(assets)
+
+    assert regime is MarketRegime.CAPITULATION
+
+
+def test_bull_on_strong_positive_30d_momentum():
+    regime, inputs = detect_regime([], momentum_30d={"BTC": 15.0, "SPX": 12.0})
+
+    assert regime is MarketRegime.BULL
+    assert inputs["momentum_30d"] == {"BTC": 15.0, "SPX": 12.0}
+
+
+def test_bear_on_strong_negative_30d_momentum():
+    regime, _ = detect_regime([], momentum_30d={"BTC": -15.0, "SPX": -12.0})
+
+    assert regime is MarketRegime.BEAR
+
+
+def test_no_bull_bear_when_momentum_disagrees():
+    regime, _ = detect_regime([], momentum_30d={"BTC": 15.0, "SPX": -12.0})
+
+    assert regime is MarketRegime.NEUTRAL
+
+
+def test_accumulation_on_long_heavy_flat_price():
+    assets = [asset("BTC", change_pct_24h=0.5)]
+
+    regime, _ = detect_regime(assets, whale_classification="long_heavy")
+
+    assert regime is MarketRegime.ACCUMULATION
+
+
+def test_distribution_on_short_heavy_flat_price():
+    assets = [asset("BTC", change_pct_24h=-0.5)]
+
+    regime, _ = detect_regime(assets, whale_classification="short_heavy")
+
+    assert regime is MarketRegime.DISTRIBUTION
+
+
+def test_no_accumulation_when_price_moved_too_much():
+    assets = [asset("BTC", change_pct_24h=5.0)]
+
+    regime, _ = detect_regime(assets, whale_classification="long_heavy")
+
+    assert regime is not MarketRegime.ACCUMULATION
+
+
+def test_recovery_when_risk_on_follows_bear():
+    assets = [
+        asset("SPX", change_pct_24h=1.2),
+        asset("BTC", change_pct_24h=3.0),
+        asset("VIX", change_pct_24h=-5.0),
+        asset("DXY", change_pct_24h=-0.3),
+    ]
+
+    regime, _ = detect_regime(assets, previous_regime=MarketRegime.BEAR)
+
+    assert regime is MarketRegime.RECOVERY
+
+
+def test_recovery_does_not_fire_without_prior_bear_or_capitulation():
+    assets = [
+        asset("SPX", change_pct_24h=1.2),
+        asset("BTC", change_pct_24h=3.0),
+        asset("VIX", change_pct_24h=-5.0),
+        asset("DXY", change_pct_24h=-0.3),
+    ]
+
+    regime, _ = detect_regime(assets, previous_regime=MarketRegime.RISK_ON)
+
+    assert regime is MarketRegime.RISK_ON
+
+
+def test_sideways_when_everything_is_flat():
+    assets = [asset("SPX", change_pct_24h=0.1), asset("BTC", change_pct_24h=0.1)]
+
+    regime, _ = detect_regime(assets)
+
+    assert regime is MarketRegime.SIDEWAYS

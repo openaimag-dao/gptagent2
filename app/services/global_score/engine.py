@@ -27,6 +27,13 @@ _REGIME_RISK_SPLIT: dict[MarketRegime, tuple[int, int]] = {
     MarketRegime.LIQUIDITY_EXPANSION: (70, 30),
     MarketRegime.LIQUIDITY_CONTRACTION: (30, 70),
     MarketRegime.FLIGHT_TO_SAFETY: (10, 90),
+    MarketRegime.BULL: (90, 10),
+    MarketRegime.BEAR: (10, 90),
+    MarketRegime.CAPITULATION: (5, 95),
+    MarketRegime.RECOVERY: (75, 25),
+    MarketRegime.ACCUMULATION: (65, 35),
+    MarketRegime.DISTRIBUTION: (35, 65),
+    MarketRegime.SIDEWAYS: (50, 50),
 }
 
 
