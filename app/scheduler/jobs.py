@@ -20,6 +20,7 @@ from app.services.market.aggregator import MarketDataAggregator
 from app.services.market.repository import MarketRepository
 from app.services.news.aggregator import NewsAggregator
 from app.services.news.repository import NewsRepository
+from app.services.research.researcher import AIResearcherEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.signals.engine import SignalEngine
@@ -43,6 +44,7 @@ ALERT_CHECK_JOB_ID = "check_alerts"
 REPORT_JOB_ID = "generate_scheduled_report"
 ECONOMIC_CALENDAR_JOB_ID = "sync_economic_calendar"
 FEATURE_JOB_ID = "compute_features"
+AI_RESEARCHER_JOB_ID = "generate_research_note"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -250,6 +252,15 @@ async def compute_features_job() -> None:
             logger.exception("Feature computation failed for %s", symbol)
 
 
+async def generate_research_note_job() -> None:
+    engine = AIResearcherEngine(get_session_factory())
+    try:
+        note = await engine.generate_daily_note()
+        logger.info("Research note generated: %d discoveries", note.discovery_count)
+    except Exception:
+        logger.exception("AI Researcher note generation failed")
+
+
 async def check_alerts_job() -> None:
     engine = build_alert_engine()
     try:
@@ -387,6 +398,13 @@ def start_scheduler() -> AsyncIOScheduler:
         id=REPORT_JOB_ID,
         args=["scheduled"],
         next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        generate_research_note_job,
+        trigger=CronTrigger(hour=3, minute=0, timezone="UTC"),
+        id=AI_RESEARCHER_JOB_ID,
         max_instances=1,
         coalesce=True,
     )

@@ -720,3 +720,25 @@ class FeatureSnapshot(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class ResearchNote(Base):
+    """The AI Researcher's daily note (V3 Phase 7): a write-up over that
+    day's real, already-computed Smart Alert Engine detections (regime
+    changes, correlation breaks, DXY reversals, derivatives-positioning
+    swings, ETF sentiment shifts, liquidity swings, upcoming macro events)
+    -- discovery/ranking is entirely deterministic (AlertLog rows ordered
+    by their already-computed confidence_pct); the LLM is used only to
+    narrate what was already found, never to invent or judge a discovery
+    itself. `discoveries` is the exact ranked list the note was written
+    from, so the note is always auditable against its real inputs."""
+
+    __tablename__ = "research_notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    note: Mapped[str] = mapped_column(Text)
+    discoveries: Mapped[list] = mapped_column(JSON, default=list)
+    discovery_count: Mapped[int] = mapped_column(default=0)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

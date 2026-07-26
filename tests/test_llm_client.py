@@ -5,7 +5,7 @@ import httpx
 import pytest
 from anthropic import APIError
 
-from app.llm.client import generate_analysis_json
+from app.llm.client import generate_analysis_json, generate_text
 
 
 def _settings(anthropic_api_key: str | None, openai_api_key: str | None) -> SimpleNamespace:
@@ -44,6 +44,21 @@ async def test_uses_anthropic_when_configured():
     openai_call.assert_not_called()
 
 
+async def test_uses_anthropic_when_configured_for_text():
+    with (
+        patch("app.llm.client.get_settings", return_value=_settings("claude-key", "sk-openai")),
+        patch(
+            "app.llm.client._anthropic_completion", new=AsyncMock(return_value="hello")
+        ) as anthropic_call,
+        patch("app.llm.client._openai_completion", new=AsyncMock()) as openai_call,
+    ):
+        result = await generate_text("system", "user")
+
+    assert result == "hello"
+    anthropic_call.assert_awaited_once_with("system", "user")
+    openai_call.assert_not_called()
+
+
 async def test_uses_openai_when_anthropic_not_configured():
     with (
         patch("app.llm.client.get_settings", return_value=_settings(None, "sk-openai")),
@@ -56,7 +71,20 @@ async def test_uses_openai_when_anthropic_not_configured():
 
     assert result == '{"b": 2}'
     anthropic_call.assert_not_called()
-    openai_call.assert_awaited_once_with("system", "user")
+    openai_call.assert_awaited_once_with("system", "user", json_mode=True)
+
+
+async def test_uses_openai_without_json_mode_for_text():
+    with (
+        patch("app.llm.client.get_settings", return_value=_settings(None, "sk-openai")),
+        patch(
+            "app.llm.client._openai_completion", new=AsyncMock(return_value="hello")
+        ) as openai_call,
+    ):
+        result = await generate_text("system", "user")
+
+    assert result == "hello"
+    openai_call.assert_awaited_once_with("system", "user", json_mode=False)
 
 
 async def test_falls_back_to_openai_when_anthropic_fails_and_openai_configured():
@@ -70,7 +98,7 @@ async def test_falls_back_to_openai_when_anthropic_fails_and_openai_configured()
         result = await generate_analysis_json("system", "user")
 
     assert result == '{"fallback": true}'
-    openai_call.assert_awaited_once_with("system", "user")
+    openai_call.assert_awaited_once_with("system", "user", json_mode=True)
 
 
 async def test_raises_when_anthropic_fails_and_no_openai_configured():
@@ -83,3 +111,21 @@ async def test_raises_when_anthropic_fails_and_no_openai_configured():
     ):
         with pytest.raises(RuntimeError, match="Anthropic report generation failed"):
             await generate_analysis_json("system", "user")
+
+
+async def test_generate_text_raises_when_neither_provider_configured():
+    with patch("app.llm.client.get_settings", return_value=_settings(None, None)):
+        with pytest.raises(RuntimeError, match="Neither ANTHROPIC_API_KEY nor OPENAI_API_KEY"):
+            await generate_text("system", "user")
+
+
+async def test_generate_text_raises_when_anthropic_fails_and_no_openai_configured():
+    with (
+        patch("app.llm.client.get_settings", return_value=_settings("claude-key", None)),
+        patch(
+            "app.llm.client._anthropic_completion",
+            new=AsyncMock(side_effect=_api_error("rate limited")),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="Anthropic text generation failed"):
+            await generate_text("system", "user")
