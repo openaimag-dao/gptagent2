@@ -22,6 +22,7 @@ EXPECTED_PREFIXES = {
     "/api/calendar",
     "/api/features",
     "/api/research",
+    "/api/strategy",
     "/api/probability",
     "/api/patterns",
     "/api/knowledge",

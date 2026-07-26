@@ -34,6 +34,7 @@ from app.api.scenarios import router as scenarios_router
 from app.api.sentiment import router as sentiment_router
 from app.api.signals import router as signals_router
 from app.api.similar import router as similar_router
+from app.api.strategy import router as strategy_router
 from app.api.whales import router as whales_router
 from app.config import get_settings
 from app.scheduler.jobs import shutdown_scheduler, start_scheduler
@@ -77,6 +78,7 @@ app.include_router(events_router)
 app.include_router(calendar_router)
 app.include_router(features_router)
 app.include_router(research_router)
+app.include_router(strategy_router)
 app.include_router(probability_router)
 app.include_router(patterns_router)
 app.include_router(knowledge_router)

@@ -15,6 +15,7 @@ from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
 from app.services.backtest.conditions import Condition
 from app.services.backtest.engine import BacktestEngine
+from app.services.backtest.strategy_engine import StrategyLabEngine
 from app.services.conviction.engine import ConvictionEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
@@ -47,6 +48,7 @@ from app.telegram.formatters import (
     format_knowledge,
     format_liquidity,
     format_market_summary,
+    format_monte_carlo,
     format_news,
     format_patterns,
     format_portfolio,
@@ -58,6 +60,8 @@ from app.telegram.formatters import (
     format_signal,
     format_similar_periods,
     format_single_asset,
+    format_strategy_result,
+    format_walk_forward,
     format_whale_snapshot,
 )
 
@@ -95,6 +99,9 @@ HELP_TEXT = (
     "/research SYMBOL EVENT [horizon] -- forward returns after an event "
     "(e.g. /research BTC cpi 1; events: cpi/ppi/nfp/gdp/fomc/ecb/boj/pboc/halving/crash/"
     "macro_policy/regulatory/black_swan)\n"
+    "/strategy SYMBOL SYMBOL:field:op:value [...] [horizon] [sl=X] [tp=X] [size=X] "
+    "[mode=run|walk_forward|monte_carlo] -- backtest with stop-loss/take-profit/position "
+    "sizing, walk-forward or Monte Carlo (e.g. /strategy BTC BTC:rsi:lt:30 5 sl=0.05 tp=0.1)\n"
     "/whales -- whale/on-chain intelligence (requires a configured data source)\n"
     "/etf -- ETF flow proxy from ETF-category news sentiment\n"
     "/score -- Global Market Score\n"
@@ -394,6 +401,66 @@ async def cmd_research(message: Message, command: CommandObject) -> None:
     engine = ResearchEngine(get_session_factory())
     result = await engine.test_hypothesis(symbol, event, horizon=horizon)
     await _answer(message, format_research_result(result))
+
+
+@router.message(Command("strategy"))
+async def cmd_strategy(message: Message, command: CommandObject) -> None:
+    parts = (command.args or "").split()
+    if len(parts) < 2:
+        await _answer(
+            message,
+            "Usage: /strategy SYMBOL SYMBOL:field:op:value [...] [horizon] "
+            "[sl=X] [tp=X] [size=X] [mode=run|walk_forward|monte_carlo]\n"
+            "Example: /strategy BTC BTC:rsi:lt:30 5 sl=0.05 tp=0.1 mode=monte_carlo",
+        )
+        return
+
+    target_symbol = parts[0].upper()
+    kv_tokens = [p for p in parts[1:] if "=" in p]
+    remaining = [p for p in parts[1:] if "=" not in p]
+
+    horizon = 1
+    if remaining and remaining[-1].isdigit():
+        horizon = int(remaining[-1])
+        remaining = remaining[:-1]
+
+    conditions = [_parse_condition(t) for t in remaining]
+    if not remaining or any(c is None for c in conditions):
+        await _answer(
+            message,
+            "Couldn't parse conditions. Use SYMBOL:field:op:value, e.g. BTC:rsi:lt:30.",
+        )
+        return
+
+    kv = dict(token.split("=", 1) for token in kv_tokens)
+    try:
+        stop_loss_pct = float(kv["sl"]) if "sl" in kv else None
+        take_profit_pct = float(kv["tp"]) if "tp" in kv else None
+        position_size_pct = float(kv["size"]) if "size" in kv else 1.0
+    except ValueError:
+        await _answer(message, "sl/tp/size must be numbers, e.g. sl=0.05")
+        return
+
+    mode = kv.get("mode", "run")
+    engine = StrategyLabEngine(get_session_factory())
+    common_kwargs = dict(
+        conditions=conditions,
+        target_symbol=target_symbol,
+        horizon=horizon,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
+        position_size_pct=position_size_pct,
+    )
+
+    if mode == "walk_forward":
+        results = await engine.walk_forward(**common_kwargs)
+        await _answer(message, format_walk_forward(results))
+    elif mode == "monte_carlo":
+        result = await engine.monte_carlo(**common_kwargs)
+        await _answer(message, format_monte_carlo(result))
+    else:
+        result = await engine.run(**common_kwargs)
+        await _answer(message, format_strategy_result(result))
 
 
 @router.message(Command("agents"))
