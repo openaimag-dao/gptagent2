@@ -5,7 +5,7 @@ import httpx
 import pytest
 from anthropic import APIError
 
-from app.llm.client import generate_analysis_json, generate_text
+from app.llm.client import _anthropic_completion, generate_analysis_json, generate_text
 
 
 def _settings(anthropic_api_key: str | None, openai_api_key: str | None) -> SimpleNamespace:
@@ -129,3 +129,49 @@ async def test_generate_text_raises_when_anthropic_fails_and_no_openai_configure
     ):
         with pytest.raises(RuntimeError, match="Anthropic text generation failed"):
             await generate_text("system", "user")
+
+
+async def test_anthropic_completion_raises_when_no_text_content():
+    fake_response = SimpleNamespace(content=[], stop_reason="end_turn")
+    fake_client = SimpleNamespace(
+        messages=SimpleNamespace(create=AsyncMock(return_value=fake_response))
+    )
+    with (
+        patch("app.llm.client.get_settings", return_value=_settings("claude-key", None)),
+        patch("app.llm.client._get_anthropic_client", return_value=fake_client),
+    ):
+        with pytest.raises(RuntimeError, match="no text content.*end_turn"):
+            await _anthropic_completion("system", "user")
+
+
+async def test_falls_back_to_openai_when_anthropic_returns_empty_content():
+    empty_content_error = RuntimeError(
+        "Anthropic returned no text content (stop_reason=max_tokens)"
+    )
+    with (
+        patch("app.llm.client.get_settings", return_value=_settings("claude-key", "sk-openai")),
+        patch(
+            "app.llm.client._anthropic_completion", new=AsyncMock(side_effect=empty_content_error)
+        ),
+        patch(
+            "app.llm.client._openai_completion", new=AsyncMock(return_value='{"fallback": true}')
+        ) as openai_call,
+    ):
+        result = await generate_analysis_json("system", "user")
+
+    assert result == '{"fallback": true}'
+    openai_call.assert_awaited_once_with("system", "user", json_mode=True)
+
+
+async def test_raises_when_anthropic_returns_empty_content_and_no_openai_configured():
+    empty_content_error = RuntimeError(
+        "Anthropic returned no text content (stop_reason=max_tokens)"
+    )
+    with (
+        patch("app.llm.client.get_settings", return_value=_settings("claude-key", None)),
+        patch(
+            "app.llm.client._anthropic_completion", new=AsyncMock(side_effect=empty_content_error)
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="Anthropic report generation failed"):
+            await generate_analysis_json("system", "user")
