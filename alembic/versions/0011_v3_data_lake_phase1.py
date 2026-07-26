@@ -5,6 +5,7 @@ Revises: 0010
 Create Date: 2026-07-26
 
 """
+
 from collections.abc import Sequence
 
 import sqlalchemy as sa
@@ -47,9 +48,7 @@ def _history_columns() -> list[sa.Column]:
         sa.Column("sma_50", sa.Numeric(24, 8), nullable=True),
         sa.Column("sma_200", sa.Numeric(24, 8), nullable=True),
         sa.Column("volume_change_pct", sa.Numeric(14, 8), nullable=True),
-        sa.Column(
-            "indicators_computed", sa.Boolean(), nullable=False, server_default=sa.false()
-        ),
+        sa.Column("indicators_computed", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("source", sa.String(length=50), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     ]
@@ -96,15 +95,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        "uq_economic_calendar_event", "economic_calendar_events", type_="unique"
-    )
-    op.drop_index(
-        "ix_economic_calendar_events_category", table_name="economic_calendar_events"
-    )
-    op.drop_index(
-        "ix_economic_calendar_events_event_date", table_name="economic_calendar_events"
-    )
+    op.drop_constraint("uq_economic_calendar_event", "economic_calendar_events", type_="unique")
+    op.drop_index("ix_economic_calendar_events_category", table_name="economic_calendar_events")
+    op.drop_index("ix_economic_calendar_events_event_date", table_name="economic_calendar_events")
     op.drop_table("economic_calendar_events")
     sa.Enum(name="economic_calendar_category").drop(op.get_bind(), checkfirst=True)
 

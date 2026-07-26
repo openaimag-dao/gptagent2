@@ -112,6 +112,33 @@ The browser dashboard (`/dashboard/`, static files under
 `app/static/dashboard/`) is a pure client of every endpoint above plus the
 pre-existing ones -- it introduces no new backend behavior.
 
+## Institutional Research Platform (V3)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/calendar?days_back=30&days_ahead=30` | Real economic calendar: FRED release dates (CPI/PPI/NFP/GDP) + curated FOMC meeting dates |
+| GET | `/api/features/{symbol}?compute=false` | Latest (or freshly computed) derived feature snapshot: returns, momentum, RSI, MACD, ATR, volatility, drawdown, whale/ETF flow momentum |
+| GET | `/api/research?symbol=&event=&horizon=1&timeframe=1d` | Forward-return statistics for a symbol after every occurrence of a curated event category |
+| GET | `/api/research/notes/latest` | Latest AI Researcher daily note (deterministic discoveries + LLM write-up) |
+| POST | `/api/research/notes/generate?window_hours=24` | Generate a fresh research note on demand |
+| GET | `/api/events/impact?category=&symbol=&timeframe=1d` | Average 24h/7d/30d return after every occurrence of a curated event category |
+| POST | `/api/strategy` | Run/walk-forward/Monte Carlo a condition-based strategy. Body: `{"target_symbol","conditions":[{"symbol","field","operator","value"}],"timeframe","horizon","stop_loss_pct","take_profit_pct","position_size_pct","mode":"run"\|"walk_forward"\|"monte_carlo","folds","n_simulations"}` |
+| GET | `/api/hypothesis?limit=50` | Most recently tested AI hypotheses |
+| POST | `/api/hypothesis/test` | Test one hypothesis. Body: `{"symbol","event_a","event_b"}` |
+| POST | `/api/hypothesis/test-all` | Auto-generate and test the full default hypothesis set |
+| GET | `/api/ranking?symbol=BTC&compute=false` | Signal factors ranked by real predictive edge (current vs. historical importance) |
+
+`event`/`category` above accept the same curated categories as
+`/api/events`: `cpi`, `ppi`, `nfp`, `gdp`, `fomc`, `ecb`, `boj`, `pboc`,
+`halving`, `crash`, plus any other category present in
+`HistoricalEvent`/`EconomicCalendarEvent`. `Condition.field`/`.operator`
+for `/api/strategy` are the same as `/api/backtest` above.
+
+No new environment variables were introduced for V3 -- `/api/calendar`
+reuses the already-configured `FRED_API_KEY`, and the AI Researcher reuses
+`ANTHROPIC_API_KEY`/`OPENAI_API_KEY` (degrades to a plain discovery list,
+no note text, if neither is set).
+
 ## Error shape
 
 FastAPI's default `HTTPException` shape:
