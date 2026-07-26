@@ -6,10 +6,10 @@ from datetime import UTC, datetime
 from app.services.market.base import MarketDataProvider
 from app.services.market.crypto.coingecko import CoinGeckoProvider
 from app.services.market.macro.fred import FredMacroProvider
-from app.services.market.macro.yfinance_macro import YFinanceMacroProvider
+from app.services.market.multisource_macro import MultiSourceMacroProvider
+from app.services.market.multisource_stocks import MultiSourceStockProvider
 from app.services.market.repository import MarketRepository
 from app.services.market.schemas import AssetQuote, MarketSnapshotResult
-from app.services.market.stocks.provider import YFinanceStockProvider
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 def default_providers() -> list[MarketDataProvider]:
     return [
         CoinGeckoProvider(),
-        YFinanceStockProvider(),
-        YFinanceMacroProvider(),
+        MultiSourceStockProvider(),
+        MultiSourceMacroProvider(),
         FredMacroProvider(),
     ]
 

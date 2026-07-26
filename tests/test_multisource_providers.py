@@ -1,0 +1,146 @@
+from unittest.mock import AsyncMock, patch
+
+from app.services.market.multisource_macro import MultiSourceMacroProvider
+from app.services.market.multisource_stocks import MultiSourceStockProvider
+from app.services.market.providers.twelvedata import TwelveDataError
+
+
+def _provider_with_fake_cache(provider_cls, **kwargs) -> object:
+    """Builds a provider with real client objects (so `.configured` behaves
+    normally) but fake Redis-cache objects, avoiding any real Redis
+    connection in these unit tests."""
+    provider = provider_cls(**kwargs)
+    provider._td_cache = AsyncMock()
+    provider._td_cache.get.return_value = None
+    if hasattr(provider, "_av_cache"):
+        provider._av_cache = AsyncMock()
+        provider._av_cache.get.return_value = None
+    return provider
+
+
+async def test_stock_provider_uses_twelvedata_when_it_succeeds():
+    twelvedata = AsyncMock()
+    twelvedata.configured = True
+    twelvedata.get_quotes.return_value = {
+        "NASDAQ": (18000.0, 17900.0, 500.0),
+        "AAPL": (150.0, 148.0, 1000.0),
+    }
+    provider = _provider_with_fake_cache(
+        MultiSourceStockProvider, twelvedata=twelvedata, alphavantage=AsyncMock(configured=False)
+    )
+
+    with patch(
+        "app.services.market.multisource_stocks.download_last_two_closes",
+        new=AsyncMock(return_value={}),
+    ):
+        quotes = await provider.fetch()
+
+    by_symbol = {q.symbol: q for q in quotes}
+    assert by_symbol["NASDAQ"].source == "twelvedata"
+    assert by_symbol["NASDAQ"].price == 18000.0
+    assert by_symbol["AAPL"].source == "twelvedata"
+    # symbols Twelve Data didn't return and yfinance mock returned nothing for
+    # should simply be absent, not crash the whole fetch
+    assert "SPX" not in by_symbol
+
+
+async def test_stock_provider_falls_back_to_alphavantage_for_missing_mag7():
+    twelvedata = AsyncMock()
+    twelvedata.configured = True
+    twelvedata.get_quotes.return_value = {"NASDAQ": (18000.0, 17900.0, 500.0)}
+
+    alphavantage = AsyncMock()
+    alphavantage.configured = True
+    alphavantage.get_quotes.return_value = {"AAPL": (150.0, 148.0, 1000.0)}
+
+    provider = _provider_with_fake_cache(
+        MultiSourceStockProvider, twelvedata=twelvedata, alphavantage=alphavantage
+    )
+
+    with patch(
+        "app.services.market.multisource_stocks.download_last_two_closes",
+        new=AsyncMock(return_value={}),
+    ):
+        quotes = await provider.fetch()
+
+    by_symbol = {q.symbol: q for q in quotes}
+    assert by_symbol["AAPL"].source == "alphavantage"
+    # Alpha Vantage should only ever be asked for Magnificent 7 tickers,
+    # never index symbols like SPX/DJI/RUT/NASDAQ.
+    requested = alphavantage.get_quotes.await_args.args[0]
+    assert set(requested).issubset({"AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL"})
+
+
+async def test_stock_provider_falls_back_to_yfinance_when_everything_else_fails():
+    twelvedata = AsyncMock()
+    twelvedata.configured = False
+    alphavantage = AsyncMock()
+    alphavantage.configured = False
+
+    provider = _provider_with_fake_cache(
+        MultiSourceStockProvider, twelvedata=twelvedata, alphavantage=alphavantage
+    )
+
+    with patch(
+        "app.services.market.multisource_stocks.download_last_two_closes",
+        new=AsyncMock(return_value={"^IXIC": (18000.0, 17900.0, 500.0)}),
+    ):
+        quotes = await provider.fetch()
+
+    by_symbol = {q.symbol: q for q in quotes}
+    assert by_symbol["NASDAQ"].source == "yfinance"
+
+
+async def test_stock_provider_uses_cached_twelvedata_result_without_calling_client():
+    twelvedata = AsyncMock()
+    twelvedata.configured = True
+    provider = _provider_with_fake_cache(
+        MultiSourceStockProvider, twelvedata=twelvedata, alphavantage=AsyncMock(configured=False)
+    )
+    provider._td_cache.get.return_value = {"NASDAQ": [18000.0, 17900.0, 500.0]}
+
+    with patch(
+        "app.services.market.multisource_stocks.download_last_two_closes",
+        new=AsyncMock(return_value={}),
+    ):
+        quotes = await provider.fetch()
+
+    twelvedata.get_quotes.assert_not_called()
+    by_symbol = {q.symbol: q for q in quotes}
+    assert by_symbol["NASDAQ"].source == "twelvedata"
+
+
+async def test_stock_provider_survives_twelvedata_error():
+    twelvedata = AsyncMock()
+    twelvedata.configured = True
+    twelvedata.get_quotes.side_effect = TwelveDataError("rate limited")
+    provider = _provider_with_fake_cache(
+        MultiSourceStockProvider, twelvedata=twelvedata, alphavantage=AsyncMock(configured=False)
+    )
+
+    with patch(
+        "app.services.market.multisource_stocks.download_last_two_closes",
+        new=AsyncMock(return_value={"^IXIC": (18000.0, 17900.0, 500.0)}),
+    ):
+        quotes = await provider.fetch()
+
+    by_symbol = {q.symbol: q for q in quotes}
+    assert by_symbol["NASDAQ"].source == "yfinance"
+
+
+async def test_macro_provider_prefers_twelvedata_then_yfinance():
+    twelvedata = AsyncMock()
+    twelvedata.configured = True
+    twelvedata.get_quotes.return_value = {"DXY": (104.0, 103.5, None)}
+    provider = _provider_with_fake_cache(MultiSourceMacroProvider, twelvedata=twelvedata)
+
+    with patch(
+        "app.services.market.multisource_macro.download_last_two_closes",
+        new=AsyncMock(return_value={"GC=F": (2000.0, 1990.0, 100.0)}),
+    ):
+        quotes = await provider.fetch()
+
+    by_symbol = {q.symbol: q for q in quotes}
+    assert by_symbol["DXY"].source == "twelvedata"
+    assert by_symbol["GOLD"].source == "yfinance"
+    assert by_symbol["GOLD"].price == 2000.0

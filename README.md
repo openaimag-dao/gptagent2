@@ -52,8 +52,11 @@ app/
       schemas.py        AssetQuote / MarketSnapshotResult (Pydantic)
       base.py            MarketDataProvider interface
       crypto/            CoinGecko provider (BTC, ETH, SOL, TOTAL, BTC.D)
-      stocks/            Yahoo Finance indices + Magnificent 7 provider
-      macro/             Yahoo Finance (DXY/Gold/Silver) + FRED (VIX/US10Y/US30Y/Oil/FedRate)
+      stocks/            Yahoo Finance indices + Magnificent 7 provider (now the last-resort link in the chain below)
+      macro/             Yahoo Finance (DXY/Gold/Silver, last resort) + FRED (VIX/US10Y/US30Y/Oil/FedRate)
+      providers/         Twelve Data + Alpha Vantage clients, Redis cooldown cache
+      multisource_stocks.py   Twelve Data -> Alpha Vantage (Mag 7 only) -> yfinance -> unavailable
+      multisource_macro.py    Twelve Data -> yfinance -> unavailable (DXY/Gold/Silver)
       aggregator.py      Concurrent, fault-tolerant collection
       repository.py      Postgres persistence + Redis cache
     news/
@@ -193,8 +196,9 @@ fabricated value.
 
 ## The ten phases
 
-1. **Market data collection** -- CoinGecko (crypto), Yahoo Finance (stocks/
-   indices, DXY/Gold/Silver), FRED (Fed Funds Rate, VIX, US10Y, US30Y, Oil).
+1. **Market data collection** -- CoinGecko (crypto), Twelve Data with Alpha
+   Vantage and Yahoo Finance as fallbacks (stocks/indices, DXY/Gold/Silver),
+   FRED (Fed Funds Rate, VIX, US10Y, US30Y, Oil).
 2. **News engine** -- 8 real RSS feeds across Federal Reserve, SEC, ETF,
    crypto, stocks and macro categories, deduplicated by URL, classified
    bullish/bearish/neutral by a deterministic finance-lexicon scorer.
@@ -483,18 +487,23 @@ POST /api/backtest   {"target_symbol", "conditions": [...], "timeframe", "horizo
 /backtest SYMBOL SYMBOL:field:op:value [...] [horizon]   (e.g. /backtest BTC BTC:rsi:lt:30 1)
 ```
 
-### 6. Whale Intelligence -- honestly unavailable
+### 6. Whale Intelligence -- derivatives positioning via CoinGlass/Coinalyze
 
-Exchange inflow/outflow, large-wallet tracking, funding rate, open interest,
-liquidations, long/short ratio and stablecoin supply all require a paid
-on-chain/derivatives data source (Glassnode, CryptoQuant, Coinglass) that
-isn't configured anywhere in this project, and there's no reliable free
-equivalent. `WhaleIntelligenceEngine` reports this honestly (`"available":
-false`, a clear reason, and the exact response shape a real provider would
-need to fill in) rather than inventing accumulation/distribution numbers --
-the same principle that keeps `FredMacroProvider` from inventing a Fed Funds
-Rate when `FRED_API_KEY` is unset. Setting `WHALE_API_KEY` is the wiring
-point for a future provider.
+Exchange inflow/outflow, large-wallet tracking and stablecoin supply changes
+require a genuine on-chain wallet tracker (Glassnode, CryptoQuant) that isn't
+configured anywhere in this project, and there's no reliable free equivalent
+-- `WhaleIntelligenceEngine` never claims those fields. Funding rate, open
+interest, 24h liquidations and long/short ratio *are* available for real
+from CoinGlass (`COINGLASS_API_KEY`, free tier) with Coinalyze
+(`COINALYZE_API_KEY`, free tier) as a fallback when CoinGlass is unconfigured
+or its call fails. `classification` (`long_heavy` / `short_heavy` /
+`balanced`) is derived from funding rate + long/short ratio -- it describes
+current leveraged derivatives positioning, not on-chain accumulation or
+distribution, since neither source can honestly support that stronger claim.
+With neither key configured (or both calls failing), the engine reports
+`"available": false` with a clear reason and the exact response shape a real
+read would fill in -- the same principle that keeps `FredMacroProvider` from
+inventing a Fed Funds Rate when `FRED_API_KEY` is unset.
 
 ```
 GET /api/whales?symbol=BTC
@@ -683,10 +692,10 @@ dedicated API endpoint (not requested, and its output is naturally part of
 `AlertEngine.check_and_broadcast()` (`app/services/alerts/`) runs seven pure
 delta-detection functions (`detectors.py`) against the two most recent
 stored readings of each relevant snapshot: regime change, BTC/NASDAQ
-correlation break, DXY trend reversal, whale accumulation (only ever fires
-if a real provider is configured -- honestly never in this project), ETF
-sentiment turning bullish, liquidity score swings, and upcoming curated
-macro/policy events. Every detection is conviction-classified and logged to
+correlation break, DXY trend reversal, lopsided derivatives positioning
+(only ever fires if CoinGlass or Coinalyze is configured), ETF sentiment
+turning bullish, liquidity score swings, and upcoming curated macro/policy
+events. Every detection is conviction-classified and logged to
 `alert_logs` (`broadcast` flag records whether it cleared the gate); only
 Strong-or-above detections are pushed to Telegram, via a `broadcast_text()`
 helper generalized out of the existing `broadcast_report()` (Sprint 8) so
@@ -752,30 +761,37 @@ the real API.
 
 ## Known operational limitation: Yahoo Finance
 
-`YFinanceStockProvider` and the DXY/Gold/Silver part of `YFinanceMacroProvider`
-use `yfinance`, which scrapes Yahoo Finance's undocumented endpoints -- there
-is no official free stock/commodity API without registration. **During this
+Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is
+no official free stock/commodity API without registration. **During this
 build, this exact issue surfaced in testing**: Yahoo Finance persistently
 returned HTTP 429 / empty responses to this sandbox's shared egress IP, even
 after retries with backoff. This is a well-known, widely reported failure
 mode for `yfinance` running from shared/datacenter/proxy IP ranges -- it is
 not a bug in this code, and it may or may not affect your deployment host.
 
-Consequences and mitigations already built in:
+Indices/stocks/DXY/Gold/Silver are no longer sourced from `yfinance` alone.
+`MultiSourceStockProvider` and `MultiSourceMacroProvider`
+(`app/services/market/multisource_stocks.py`, `multisource_macro.py`) try a
+fallback chain per symbol -- Twelve Data first (`TWELVEDATA_API_KEY`), then
+Alpha Vantage for the Magnificent 7 only (`ALPHAVANTAGE_API_KEY`, indices
+have no honest Alpha Vantage substitute), then the existing `yfinance` path
+as a last resort, then honestly "not available." Each symbol's `source`
+field and a `logger.info` line at fetch time record which provider actually
+supplied it, so a blocked `yfinance` no longer means blocked data as long as
+one key is configured. Consequences and mitigations already built in:
 
-- Because of the aggregator's fault-tolerance, a fully-blocked Yahoo Finance
-  never breaks the pipeline -- crypto (CoinGecko) and five of the eight
-  macro indicators (FRED) keep flowing regardless, and every downstream
+- Because of the aggregator's fault-tolerance, a fully-blocked chain (all of
+  Twelve Data, Alpha Vantage and Yahoo Finance failing) never breaks the
+  pipeline -- crypto (CoinGecko) and FRED's macro indicators (Fed Funds
+  Rate, VIX, US10Y, US30Y) keep flowing regardless, and every downstream
   phase (correlations, regime, signals, reports) degrades gracefully rather
   than crashing when NASDAQ/SPX/DXY/GOLD/SILVER are unavailable.
 - `download_last_two_closes()` (`app/services/market/yfinance_utils.py`)
-  retries the whole batch up to 3 times with backoff before giving up.
-- If your deployment host's IP is also blocked, swap
-  `YFinanceStockProvider`/`YFinanceMacroProvider` for a keyed vendor (Twelve
-  Data, Finnhub, Alpha Vantage, Polygon.io) -- write one class implementing
-  `MarketDataProvider.fetch()` and pass it into
-  `MarketDataAggregator(providers=[...])` in `app/scheduler/jobs.py`. No
-  other code changes are required.
+  retries only the tickers still missing from a partial batch, up to 4
+  attempts with backoff, instead of retrying the whole batch.
+- Both Twelve Data and Alpha Vantage responses are cached in Redis
+  (`RedisCooldownCache`) to stay within their free-tier daily/per-minute
+  quotas without abandoning the existing polling cadence.
 
 ## Running locally
 
@@ -785,6 +801,8 @@ Consequences and mitigations already built in:
 cp .env.example .env
 # fill in TELEGRAM_BOT_TOKEN / OPENAI_API_KEY / COINGECKO_API_KEY / FRED_API_KEY
 # (FRED_API_KEY is free: https://fred.stlouisfed.org/docs/api/api_key.html)
+# optionally also: TWELVEDATA_API_KEY / ALPHAVANTAGE_API_KEY / COINGLASS_API_KEY /
+# COINALYZE_API_KEY -- see .env.example and the Yahoo Finance limitation section below
 docker compose up --build
 ```
 
@@ -913,6 +931,10 @@ error that's logged and skipped, rather than fabricating data.
 | `REDIS_URL` | caching | defaults to the docker-compose Redis |
 | `COINGECKO_API_KEY` | crypto data | optional; raises your rate limit |
 | `FRED_API_KEY` | Fed rate, VIX, US10Y/30Y, Oil | free key required |
+| `TWELVEDATA_API_KEY` | indices, Magnificent 7, DXY/Gold/Silver | optional; primary link of the fallback chain, free tier 800 req/day |
+| `ALPHAVANTAGE_API_KEY` | Magnificent 7 fallback, news sentiment fallback | optional; free tier 5 req/min, 25/day |
+| `COINGLASS_API_KEY` | funding rate, open interest, liquidations, long/short ratio | optional; primary derivatives source, free tier |
+| `COINALYZE_API_KEY` | same as above | optional; fallback derivatives source, free tier |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot | required to run `app.telegram.main` |
 | `TELEGRAM_BROADCAST_CHAT_IDS` | automatic report broadcast | comma-separated chat IDs |
 | `OPENAI_API_KEY` | AI analysis / `/report` | required for report generation |

@@ -75,18 +75,20 @@ def detect_dxy_reversal(
 
 
 def detect_whale_accumulation(whale_snapshot: dict) -> dict | None:
-    """Only ever fires if a real whale-data provider is wired up (see
-    app/services/whales/engine.py) -- with none configured, this honestly
-    never triggers rather than inventing an accumulation signal."""
+    """Only ever fires if CoinGlass or Coinalyze is configured (see
+    app/services/whales/engine.py) -- with neither configured, this
+    honestly never triggers rather than inventing a positioning signal.
+    Flags lopsided leveraged positioning (funding rate + long/short ratio),
+    not on-chain accumulation/distribution -- that data isn't available."""
     if not whale_snapshot.get("available"):
         return None
     classification = whale_snapshot.get("classification")
-    if classification not in ("accumulation", "institutional_buying"):
+    if classification not in ("long_heavy", "short_heavy"):
         return None
     return {
-        "alert_type": "whale_accumulation",
-        "message": f"Whale activity detected: {classification}.",
-        "confidence_pct": 80,
+        "alert_type": "whale_positioning",
+        "message": f"Derivatives positioning is {classification.replace('_', ' ')}.",
+        "confidence_pct": 70,
         "data": whale_snapshot,
     }
 

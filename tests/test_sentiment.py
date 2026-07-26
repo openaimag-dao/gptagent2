@@ -1,5 +1,9 @@
 from app.database.models import NewsCategory, NewsItem, NewsSentiment
-from app.services.sentiment.engine import _news_sentiment_score, compute_global_sentiment
+from app.services.sentiment.engine import (
+    _alphavantage_news_score,
+    _news_sentiment_score,
+    compute_global_sentiment,
+)
 
 
 def _news(sentiment: NewsSentiment) -> NewsItem:
@@ -47,3 +51,17 @@ def test_global_sentiment_uses_only_available_components():
 def test_global_sentiment_weighted_average_when_both_available():
     result = compute_global_sentiment({"fear_greed": 60.0, "news_sentiment": 60.0})
     assert result == 60
+
+
+def test_alphavantage_news_score_none_when_no_items():
+    assert _alphavantage_news_score([]) is None
+
+
+def test_alphavantage_news_score_bullish_average():
+    items = [{"sentiment_score": 0.5}, {"sentiment_score": 0.3}]
+    assert _alphavantage_news_score(items) == 70
+
+
+def test_alphavantage_news_score_bearish_average():
+    items = [{"sentiment_score": -0.4}]
+    assert _alphavantage_news_score(items) == 30
