@@ -53,7 +53,17 @@ async def _anthropic_completion(system_prompt: str, user_prompt: str) -> str:
         messages=[{"role": "user", "content": user_prompt}],
         temperature=0.3,
     )
-    return "".join(block.text for block in response.content if block.type == "text")
+    text = "".join(block.text for block in response.content if block.type == "text")
+    if not text.strip():
+        # A 200 response with no text block (all content non-text, or the
+        # model stopped before emitting any) is not a raised APIError, but
+        # it's just as unusable -- treat it as a failure so the caller falls
+        # back to OpenAI instead of handing an empty string to json.loads()
+        # three layers up.
+        raise RuntimeError(
+            f"Anthropic returned no text content (stop_reason={response.stop_reason})"
+        )
+    return text
 
 
 async def _openai_completion(
@@ -89,7 +99,7 @@ async def _generate_with_fallback(
     if settings.anthropic_api_key:
         try:
             return await _anthropic_completion(system_prompt, user_prompt)
-        except anthropic.APIError as exc:
+        except (anthropic.APIError, RuntimeError) as exc:
             if not settings.openai_api_key:
                 raise RuntimeError(f"Anthropic {purpose} failed: {exc}") from exc
             logger.warning("Anthropic %s failed, falling back to OpenAI: %s", purpose, exc)
