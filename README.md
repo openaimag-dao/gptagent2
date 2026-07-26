@@ -33,6 +33,14 @@ Intelligence Brain](#sprint-9-ai-market-intelligence-brain) below, including
 which two engines needed a paid data source this project doesn't have and
 what they do instead of fabricating numbers.
 
+V2 ("Quant Hedge Fund Engine") decomposes the AI Brain into five specialist
+agents (Macro/Crypto/Equity/News/Sentiment) synthesized by a Reasoning Agent,
+adds a Market Memory Engine over every table this project already persists, a
+deterministic multi-Scenario Engine, a Conviction Engine, an Explanation
+Engine, a Smart Alert Engine that pushes real deltas to Telegram, a virtual
+Portfolio Engine, and a browser dashboard -- see [V2: Quant Hedge Fund
+Engine](#v2-quant-hedge-fund-engine) below.
+
 ## Architecture
 
 ```
@@ -87,6 +95,33 @@ app/
       engine.py                    Sprint 9: ETF news-sentiment flow proxy (honest, not fabricated $ flows)
     whales/
       engine.py                    Sprint 9: on-chain data interface (honest "not configured" without a key)
+    common/
+      scoring.py                    V2: shared clamp/center_scaled/weighted_average helpers
+      formatting.py                 V2: shared AssetPrice -> Markdown/dict formatting
+    agents/
+      macro_agent.py                 V2: Macro Agent (Fed/DXY/rates/VIX/Gold/Silver/Oil)
+      crypto_agent.py                 V2: Crypto Agent (BTC/ETH/SOL/TOTAL/BTC.D + whale/ETF)
+      equity_agent.py                 V2: Equity Agent (indices + Magnificent 7)
+      news_agent.py                    V2: News Agent (category-weighted market-impact estimate)
+      sentiment_agent.py                V2: Sentiment Agent (wraps SentimentEngine)
+      orchestrator.py                    V2: runs all 5 agents concurrently for the Reasoning Agent
+    sentiment/
+      fear_greed.py                V2: real Crypto Fear & Greed Index provider (no key needed)
+      engine.py                      V2: Sentiment Engine (Fear&Greed + news, honest re: social/options)
+    memory/
+      engine.py                    V2: Market Memory -- read-only timeline over every stored table
+    scenarios/
+      engine.py                    V2: deterministic multi-scenario probability generator
+    conviction/
+      engine.py                    V2: confidence bucketing (Weak..Institutional)
+    explanation/
+      engine.py                    V2: evidence-pack assembly (indicators/macro/history/news/risk)
+    alerts/
+      detectors.py                 V2: pure delta-detection functions (regime/correlation/DXY/...)
+      engine.py                      V2: runs detectors, gates by conviction, logs + broadcasts
+    portfolio/
+      analytics.py                 V2: pure exposure/diversification/health-score math
+      engine.py                      V2: virtual portfolio CRUD + drawdown (reuses backtest metrics)
   llm/
     client.py            OpenAI-compatible async client factory
   telegram/
@@ -94,17 +129,20 @@ app/
     handlers.py            /start /help /market /btc /macro /stocks /crypto /news /signals
                             /correlations /report /history /events /probability /patterns
                             /knowledge /brain /similar /backtest /whales /etf /score
+                            /agents /scenarios /sentiment /liquidity /conviction /memory /portfolio
     formatters.py          Pure functions: ORM rows -> Markdown text
-    broadcast.py           Sends generated reports to configured chat IDs
+    broadcast.py           broadcast_text() shared by scheduled reports + Smart Alert Engine
     main.py                Entrypoint for the bot's own process
-  scheduler/            APScheduler job wiring (collectors, analysis, reports)
+  scheduler/            APScheduler job wiring (collectors, analysis, reports, V2 engines, alerts)
   api/                  FastAPI routers -- market, btc, news, correlations, regime,
                          signals, report, history, events, probability, patterns, knowledge,
-                         brain, similar, backtest, etf, whales, global-score
+                         brain, similar, backtest, etf, whales, global-score, agents, memory,
+                         scenarios, sentiment, liquidity, conviction, portfolio
+  static/dashboard/     Vanilla HTML/CSS/JS browser dashboard (served at /dashboard, no build step)
   utils/                Logging, shared HTTP client + retry policy
-  main.py               FastAPI app + lifespan-managed scheduler
-alembic/                DB migrations (17 tables across 9 revisions)
-tests/                  pytest suite -- 142 tests, all pure-function/logic paths
+  main.py               FastAPI app + lifespan-managed scheduler + /dashboard static mount
+alembic/                DB migrations (24 tables across 10 revisions)
+tests/                  pytest suite -- 201 tests, all pure-function/logic paths
                         + DB-free FastAPI route-wiring smoke tests
 ```
 
@@ -131,6 +169,11 @@ data came from.
 | `global_market_scores` | Sprint 9 | Deterministic Risk-On/Off, Liquidity, Fear/Greed, ... composite |
 | `knowledge_rules` | Sprint 9 | User-submitted rules/theories + their auto-backtest results |
 | `similar_market_matches` | Sprint 9 | Every Similar Market Engine comparison, stored for audit |
+| `sentiment_snapshots` | V2 | Fear & Greed + news sentiment + honest social/options unavailability |
+| `scenario_snapshots` | V2 | Named, probability-weighted forward scenarios |
+| `whale_snapshots` / `etf_flow_snapshots` | V2 | Persisted history of every Whale/ETF read (available or not) |
+| `alert_logs` | V2 | Every Smart Alert detection, broadcast or not (conviction-gated) |
+| `portfolios` / `portfolio_positions` | V2 | Virtual portfolios and their holdings |
 
 `asset_prices` is intentionally one wide table (not separate crypto/stock/macro
 tables) so the correlation engine can query any symbol's time series with a
@@ -533,6 +576,180 @@ Every new engine was run against real Postgres with the real FRED-sourced
 - Migration 0009 was verified with a full upgrade/downgrade/upgrade cycle.
 - 142 tests pass (36 new this sprint), `ruff check` clean.
 
+## V2: Quant Hedge Fund Engine
+
+Full repository inspection first (again), then extended -- nothing rewritten.
+V2 decomposes the Sprint 9 "AI Brain" into a genuine multi-agent
+architecture, adds long-term Market Memory, a Scenario Engine, a Conviction
+Engine, an Explanation Engine, a Smart Alert Engine that pushes real deltas
+to Telegram, a virtual Portfolio Engine, 8 new API endpoints, 7 new Telegram
+commands and a browser dashboard.
+
+### 1. Multi-Agent AI (Macro / Crypto / Equity / News / Sentiment / Reasoning)
+
+Five specialist agents, each a thin orchestration layer over engines that
+already existed -- no new data collection, no second LLM call per agent
+(only the Reasoning Agent below calls an LLM, same as before):
+
+- **Macro Agent** (`app/services/agents/macro_agent.py`) -- DXY/Gold/Silver/
+  Oil/VIX/US10Y/US30Y/FEDRATE + the Global Score's liquidity/macro-pressure
+  sub-scores. ECB/BOJ/PBOC policy and CPI/PPI have no configured live-quote
+  source in this project (CPI/M2 are available historically via
+  `/api/history` where synced) -- reported as out of scope, not guessed.
+- **Crypto Agent** (`crypto_agent.py`) -- BTC/ETH/SOL/TOTAL/BTC.D + the
+  existing Whale/ETF Intelligence engines (Sprint 9, unchanged).
+- **Equity Agent** (`equity_agent.py`) -- indices + Magnificent 7. Sector
+  rotation and market breadth are explicitly reported unavailable: this
+  project only collects index/single-name price data, no sector
+  classification or exchange breadth feed.
+- **News Agent** (`news_agent.py`) -- wraps the existing News Engine's
+  classified feed (not reclassified) and adds a deterministic market-impact
+  estimate: `|sentiment_score| x category_weight`, with documented per-
+  category weights (Fed/SEC/ETF/macro weighted above single-asset crypto/
+  stock news) -- a transparent formula over real data, not a guess.
+- **Sentiment Agent** (`sentiment_agent.py`) -- thin wrapper over the new
+  `SentimentEngine`: a real, free, keyless Crypto Fear & Greed Index
+  (`api.alternative.me`) blended with news sentiment via
+  `weighted_average()`, renormalized over whichever components are actually
+  available. Twitter/X, Reddit and options sentiment have no configured
+  source in this project and are reported `"social_sentiment_available":
+  false` with a clear reason -- never blended into the score as a guess.
+- **Reasoning Agent** -- not a new engine: the existing `ReportGenerator`
+  (Sprints 1-9) now also receives all five agents' outputs via
+  `AgentOrchestrator` and synthesizes them into one narrative, instructed to
+  call out disagreement between agents rather than just concatenating them.
+  `/api/agents` exposes each agent's raw output independently.
+
+### 2. Market Memory
+
+`MemoryEngine` (`app/services/memory/engine.py`) is a read-only aggregator
+across all 13 relevant persisted tables (predictions, signals, regime,
+correlations, patterns, similarity, knowledge rules, whale, ETF, sentiment,
+global score, news, macro events -- plus alerts, 14 total). Two gaps from
+Sprint 9 were closed to make this genuinely complete: `WhaleIntelligenceEngine`
+and `ETFIntelligenceEngine` gained `compute_and_store()` methods that persist
+every read (including honest "unavailable" reads) to new `whale_snapshots` /
+`etf_flow_snapshots` tables -- history is never lost, even when the answer is
+"no data source configured".
+
+```
+GET /api/memory?category=&since=&limit=
+/memory [category]
+```
+
+### 3. Scenario Engine
+
+`compute_scenarios()` (`app/services/scenarios/engine.py`) generates four
+named scenarios (Soft Landing / Risk Off / Liquidity Expansion / Black Swan)
+whose probabilities always sum to exactly 100. Every weight is a documented,
+deterministic function of the Global Market Score's already-computed
+sub-scores -- Black Swan is structurally dampened (`x0.25`) rather than
+capped, since a tail-risk scenario should read as rare by construction, not
+just "whatever's left over".
+
+```
+GET /api/scenarios
+/scenarios
+```
+
+### 4. Conviction Engine
+
+`classify_conviction()` (`app/services/conviction/engine.py`) buckets any
+confidence percentage into Weak/Medium/Strong/Very Strong/Institutional,
+reusing Knowledge Rules' existing sample-size discount
+(`compute_confidence_pct`) rather than a second formula. "Institutional"
+additionally requires the underlying sample to actually be large --
+a lucky one-off high-confidence read can reach at most "Very Strong". Gates
+the Smart Alert Engine below (`alert_eligible` = Strong or above).
+
+```
+GET /api/conviction?symbol=BTC
+/conviction [symbol]
+```
+
+### 5. Explanation Engine
+
+`ExplanationEngine.build()` (`app/services/explanation/engine.py`) assembles
+an evidence pack -- triggered indicators, macro drivers, historical examples
+(from Similar Market Engine), supporting news (filtered to the signal's own
+direction), risk factors (Global Score fear/macro-pressure) and an
+alternative view (the second-most-likely scenario) -- entirely from data
+other engines already computed. Feeds the Reasoning Agent's prompt; no
+dedicated API endpoint (not requested, and its output is naturally part of
+`/api/brain`'s synthesis).
+
+### 6. Smart Alert Engine
+
+`AlertEngine.check_and_broadcast()` (`app/services/alerts/`) runs seven pure
+delta-detection functions (`detectors.py`) against the two most recent
+stored readings of each relevant snapshot: regime change, BTC/NASDAQ
+correlation break, DXY trend reversal, whale accumulation (only ever fires
+if a real provider is configured -- honestly never in this project), ETF
+sentiment turning bullish, liquidity score swings, and upcoming curated
+macro/policy events. Every detection is conviction-classified and logged to
+`alert_logs` (`broadcast` flag records whether it cleared the gate); only
+Strong-or-above detections are pushed to Telegram, via a `broadcast_text()`
+helper generalized out of the existing `broadcast_report()` (Sprint 8) so
+the bot-session lifecycle isn't duplicated. Runs on the scheduler's
+`ANALYSIS_INTERVAL_MINUTES` cadence, after regime/signal/global-score.
+
+### 7. Portfolio Engine
+
+`PortfolioEngine` (`app/services/portfolio/`) tracks virtual portfolios
+against real live prices (a special `CASH` symbol prices at a fixed 1.0,
+representing uninvested cash). Exposure is computed per this project's
+existing `AssetClass` taxonomy (crypto/stock/index/macro -- Gold shows up
+under macro, this project has no separate commodity class) plus `cash`.
+Drawdown reuses `compute_max_drawdown_pct` from Sprint 9's Backtest Engine
+(not reimplemented) over a portfolio daily-return series built from each
+position's own synced daily history, weighted at *current* position sizes
+(a documented simplification, not fabricated -- if any non-cash position
+lacks synced history, drawdown is honestly reported unavailable rather than
+computed on a partial basis). Portfolio Health Score blends data
+completeness, diversification (1 - Herfindahl index on exposure shares) and
+risk, via the same `weighted_average()` helper the Sentiment Engine uses --
+renormalized over whichever sub-scores are actually available.
+
+```
+GET  /api/portfolio?name=main
+POST /api/portfolio/positions   {"symbol", "quantity", "entry_price"}
+DELETE /api/portfolio/positions/{id}
+/portfolio [add SYMBOL QTY [entry_price]]
+```
+
+### 8. Web Dashboard
+
+A dependency-free single-page dashboard (`app/static/dashboard/`, vanilla
+HTML/CSS/JS, no build step, no framework) served at `/dashboard` via
+FastAPI's `StaticFiles`. 15 pages (Overview, Macro, Crypto, Stocks,
+Correlations, Historical Similarity, AI Brain, Probability, Scenarios,
+Whales, ETF, Signals, Reports, Portfolio, Settings), each backed entirely by
+`fetch()` calls to the real JSON APIs above -- an endpoint that 404s or
+reports data unavailable renders that fact on the page, never a mock value.
+Verified in a real headless-Chromium session: every tab renders without a
+JS error, live BTC/ETH/SOL prices and the Global Market Score render
+correctly on Overview, and adding a portfolio position round-trips through
+the real API.
+
+### What was actually verified live (V2)
+
+- `/api/sentiment` returned a real Fear & Greed read (27, "Fear") blended
+  with real news sentiment (47) into a global score of 35.
+- `/api/scenarios` returned four probabilities summing to exactly 100 from
+  a real Global Market Score.
+- `/api/agents` returned all five agents' real output, including the
+  Crypto Agent correctly surfacing a real ETF sentiment classification
+  (`leaning_institutional_buying`) and an honest whale-data-unavailable
+  reason.
+- `/api/portfolio` correctly valued a BTC + CASH position against live
+  prices, computed real exposure percentages and a Health Score, and
+  honestly reported drawdown unavailable (no synced daily history for BTC
+  in this sandbox) instead of fabricating one.
+- Migration 0010 was verified with a full upgrade/downgrade/upgrade cycle.
+- The dashboard was loaded in a real headless-Chromium session across all
+  15 tabs with zero JavaScript errors.
+- 201 tests pass (59 new this sprint), `ruff check` clean.
+
 ## Known operational limitation: Yahoo Finance
 
 `YFinanceStockProvider` and the DXY/Gold/Silver part of `YFinanceMacroProvider`
@@ -624,10 +841,20 @@ curl http://localhost:8000/api/whales
 curl -X POST http://localhost:8000/api/backtest -H "Content-Type: application/json" -d \
   '{"target_symbol":"BTC","conditions":[{"symbol":"BTC","field":"rsi","operator":"lt","value":30}]}'
 curl http://localhost:8000/api/knowledge/rules
+curl http://localhost:8000/api/agents
+curl http://localhost:8000/api/memory?limit=20
+curl http://localhost:8000/api/scenarios
+curl http://localhost:8000/api/sentiment
+curl http://localhost:8000/api/liquidity
+curl http://localhost:8000/api/conviction
+curl http://localhost:8000/api/portfolio
+curl -X POST http://localhost:8000/api/portfolio/positions -H "Content-Type: application/json" -d \
+  '{"symbol":"BTC","quantity":0.5,"entry_price":60000}'
 ```
 
 Full interactive API documentation (every endpoint, params, response
-schemas) is auto-generated by FastAPI at `http://localhost:8000/docs`.
+schemas) is auto-generated by FastAPI at `http://localhost:8000/docs`. The
+browser dashboard is at `http://localhost:8000/dashboard/`.
 
 The scheduler runs every collector/analyzer immediately on startup, then on
 its own interval:
@@ -637,6 +864,7 @@ its own interval:
 | Market data collection | `MARKET_DATA_INTERVAL_MINUTES` (default 5) |
 | News collection | `NEWS_COLLECTION_INTERVAL_MINUTES` (default 10) |
 | Correlations, regime, signals | `ANALYSIS_INTERVAL_MINUTES` (default 30) |
+| Global Score, Sentiment, Scenarios, Whale/ETF snapshots, Alert check | `ANALYSIS_INTERVAL_MINUTES` (default 30) |
 | General report + broadcast | `REPORT_INTERVAL_MINUTES` (default 30) |
 | Session reports (Asia/Europe/Morning/US Open/Daily Summary) | fixed UTC cron times, see `app/scheduler/jobs.py` |
 
@@ -647,7 +875,7 @@ pytest
 ruff check .
 ```
 
-142 tests cover every pure-logic path: sentiment classification, correlation
+201 tests cover every pure-logic path: sentiment classification, correlation
 math, regime rules, signal scoring, report prompt construction, Telegram
 formatters and Markdown-fallback behavior, both aggregators' fault-tolerance
 (partial and total failure), the historical intelligence engine's technical
@@ -657,11 +885,15 @@ candlestick/crossover detectors, the knowledge engine's nearest-analog
 search, the Sprint 9 backtest metrics/condition DSL, the Global Market
 Score's deterministic formula, the Similar Market Engine's historical-regime
 reconstruction, the Self-Learning Engine's direction comparison, the
-Knowledge Rules confidence formula, and a DB-free smoke test that every
-FastAPI router (including route-ordering for `/api/knowledge/rules` vs
-`/api/knowledge/{symbol}`) is actually mounted. Every phase was additionally
-verified live against a real Postgres + Redis instance during development
-(see commit history for the specific checks performed per phase).
+Knowledge Rules confidence formula, the V2 sentiment/scenario/conviction/
+portfolio pure-function math, the alert detectors' delta logic, the
+explanation engine's evidence assembly (mocked dependencies, no DB), and a
+DB-free smoke test that every FastAPI router (including route-ordering for
+`/api/knowledge/rules` vs `/api/knowledge/{symbol}`) is actually mounted.
+Every phase was additionally verified live against a real Postgres + Redis
+instance during development (see commit history for the specific checks
+performed per phase), and V2's dashboard was verified in a real headless-
+Chromium session.
 
 ## Further documentation
 

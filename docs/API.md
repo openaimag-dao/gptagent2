@@ -86,6 +86,32 @@ any of: `close`, `return_pct`, `volatility`, `atr`, `rsi`, `macd`,
 evaluated with all symbols' history aligned by timestamp; missing data on
 any referenced symbol/date means that date never fires (never guessed).
 
+## Quant Hedge Fund Engine (V2)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/agents` | Raw output of all 5 specialist agents (Macro/Crypto/Equity/News/Sentiment) |
+| GET | `/api/memory?category=&since=&limit=` | Read-only timeline over every stored history table; omit `category` for all |
+| GET | `/api/scenarios` | 4 named forward scenarios, probabilities summing to 100 |
+| GET | `/api/sentiment` | Real Fear & Greed Index + news sentiment; social/options honestly unavailable |
+| GET | `/api/liquidity` | Focused liquidity/macro-pressure read from the Global Market Score |
+| GET | `/api/conviction?symbol=BTC` | Confidence tier (Weak..Institutional) for the latest signal + probability |
+| GET | `/api/portfolio?name=main` | Virtual portfolio valuation, exposure, drawdown, Health Score |
+| POST | `/api/portfolio/positions?name=main` | Add a position. Body: `{"symbol", "quantity", "entry_price"}` (`entry_price` optional; `symbol` may be `CASH`) |
+| DELETE | `/api/portfolio/positions/{id}` | Remove a position |
+
+`/api/memory`'s `category` must be one of: `predictions`, `signals`,
+`regime`, `correlations`, `patterns`, `similarity`, `knowledge_rules`,
+`whale`, `etf`, `sentiment`, `global_score`, `news`, `macro_events`,
+`alerts`. Smart Alert Engine detections are never exposed via a dedicated
+endpoint -- read them through `/api/memory?category=alerts` or the
+`/alerts`-less `/memory alerts` Telegram command; they're pushed to
+Telegram directly when conviction-eligible.
+
+The browser dashboard (`/dashboard/`, static files under
+`app/static/dashboard/`) is a pure client of every endpoint above plus the
+pre-existing ones -- it introduces no new backend behavior.
+
 ## Error shape
 
 FastAPI's default `HTTPException` shape:

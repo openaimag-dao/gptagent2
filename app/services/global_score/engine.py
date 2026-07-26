@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import AssetPrice, GlobalMarketScore
 from app.services.analysis.regime import MarketRegime, RegimeDetector
+from app.services.common.scoring import center_scaled, clamp
 from app.services.market.repository import MarketRepository
 from app.services.signals.engine import SignalEngine
 
@@ -27,18 +28,6 @@ _REGIME_RISK_SPLIT: dict[MarketRegime, tuple[int, int]] = {
     MarketRegime.LIQUIDITY_CONTRACTION: (30, 70),
     MarketRegime.FLIGHT_TO_SAFETY: (10, 90),
 }
-
-
-def _clamp(value: float, lower: float = 0.0, upper: float = 100.0) -> float:
-    return max(lower, min(upper, value))
-
-
-def _center_scaled(value: float | None, scale: float, center: float = 50.0) -> float:
-    """Maps a signed real-world change (e.g. +2.3%) onto a 0-100 score
-    centered at 50 -- None (no data) also returns the neutral center."""
-    if value is None:
-        return center
-    return _clamp(center + value * scale)
 
 
 def _average_change(assets: list[AssetPrice], symbols: tuple[str, ...]) -> float | None:
@@ -63,19 +52,19 @@ def compute_global_score(
     risk_on, risk_off = _REGIME_RISK_SPLIT[regime]
 
     fedrate_change = regime_inputs.get("fedrate_change")
-    liquidity_score = _center_scaled(
+    liquidity_score = center_scaled(
         -fedrate_change if fedrate_change is not None else None, scale=40.0
     )
 
     vix_change = regime_inputs.get("vix_change_pct")
-    fear_score = _center_scaled(vix_change, scale=4.0)
-    greed_score = _clamp(100 - fear_score)
+    fear_score = center_scaled(vix_change, scale=4.0)
+    greed_score = clamp(100 - fear_score)
 
     dxy_change = regime_inputs.get("dxy_change_pct")
     us10y_change = regime_inputs.get("us10y_change")
     macro_pressure_terms = [t for t in (dxy_change, us10y_change) if t is not None]
     macro_pressure_score = (
-        _center_scaled(sum(macro_pressure_terms), scale=10.0) if macro_pressure_terms else 50.0
+        center_scaled(sum(macro_pressure_terms), scale=10.0) if macro_pressure_terms else 50.0
     )
 
     etf_factor = signal_factors.get("etf_inflow", {})
@@ -84,10 +73,10 @@ def compute_global_score(
         75.0 if etf_triggered is True else 25.0 if etf_triggered is False else 50.0
     )
 
-    crypto_strength_score = _center_scaled(_average_change(assets, _CRYPTO_SYMBOLS), scale=5.0)
-    stock_strength_score = _center_scaled(_average_change(assets, _STOCK_SYMBOLS), scale=8.0)
+    crypto_strength_score = center_scaled(_average_change(assets, _CRYPTO_SYMBOLS), scale=5.0)
+    stock_strength_score = center_scaled(_average_change(assets, _STOCK_SYMBOLS), scale=8.0)
 
-    global_score = _clamp(
+    global_score = clamp(
         0.20 * risk_on
         + 0.15 * liquidity_score
         + 0.15 * greed_score

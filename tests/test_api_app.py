@@ -28,6 +28,13 @@ EXPECTED_PREFIXES = {
     "/api/etf",
     "/api/whales",
     "/api/global-score",
+    "/api/agents",
+    "/api/memory",
+    "/api/scenarios",
+    "/api/sentiment",
+    "/api/conviction",
+    "/api/portfolio",
+    "/api/liquidity",
 }
 
 

@@ -9,6 +9,8 @@ from app.database.models import (
     PatternSignal,
     ProbabilitySnapshot,
     Report,
+    ScenarioSnapshot,
+    SentimentSnapshot,
     SignalSnapshot,
 )
 
@@ -282,8 +284,7 @@ def format_similar_periods(symbol: str, matches: list[dict], limit: int = 5) -> 
         f1 = f"{forward_1d:+.2f}%" if forward_1d is not None else "n/a"
         f30 = f"{forward_30d:+.2f}%" if forward_30d is not None else "n/a"
         lines.append(
-            f"{date_str} (similarity {m['similarity']}, regime {regime}): "
-            f"1d {f1} | 30d {f30}"
+            f"{date_str} (similarity {m['similarity']}, regime {regime}): " f"1d {f1} | 30d {f30}"
         )
     return "\n".join(lines)
 
@@ -309,6 +310,103 @@ def format_whale_snapshot(data: dict) -> str:
         return f"Whale Intelligence unavailable: {data.get('reason', 'no data')}"
     lines = ["*WHALE ACTIVITY*", ""]
     lines.extend(f"{k}: {v}" for k, v in data.items() if k not in ("available", "symbol"))
+    return "\n".join(lines)
+
+
+def format_agent_outputs(outputs: dict) -> str:
+    return "\n\n".join(output.summary for output in outputs.values())
+
+
+def format_scenarios(row: ScenarioSnapshot | None) -> str:
+    if row is None:
+        return "Not enough data yet -- regime detection and signal scoring need to run first."
+    lines = ["*SCENARIOS*", ""]
+    for scenario in sorted(row.scenarios, key=lambda s: s["probability_pct"], reverse=True):
+        lines.append(f"*{scenario['name']}* -- {scenario['probability_pct']}%")
+        lines.append(scenario["rationale"])
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def format_sentiment(row: SentimentSnapshot) -> str:
+    lines = ["*SENTIMENT*", ""]
+    if row.fear_greed_value is not None:
+        lines.append(
+            f"Fear & Greed Index: {row.fear_greed_value}/100 ({row.fear_greed_classification})"
+        )
+    else:
+        lines.append("Fear & Greed Index: unavailable this cycle.")
+    if row.news_sentiment_score is not None:
+        lines.append(f"News sentiment: {row.news_sentiment_score}/100")
+    lines.append(f"Social/options sentiment: {row.social_sentiment_reason}")
+    if row.global_sentiment_score is not None:
+        lines.append("")
+        lines.append(f"Global Sentiment Score: {row.global_sentiment_score}/100")
+    return "\n".join(lines)
+
+
+def format_conviction(data: dict) -> str:
+    lines = ["*CONVICTION*", ""]
+    signal = data.get("signal")
+    if signal is None:
+        lines.append("Signal: not yet computed.")
+    else:
+        lines.append(
+            f"Signal: {signal['tier']} ({signal['effective_confidence_pct']}% effective confidence)"
+        )
+    probability = data.get("probability")
+    if probability is None:
+        lines.append("Probability: not yet computed.")
+    else:
+        lines.append(
+            f"{probability['symbol']} probability: {probability['tier']} "
+            f"({probability['effective_confidence_pct']}% effective confidence, "
+            f"sample size {probability['sample_size']})"
+        )
+    return "\n".join(lines)
+
+
+def format_liquidity(data: dict) -> str:
+    return "\n".join(
+        [
+            "*LIQUIDITY*",
+            "",
+            f"Liquidity: {data['liquidity_score']}/100",
+            f"Macro pressure: {data['macro_pressure_score']}/100",
+            f"Risk-On {data['risk_on_score']} / Risk-Off {data['risk_off_score']}",
+        ]
+    )
+
+
+def format_portfolio(health: dict) -> str:
+    if health.get("empty"):
+        return "Portfolio is empty. Add a position via POST /api/portfolio/positions."
+    lines = [
+        "*PORTFOLIO*",
+        "",
+        f"Total value: {health['total_value']:,.2f}",
+        f"Health score: {health['health_score']}/100"
+        if health["health_score"] is not None
+        else "Health score: unavailable",
+        "",
+        "*Positions*",
+    ]
+    for p in health["positions"]:
+        if not p.get("priced"):
+            lines.append(f"- {p['symbol']}: {p['quantity']} (no live price)")
+            continue
+        pnl = f" ({p['unrealized_pnl_pct']:+.2f}%)" if p["unrealized_pnl_pct"] is not None else ""
+        lines.append(
+            f"- {p['symbol']}: {p['quantity']} @ {p['price']:,.2f} = {p['value']:,.2f}{pnl}"
+        )
+    lines.append("")
+    lines.append("*Exposure*")
+    for asset_class, pct in health["exposure_pct_by_class"].items():
+        lines.append(f"- {asset_class}: {pct}%")
+    if health.get("max_drawdown_pct") is not None:
+        lines.append(f"\nMax drawdown: {health['max_drawdown_pct']}%")
+    else:
+        lines.append(f"\n{health.get('drawdown_note', 'Drawdown unavailable.')}")
     return "\n".join(lines)
 
 
