@@ -297,6 +297,15 @@ class MacroHistory(_HistoryCandleMixin, Base):
     )
 
 
+class ForexHistory(_HistoryCandleMixin, Base):
+    """OHLCV + indicator history for major forex pairs (EURUSD, GBPUSD, ...)."""
+
+    __tablename__ = "forex_history"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "timestamp", name="uq_forex_history_bar"),
+    )
+
+
 class HistoricalEventCategory(str, enum.Enum):
     HALVING = "halving"
     CRASH = "crash"
@@ -324,6 +333,50 @@ class HistoricalEvent(Base):
     description: Mapped[str] = mapped_column(Text)
     symbols_affected: Mapped[list] = mapped_column(JSON, default=list)
     source: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class EconomicCalendarCategory(str, enum.Enum):
+    CPI = "cpi"
+    PPI = "ppi"
+    NFP = "nfp"
+    GDP = "gdp"
+    FOMC = "fomc"
+    ECB = "ecb"
+    BOJ = "boj"
+    PBOC = "pboc"
+
+
+class EconomicCalendarEvent(Base):
+    """A scheduled macro-data release or central-bank meeting date.
+
+    Dates only -- no forecast/consensus/actual values, since there is no
+    free, honest source for those (real consensus-forecast data is a paid
+    product from vendors like Trading Economics/Investing.com). CPI/PPI/NFP/
+    GDP dates come from FRED's release/dates API (FRED_API_KEY); FOMC/ECB/
+    BOJ/PBOC dates come from each central bank's own published meeting
+    calendar, curated the same way HistoricalEvent's seed data is.
+    """
+
+    __tablename__ = "economic_calendar_events"
+    __table_args__ = (
+        UniqueConstraint("category", "country", "event_date", name="uq_economic_calendar_event"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    category: Mapped[EconomicCalendarCategory] = mapped_column(
+        Enum(
+            EconomicCalendarCategory,
+            name="economic_calendar_category",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        index=True,
+    )
+    country: Mapped[str] = mapped_column(String(10))
+    title: Mapped[str] = mapped_column(String(200))
+    importance: Mapped[str] = mapped_column(String(10))
+    source: Mapped[str] = mapped_column(String(50))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

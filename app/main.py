@@ -11,6 +11,7 @@ from app.api.agents import router as agents_router
 from app.api.backtest import router as backtest_router
 from app.api.brain import router as brain_router
 from app.api.btc import router as btc_router
+from app.api.calendar import router as calendar_router
 from app.api.conviction import router as conviction_router
 from app.api.correlations import router as correlations_router
 from app.api.etf import router as etf_router
@@ -71,6 +72,7 @@ app.include_router(signals_router)
 app.include_router(reports_router)
 app.include_router(history_router)
 app.include_router(events_router)
+app.include_router(calendar_router)
 app.include_router(probability_router)
 app.include_router(patterns_router)
 app.include_router(knowledge_router)
