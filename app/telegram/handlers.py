@@ -28,6 +28,7 @@ from app.services.news.repository import NewsRepository
 from app.services.patterns.engine import PatternEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
+from app.services.research.engine import ResearchEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.signals.engine import SignalEngine
@@ -51,6 +52,7 @@ from app.telegram.formatters import (
     format_portfolio,
     format_probability,
     format_report,
+    format_research_result,
     format_scenarios,
     format_sentiment,
     format_signal,
@@ -90,6 +92,9 @@ HELP_TEXT = (
     "/similar SYMBOL [timeframe] -- 25 most similar historical periods\n"
     "/backtest SYMBOL SYMBOL:field:op:value [...] [horizon] -- backtest a rule "
     "(e.g. /backtest BTC BTC:rsi:lt:30 1)\n"
+    "/research SYMBOL EVENT [horizon] -- forward returns after an event "
+    "(e.g. /research BTC cpi 1; events: cpi/ppi/nfp/gdp/fomc/ecb/boj/pboc/halving/crash/"
+    "macro_policy/regulatory/black_swan)\n"
     "/whales -- whale/on-chain intelligence (requires a configured data source)\n"
     "/etf -- ETF flow proxy from ETF-category news sentiment\n"
     "/score -- Global Market Score\n"
@@ -368,6 +373,27 @@ async def cmd_backtest(message: Message, command: CommandObject) -> None:
     engine = BacktestEngine(get_session_factory())
     result = await engine.run(conditions, target_symbol, horizon=horizon)
     await _answer(message, format_backtest_result(result))
+
+
+@router.message(Command("research"))
+async def cmd_research(message: Message, command: CommandObject) -> None:
+    parts = (command.args or "").split()
+    if len(parts) < 2:
+        await _answer(
+            message,
+            "Usage: /research SYMBOL EVENT [horizon]\n"
+            "Example: /research BTC cpi 1\n"
+            "Events: cpi, ppi, nfp, gdp, fomc, ecb, boj, pboc, halving, crash, "
+            "macro_policy, regulatory, black_swan",
+        )
+        return
+
+    symbol, event = parts[0].upper(), parts[1].lower()
+    horizon = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+
+    engine = ResearchEngine(get_session_factory())
+    result = await engine.test_hypothesis(symbol, event, horizon=horizon)
+    await _answer(message, format_research_result(result))
 
 
 @router.message(Command("agents"))

@@ -410,6 +410,24 @@ def format_portfolio(health: dict) -> str:
     return "\n".join(lines)
 
 
+def format_research_result(result: dict | None) -> str:
+    if result is None:
+        return "No usable result -- unknown event category, no recorded events, or no history."
+    return "\n".join(
+        [
+            f"*RESEARCH: {result['target_symbol']} after {result['event_category'].upper()}* "
+            f"({result['timeframe']}, {result['horizon_periods']}-period horizon)",
+            "",
+            f"Occurrences: {result['occurrences']}",
+            f"Win rate: {result['win_rate_pct']}%",
+            f"Avg return: {result['avg_return_pct']}%",
+            f"Max drawdown: {result['max_drawdown_pct']}%",
+            f"Profit factor: {result['profit_factor']}",
+            f"Sharpe ratio: {result['sharpe_ratio']}",
+        ]
+    )
+
+
 def format_backtest_result(result: dict | None) -> str:
     if result is None:
         return "No historical occurrences of this rule found."

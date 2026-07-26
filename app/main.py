@@ -29,6 +29,7 @@ from app.api.portfolio import router as portfolio_router
 from app.api.probability import router as probability_router
 from app.api.regime import router as regime_router
 from app.api.reports import router as reports_router
+from app.api.research import router as research_router
 from app.api.scenarios import router as scenarios_router
 from app.api.sentiment import router as sentiment_router
 from app.api.signals import router as signals_router
@@ -75,6 +76,7 @@ app.include_router(history_router)
 app.include_router(events_router)
 app.include_router(calendar_router)
 app.include_router(features_router)
+app.include_router(research_router)
 app.include_router(probability_router)
 app.include_router(patterns_router)
 app.include_router(knowledge_router)
