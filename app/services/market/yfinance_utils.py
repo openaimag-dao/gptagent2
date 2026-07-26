@@ -48,28 +48,38 @@ def download_last_two_closes_sync(tickers: list[str]) -> BarsBySymbol:
     return results
 
 
-async def download_last_two_closes(tickers: list[str], attempts: int = 3) -> BarsBySymbol:
-    """Async wrapper with retries.
+async def download_last_two_closes(tickers: list[str], attempts: int = 4) -> BarsBySymbol:
+    """Async wrapper with retries that accumulate partial results.
 
     yfinance swallows per-ticker failures internally (logs a warning, returns
-    partial data) rather than raising, so a plain exception retry wouldn't
-    help. Instead we retry the whole batch when it comes back completely
-    empty -- the signature of a transient rate limit or network blip -- and
-    accept partial results otherwise.
+    partial data for the rest) rather than raising. The previous version of
+    this function only retried when the *whole* batch came back empty, so a
+    single ticker rate-limited alongside others that succeeded was dropped
+    permanently after attempt 1 -- it never got a second chance just because
+    its batch-mates happened to succeed. This version re-requests only the
+    tickers still missing on each attempt and accumulates results, so a
+    ticker gets up to `attempts` real chances regardless of what happens to
+    the rest of the batch.
     """
-    last_result: BarsBySymbol = {}
+    accumulated: BarsBySymbol = {}
+    remaining = list(tickers)
     for attempt in range(1, attempts + 1):
-        last_result = await asyncio.to_thread(download_last_two_closes_sync, tickers)
-        if last_result:
-            return last_result
-        if attempt < attempts:
+        if not remaining:
+            break
+        batch = await asyncio.to_thread(download_last_two_closes_sync, remaining)
+        accumulated.update(batch)
+        remaining = [t for t in remaining if t not in accumulated]
+        if remaining and attempt < attempts:
             logger.warning(
-                "yfinance batch download returned no data, retrying (attempt %d/%d)",
+                "yfinance batch download missing %d/%d tickers (%s), retrying (attempt %d/%d)",
+                len(remaining),
+                len(tickers),
+                ", ".join(remaining),
                 attempt,
                 attempts,
             )
-            await asyncio.sleep(2 * attempt)
-    return last_result
+            await asyncio.sleep(3 * attempt)
+    return accumulated
 
 
 __all__ = ["download_last_two_closes", "download_last_two_closes_sync"]
