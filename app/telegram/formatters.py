@@ -503,6 +503,22 @@ def format_hypothesis_list(rows: list) -> str:
     return "\n".join(lines)
 
 
+def format_ranking(row) -> str:
+    if row is None:
+        return "No ranking computed yet."
+    lines = [f"*FACTOR RANKING vs {row.target_symbol}*", ""]
+    for entry in row.rankings:
+        current = entry.get("current_importance_pct")
+        historical = entry.get("historical_importance_pct")
+        current_str = f"{current}%" if current is not None else "n/a"
+        historical_str = f"{historical}%" if historical is not None else "n/a"
+        lines.append(
+            f"{entry['rank']}. {entry['factor']} -- current edge {current_str}, "
+            f"historical edge {historical_str}, confidence (n={entry['confidence']})"
+        )
+    return "\n".join(lines)
+
+
 def format_backtest_result(result: dict | None) -> str:
     if result is None:
         return "No historical occurrences of this rule found."

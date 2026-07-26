@@ -28,6 +28,7 @@ from app.api.news import router as news_router
 from app.api.patterns import router as patterns_router
 from app.api.portfolio import router as portfolio_router
 from app.api.probability import router as probability_router
+from app.api.ranking import router as ranking_router
 from app.api.regime import router as regime_router
 from app.api.reports import router as reports_router
 from app.api.research import router as research_router
@@ -81,6 +82,7 @@ app.include_router(features_router)
 app.include_router(research_router)
 app.include_router(strategy_router)
 app.include_router(hypothesis_router)
+app.include_router(ranking_router)
 app.include_router(probability_router)
 app.include_router(patterns_router)
 app.include_router(knowledge_router)

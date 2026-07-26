@@ -21,6 +21,7 @@ from app.services.market.aggregator import MarketDataAggregator
 from app.services.market.repository import MarketRepository
 from app.services.news.aggregator import NewsAggregator
 from app.services.news.repository import NewsRepository
+from app.services.ranking.engine import RankingEngine
 from app.services.research.researcher import AIResearcherEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
@@ -47,6 +48,7 @@ ECONOMIC_CALENDAR_JOB_ID = "sync_economic_calendar"
 FEATURE_JOB_ID = "compute_features"
 AI_RESEARCHER_JOB_ID = "generate_research_note"
 HYPOTHESIS_JOB_ID = "test_hypotheses"
+RANKING_JOB_ID = "compute_ranking"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -263,6 +265,15 @@ async def generate_research_note_job() -> None:
         logger.exception("AI Researcher note generation failed")
 
 
+async def compute_ranking_job() -> None:
+    engine = RankingEngine(get_session_factory())
+    try:
+        row = await engine.compute_and_store("BTC")
+        logger.info("Ranking computed: %d factors ranked", len(row.rankings))
+    except Exception:
+        logger.exception("Ranking computation job failed")
+
+
 async def test_hypotheses_job() -> None:
     engine = HypothesisEngine(get_session_factory())
     try:
@@ -423,6 +434,13 @@ def start_scheduler() -> AsyncIOScheduler:
         test_hypotheses_job,
         trigger=CronTrigger(day_of_week="mon", hour=4, minute=0, timezone="UTC"),
         id=HYPOTHESIS_JOB_ID,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_ranking_job,
+        trigger=CronTrigger(day_of_week="mon", hour=5, minute=0, timezone="UTC"),
+        id=RANKING_JOB_ID,
         max_instances=1,
         coalesce=True,
     )

@@ -780,3 +780,21 @@ class Hypothesis(Base):
     tested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class RankingSnapshot(Base):
+    """A Ranking Engine read (V3 Phase 9): the Signal Engine's factors
+    ranked by real predictive power, measured via StrategyLabEngine's
+    walk-forward test rather than a separate ranking computation.
+    `rankings` is the full ordered list (factor, historical/current
+    importance, confidence, the exact backtest metrics each was computed
+    from) so a ranking is always auditable against its real inputs."""
+
+    __tablename__ = "ranking_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    target_symbol: Mapped[str] = mapped_column(String(20), index=True)
+    rankings: Mapped[list] = mapped_column(JSON, default=list)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

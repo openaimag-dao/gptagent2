@@ -31,6 +31,7 @@ from app.services.news.repository import NewsRepository
 from app.services.patterns.engine import PatternEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
+from app.services.ranking.engine import RankingEngine
 from app.services.research.engine import ResearchEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
@@ -57,6 +58,7 @@ from app.telegram.formatters import (
     format_patterns,
     format_portfolio,
     format_probability,
+    format_ranking,
     format_report,
     format_research_result,
     format_scenarios,
@@ -108,6 +110,8 @@ HELP_TEXT = (
     "sizing, walk-forward or Monte Carlo (e.g. /strategy BTC BTC:rsi:lt:30 5 sl=0.05 tp=0.1)\n"
     "/hypothesis [SYMBOL EVENT_A EVENT_B] -- test or list AI hypotheses "
     "(e.g. /hypothesis BTC fomc cpi; no args shows recent ones)\n"
+    "/ranking [SYMBOL] -- ranks the signal factors by real predictive power "
+    "(current vs historical edge, e.g. /ranking BTC)\n"
     "/whales -- whale/on-chain intelligence (requires a configured data source)\n"
     "/etf -- ETF flow proxy from ETF-category news sentiment\n"
     "/score -- Global Market Score\n"
@@ -493,6 +497,16 @@ async def cmd_hypothesis(message: Message, command: CommandObject) -> None:
     )
     row = await engine.test(hypothesis)
     await _answer(message, format_hypothesis(row))
+
+
+@router.message(Command("ranking"))
+async def cmd_ranking(message: Message, command: CommandObject) -> None:
+    symbol = (command.args or "BTC").strip().upper() or "BTC"
+    engine = RankingEngine(get_session_factory())
+    row = await engine.get_latest(symbol)
+    if row is None:
+        row = await engine.compute_and_store(symbol)
+    await _answer(message, format_ranking(row))
 
 
 @router.message(Command("agents"))
