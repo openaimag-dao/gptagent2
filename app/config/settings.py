@@ -29,7 +29,7 @@ class Settings(BaseSettings):
         to manually reassemble it with a "+asyncpg" suffix."""
         for prefix in ("postgresql://", "postgres://"):
             if value.startswith(prefix):
-                return "postgresql+asyncpg://" + value[len(prefix):]
+                return "postgresql+asyncpg://" + value[len(prefix) :]
         return value
 
     # ---- Telegram ----
@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
+
+    # ---- LLM (Anthropic Claude, optional) ----
+    # When set, report generation prefers Claude over the OpenAI-compatible
+    # client above, falling back to it if the Anthropic call fails (or
+    # using it directly if ANTHROPIC_API_KEY is unset). See app/llm/client.py.
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-sonnet-4-5-20250929"
 
     # ---- Crypto data (CoinGecko) ----
     coingecko_api_key: str | None = None

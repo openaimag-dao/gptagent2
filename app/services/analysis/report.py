@@ -7,7 +7,6 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import get_settings
 from app.database.models import (
     AssetPrice,
     Correlation,
@@ -18,7 +17,7 @@ from app.database.models import (
     Report,
     SignalSnapshot,
 )
-from app.llm.client import get_llm_client
+from app.llm.client import generate_analysis_json
 from app.services.agents.base import AgentOutput
 from app.services.agents.orchestrator import AgentOrchestrator, build_agent_orchestrator
 from app.services.analysis.correlation import CorrelationEngine
@@ -325,18 +324,7 @@ class ReportGenerator:
             agent_outputs,
         )
 
-        settings = get_settings()
-        client = get_llm_client()
-        response = await client.chat.completions.create(
-            model=settings.openai_model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.3,
-        )
-        raw_content = response.choices[0].message.content or ""
+        raw_content = await generate_analysis_json(SYSTEM_PROMPT, user_prompt)
 
         try:
             analysis = AIAnalysisContent.model_validate(json.loads(raw_content))

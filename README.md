@@ -937,9 +937,11 @@ error that's logged and skipped, rather than fabricating data.
 | `COINALYZE_API_KEY` | same as above | optional; fallback derivatives source, free tier |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot | required to run `app.telegram.main` |
 | `TELEGRAM_BROADCAST_CHAT_IDS` | automatic report broadcast | comma-separated chat IDs |
-| `OPENAI_API_KEY` | AI analysis / `/report` | required for report generation |
+| `OPENAI_API_KEY` | AI analysis / `/report` | required for report generation, unless `ANTHROPIC_API_KEY` is set |
 | `OPENAI_BASE_URL` | AI analysis | any OpenAI-compatible endpoint |
 | `OPENAI_MODEL` | AI analysis | default `gpt-4o-mini` |
+| `ANTHROPIC_API_KEY` | AI analysis / `/report` | optional; preferred over OpenAI when set, falls back to OpenAI on failure |
+| `ANTHROPIC_MODEL` | AI analysis | default `claude-sonnet-4-5-20250929` |
 | `MARKET_DATA_INTERVAL_MINUTES` | scheduler | default `5` |
 | `NEWS_COLLECTION_INTERVAL_MINUTES` | scheduler | default `10` |
 | `ANALYSIS_INTERVAL_MINUTES` | scheduler | default `30` |
