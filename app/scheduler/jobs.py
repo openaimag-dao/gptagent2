@@ -12,12 +12,17 @@ from app.database.session import get_session_factory
 from app.services.alerts.engine import build_alert_engine
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
+from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.etf.engine import ETFIntelligenceEngine
+from app.services.features.engine import FeatureEngine
 from app.services.global_score.engine import GlobalScoreEngine
+from app.services.hypothesis.engine import HypothesisEngine
 from app.services.market.aggregator import MarketDataAggregator
 from app.services.market.repository import MarketRepository
 from app.services.news.aggregator import NewsAggregator
 from app.services.news.repository import NewsRepository
+from app.services.ranking.engine import RankingEngine
+from app.services.research.researcher import AIResearcherEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.signals.engine import SignalEngine
@@ -39,6 +44,11 @@ SCENARIO_JOB_ID = "compute_scenarios"
 WHALE_ETF_SNAPSHOT_JOB_ID = "snapshot_whale_etf"
 ALERT_CHECK_JOB_ID = "check_alerts"
 REPORT_JOB_ID = "generate_scheduled_report"
+ECONOMIC_CALENDAR_JOB_ID = "sync_economic_calendar"
+FEATURE_JOB_ID = "compute_features"
+AI_RESEARCHER_JOB_ID = "generate_research_note"
+HYPOTHESIS_JOB_ID = "test_hypotheses"
+RANKING_JOB_ID = "compute_ranking"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -99,6 +109,36 @@ def build_whale_engine() -> WhaleIntelligenceEngine:
 
 def build_etf_engine() -> ETFIntelligenceEngine:
     return ETFIntelligenceEngine(NewsRepository(get_session_factory()), get_session_factory())
+
+
+def build_economic_calendar_engine() -> EconomicCalendarEngine:
+    return EconomicCalendarEngine(get_session_factory())
+
+
+def build_feature_engine() -> FeatureEngine:
+    market_repository = MarketRepository(get_session_factory(), get_redis())
+    return FeatureEngine(get_session_factory(), market_repository)
+
+
+# Symbols worth computing features for on every cycle -- crypto majors,
+# broad indices and the Magnificent 7, matching _KEY_SYMBOLS in
+# app/services/analysis/report.py.
+FEATURE_SYMBOLS: tuple[str, ...] = (
+    "BTC",
+    "ETH",
+    "SOL",
+    "NASDAQ",
+    "SPX",
+    "DJI",
+    "RUT",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "AMZN",
+    "META",
+    "GOOGL",
+)
 
 
 async def collect_market_data_job() -> None:
@@ -195,6 +235,52 @@ async def snapshot_whale_etf_job() -> None:
         await build_etf_engine().compute_and_store()
     except Exception:
         logger.exception("ETF snapshot job failed")
+
+
+async def sync_economic_calendar_job() -> None:
+    engine = build_economic_calendar_engine()
+    try:
+        inserted = await engine.sync_fred_releases()
+        inserted += await engine.seed_central_bank_meetings()
+        logger.info("Economic calendar synced: %d new entries", inserted)
+    except Exception:
+        logger.exception("Economic calendar sync job failed")
+
+
+async def compute_features_job() -> None:
+    engine = build_feature_engine()
+    for symbol in FEATURE_SYMBOLS:
+        try:
+            await engine.compute_and_store(symbol)
+        except Exception:
+            logger.exception("Feature computation failed for %s", symbol)
+
+
+async def generate_research_note_job() -> None:
+    engine = AIResearcherEngine(get_session_factory())
+    try:
+        note = await engine.generate_daily_note()
+        logger.info("Research note generated: %d discoveries", note.discovery_count)
+    except Exception:
+        logger.exception("AI Researcher note generation failed")
+
+
+async def compute_ranking_job() -> None:
+    engine = RankingEngine(get_session_factory())
+    try:
+        row = await engine.compute_and_store("BTC")
+        logger.info("Ranking computed: %d factors ranked", len(row.rankings))
+    except Exception:
+        logger.exception("Ranking computation job failed")
+
+
+async def test_hypotheses_job() -> None:
+    engine = HypothesisEngine(get_session_factory())
+    try:
+        results = await engine.test_all()
+        logger.info("Hypotheses tested: %d", len(results))
+    except Exception:
+        logger.exception("Hypothesis testing job failed")
 
 
 async def check_alerts_job() -> None:
@@ -305,6 +391,22 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
+        sync_economic_calendar_job,
+        trigger=CronTrigger(hour=2, minute=0, timezone="UTC"),
+        id=ECONOMIC_CALENDAR_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_features_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=FEATURE_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
         check_alerts_job,
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
         id=ALERT_CHECK_JOB_ID,
@@ -318,6 +420,27 @@ def start_scheduler() -> AsyncIOScheduler:
         id=REPORT_JOB_ID,
         args=["scheduled"],
         next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        generate_research_note_job,
+        trigger=CronTrigger(hour=3, minute=0, timezone="UTC"),
+        id=AI_RESEARCHER_JOB_ID,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        test_hypotheses_job,
+        trigger=CronTrigger(day_of_week="mon", hour=4, minute=0, timezone="UTC"),
+        id=HYPOTHESIS_JOB_ID,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_ranking_job,
+        trigger=CronTrigger(day_of_week="mon", hour=5, minute=0, timezone="UTC"),
+        id=RANKING_JOB_ID,
         max_instances=1,
         coalesce=True,
     )

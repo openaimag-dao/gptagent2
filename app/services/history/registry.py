@@ -1,6 +1,12 @@
 from dataclasses import dataclass
 
-from app.database.models import CryptoHistory, MacroHistory, MarketHistory, StockHistory
+from app.database.models import (
+    CryptoHistory,
+    ForexHistory,
+    MacroHistory,
+    MarketHistory,
+    StockHistory,
+)
 from app.services.history.base import HistoricalDataProvider
 from app.services.history.providers.coingecko import CoinGeckoHistoricalProvider
 from app.services.history.providers.fred import FRED_SERIES, FredHistoricalProvider
@@ -30,6 +36,14 @@ MACRO_YFINANCE_TICKERS: dict[str, str] = {
     "GOLD": "GC=F",
     "SILVER": "SI=F",
 }
+FOREX_TICKERS: dict[str, str] = {
+    "EURUSD": "EURUSD=X",
+    "GBPUSD": "GBPUSD=X",
+    "USDJPY": "USDJPY=X",
+    "USDCHF": "USDCHF=X",
+    "AUDUSD": "AUDUSD=X",
+    "USDCAD": "USDCAD=X",
+}
 
 _ALL_TIMEFRAMES: tuple[Timeframe, ...] = (Timeframe.DAILY, Timeframe.FOUR_HOUR, Timeframe.ONE_HOUR)
 _DAILY_ONLY: tuple[Timeframe, ...] = (Timeframe.DAILY,)
@@ -54,6 +68,7 @@ def build_registry() -> list[HistorySymbolConfig]:
     index_provider = YFinanceHistoricalProvider(INDEX_TICKERS)
     stock_provider = YFinanceHistoricalProvider(STOCK_TICKERS)
     macro_yf_provider = YFinanceHistoricalProvider(MACRO_YFINANCE_TICKERS)
+    forex_provider = YFinanceHistoricalProvider(FOREX_TICKERS)
     crypto_provider = CoinGeckoHistoricalProvider()
     fred_provider = FredHistoricalProvider()
 
@@ -77,6 +92,10 @@ def build_registry() -> list[HistorySymbolConfig]:
     for symbol in FRED_SERIES:
         registry.append(
             HistorySymbolConfig(symbol, MacroHistory, fred_provider, _DAILY_ONLY, "equity")
+        )
+    for symbol in FOREX_TICKERS:
+        registry.append(
+            HistorySymbolConfig(symbol, ForexHistory, forex_provider, _ALL_TIMEFRAMES, "forex")
         )
     return registry
 

@@ -146,6 +146,13 @@ class MarketRegimeType(str, enum.Enum):
     LIQUIDITY_EXPANSION = "liquidity_expansion"
     LIQUIDITY_CONTRACTION = "liquidity_contraction"
     FLIGHT_TO_SAFETY = "flight_to_safety"
+    BULL = "bull"
+    BEAR = "bear"
+    ACCUMULATION = "accumulation"
+    DISTRIBUTION = "distribution"
+    CAPITULATION = "capitulation"
+    RECOVERY = "recovery"
+    SIDEWAYS = "sideways"
 
 
 class MarketRegimeSnapshot(Base):
@@ -297,6 +304,15 @@ class MacroHistory(_HistoryCandleMixin, Base):
     )
 
 
+class ForexHistory(_HistoryCandleMixin, Base):
+    """OHLCV + indicator history for major forex pairs (EURUSD, GBPUSD, ...)."""
+
+    __tablename__ = "forex_history"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "timestamp", name="uq_forex_history_bar"),
+    )
+
+
 class HistoricalEventCategory(str, enum.Enum):
     HALVING = "halving"
     CRASH = "crash"
@@ -324,6 +340,50 @@ class HistoricalEvent(Base):
     description: Mapped[str] = mapped_column(Text)
     symbols_affected: Mapped[list] = mapped_column(JSON, default=list)
     source: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class EconomicCalendarCategory(str, enum.Enum):
+    CPI = "cpi"
+    PPI = "ppi"
+    NFP = "nfp"
+    GDP = "gdp"
+    FOMC = "fomc"
+    ECB = "ecb"
+    BOJ = "boj"
+    PBOC = "pboc"
+
+
+class EconomicCalendarEvent(Base):
+    """A scheduled macro-data release or central-bank meeting date.
+
+    Dates only -- no forecast/consensus/actual values, since there is no
+    free, honest source for those (real consensus-forecast data is a paid
+    product from vendors like Trading Economics/Investing.com). CPI/PPI/NFP/
+    GDP dates come from FRED's release/dates API (FRED_API_KEY); FOMC/ECB/
+    BOJ/PBOC dates come from each central bank's own published meeting
+    calendar, curated the same way HistoricalEvent's seed data is.
+    """
+
+    __tablename__ = "economic_calendar_events"
+    __table_args__ = (
+        UniqueConstraint("category", "country", "event_date", name="uq_economic_calendar_event"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    category: Mapped[EconomicCalendarCategory] = mapped_column(
+        Enum(
+            EconomicCalendarCategory,
+            name="economic_calendar_category",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        index=True,
+    )
+    country: Mapped[str] = mapped_column(String(10))
+    title: Mapped[str] = mapped_column(String(200))
+    importance: Mapped[str] = mapped_column(String(10))
+    source: Mapped[str] = mapped_column(String(50))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
@@ -638,6 +698,103 @@ class SimilarMarketMatch(Base):
     forward_return_3d_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     forward_return_7d_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     forward_return_30d_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class FeatureSnapshot(Base):
+    """A computed-feature read for one symbol -- momentum/beta/cointegration/
+    market breadth/funding momentum/OI change (see app/services/features/).
+    Stored as a flexible JSON blob (like SignalSnapshot.factors and
+    MarketRegimeSnapshot.inputs) since the feature set grows over time and a
+    fixed-column table would need a migration for every addition -- each key
+    present means that feature was actually computable this cycle, an
+    absent key means it honestly wasn't (never a fabricated 0/null value)."""
+
+    __tablename__ = "feature_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    features: Mapped[dict] = mapped_column(JSON, default=dict)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class ResearchNote(Base):
+    """The AI Researcher's daily note (V3 Phase 7): a write-up over that
+    day's real, already-computed Smart Alert Engine detections (regime
+    changes, correlation breaks, DXY reversals, derivatives-positioning
+    swings, ETF sentiment shifts, liquidity swings, upcoming macro events)
+    -- discovery/ranking is entirely deterministic (AlertLog rows ordered
+    by their already-computed confidence_pct); the LLM is used only to
+    narrate what was already found, never to invent or judge a discovery
+    itself. `discoveries` is the exact ranked list the note was written
+    from, so the note is always auditable against its real inputs."""
+
+    __tablename__ = "research_notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    note: Mapped[str] = mapped_column(Text)
+    discoveries: Mapped[list] = mapped_column(JSON, default=list)
+    discovery_count: Mapped[int] = mapped_column(default=0)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class HypothesisVerdict(str, enum.Enum):
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    INCONCLUSIVE = "inconclusive"
+
+
+class Hypothesis(Base):
+    """A tested AI Hypothesis (V3 Phase 8): "{SYMBOL} reacts stronger to
+    {EVENT_A} than to {EVENT_B}", tested statistically via the Research
+    Engine (app/services/hypothesis/evaluation.py) -- accepted/rejected/
+    inconclusive is a deterministic magnitude comparison with a minimum
+    sample-size gate, never an LLM's judgment call. `result_a`/`result_b`
+    store the exact Research Engine outputs the verdict was computed
+    from, so every verdict is auditable against its real inputs."""
+
+    __tablename__ = "hypotheses"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    statement: Mapped[str] = mapped_column(String(300))
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    event_a: Mapped[str] = mapped_column(String(30))
+    event_b: Mapped[str] = mapped_column(String(30))
+    verdict: Mapped[HypothesisVerdict] = mapped_column(
+        Enum(
+            HypothesisVerdict,
+            name="hypothesis_verdict",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        index=True,
+    )
+    reason: Mapped[str] = mapped_column(Text)
+    result_a: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result_b: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    tested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class RankingSnapshot(Base):
+    """A Ranking Engine read (V3 Phase 9): the Signal Engine's factors
+    ranked by real predictive power, measured via StrategyLabEngine's
+    walk-forward test rather than a separate ranking computation.
+    `rankings` is the full ordered list (factor, historical/current
+    importance, confidence, the exact backtest metrics each was computed
+    from) so a ranking is always auditable against its real inputs."""
+
+    __tablename__ = "ranking_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    target_symbol: Mapped[str] = mapped_column(String(20), index=True)
+    rankings: Mapped[list] = mapped_column(JSON, default=list)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )

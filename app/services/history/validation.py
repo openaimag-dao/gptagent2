@@ -15,7 +15,7 @@ _STEP_BY_TIMEFRAME: dict[Timeframe, timedelta] = {
 # only real once it's meaningfully larger than the expected step -- otherwise
 # every single weekend would be flagged as missing data. Crypto trades 24/7,
 # so its tolerance stays tight.
-_GAP_TOLERANCE_MULTIPLIER: dict[str, float] = {"crypto": 1.5, "equity": 4.0}
+_GAP_TOLERANCE_MULTIPLIER: dict[str, float] = {"crypto": 1.5, "equity": 4.0, "forex": 4.0}
 
 
 @dataclass(frozen=True)

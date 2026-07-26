@@ -56,19 +56,45 @@ async def _anthropic_completion(system_prompt: str, user_prompt: str) -> str:
     return "".join(block.text for block in response.content if block.type == "text")
 
 
-async def _openai_completion(system_prompt: str, user_prompt: str) -> str:
+async def _openai_completion(
+    system_prompt: str, user_prompt: str, *, json_mode: bool = True
+) -> str:
     settings = get_settings()
     client = _get_openai_client()
+    extra = {"response_format": {"type": "json_object"}} if json_mode else {}
     response = await client.chat.completions.create(
         model=settings.openai_model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        response_format={"type": "json_object"},
         temperature=0.3,
+        **extra,
     )
     return response.choices[0].message.content or ""
+
+
+async def _generate_with_fallback(
+    system_prompt: str, user_prompt: str, *, json_mode: bool, purpose: str
+) -> str:
+    """Shared Anthropic-preferred/OpenAI-fallback provider selection for
+    both generate_analysis_json and generate_text -- only whether OpenAI's
+    JSON response mode is forced differs between the two callers."""
+    settings = get_settings()
+    if not settings.anthropic_api_key and not settings.openai_api_key:
+        raise RuntimeError(
+            f"Neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is configured; {purpose} is unavailable"
+        )
+
+    if settings.anthropic_api_key:
+        try:
+            return await _anthropic_completion(system_prompt, user_prompt)
+        except anthropic.APIError as exc:
+            if not settings.openai_api_key:
+                raise RuntimeError(f"Anthropic {purpose} failed: {exc}") from exc
+            logger.warning("Anthropic %s failed, falling back to OpenAI: %s", purpose, exc)
+
+    return await _openai_completion(system_prompt, user_prompt, json_mode=json_mode)
 
 
 async def generate_analysis_json(system_prompt: str, user_prompt: str) -> str:
@@ -80,19 +106,17 @@ async def generate_analysis_json(system_prompt: str, user_prompt: str) -> str:
     prompts; only the transport differs, so the caller's JSON parsing and
     validation stays provider-agnostic.
     """
-    settings = get_settings()
-    if not settings.anthropic_api_key and not settings.openai_api_key:
-        raise RuntimeError(
-            "Neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is configured; "
-            "AI analysis/report generation is unavailable"
-        )
+    return await _generate_with_fallback(
+        system_prompt, user_prompt, json_mode=True, purpose="report generation"
+    )
 
-    if settings.anthropic_api_key:
-        try:
-            return await _anthropic_completion(system_prompt, user_prompt)
-        except anthropic.APIError as exc:
-            if not settings.openai_api_key:
-                raise RuntimeError(f"Anthropic report generation failed: {exc}") from exc
-            logger.warning("Anthropic report generation failed, falling back to OpenAI: %s", exc)
 
-    return await _openai_completion(system_prompt, user_prompt)
+async def generate_text(system_prompt: str, user_prompt: str) -> str:
+    """Same Anthropic-preferred/OpenAI-fallback selection as
+    generate_analysis_json, but without forcing OpenAI's JSON response mode
+    -- for free-text narrative generation (e.g. the AI Researcher's daily
+    note) rather than a report that must parse as a fixed JSON schema.
+    """
+    return await _generate_with_fallback(
+        system_prompt, user_prompt, json_mode=False, purpose="text generation"
+    )

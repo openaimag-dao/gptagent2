@@ -277,6 +277,228 @@ async function renderBrain() {
   return nodes;
 }
 
+async function renderResearch() {
+  const nodes = [el("h2", {}, "Research Lab")];
+
+  nodes.push(el("h2", {}, "Daily Research Note"));
+  const noteBox = el("div");
+  const genBtn = el("button", {}, "Generate now");
+
+  async function loadNote() {
+    noteBox.innerHTML = "";
+    const note = await safe("/api/research/notes/latest");
+    if (!note) {
+      noteBox.appendChild(el("p", { class: "error" }, "No research note generated yet."));
+      return;
+    }
+    noteBox.appendChild(el("pre", { class: "summary" }, note.note));
+    noteBox.appendChild(
+      el(
+        "p",
+        { class: "sub" },
+        `${note.discovery_count} discoveries -- ${note.generated_at.slice(0, 19).replace("T", " ")}`
+      )
+    );
+  }
+  genBtn.addEventListener("click", async () => {
+    noteBox.innerHTML = "";
+    noteBox.appendChild(el("p", { class: "loading" }, "Generating..."));
+    try {
+      await fetchJSON("/api/research/notes/generate", { method: "POST" });
+      await loadNote();
+    } catch (err) {
+      noteBox.innerHTML = "";
+      noteBox.appendChild(errorBox(err));
+    }
+  });
+  nodes.push(noteBox, el("div", { class: "controls" }, [genBtn]));
+  await loadNote();
+
+  nodes.push(el("h2", {}, "Factor Ranking"));
+  const ranking = await safe("/api/ranking?symbol=BTC");
+  if (ranking) {
+    nodes.push(
+      table(
+        ["Rank", "Factor", "Current edge", "Historical edge", "Confidence"],
+        ranking.rankings.map((r) => [
+          String(r.rank),
+          r.factor.replace(/_/g, " "),
+          r.current_importance_pct != null ? `${r.current_importance_pct}%` : "n/a",
+          r.historical_importance_pct != null ? `${r.historical_importance_pct}%` : "n/a",
+          String(r.confidence),
+        ])
+      )
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No ranking computed yet."));
+  }
+
+  nodes.push(el("h2", {}, "Hypotheses"));
+  const hypResults = el("div");
+  async function loadHypotheses() {
+    hypResults.innerHTML = "";
+    const data = await safe("/api/hypothesis?limit=10");
+    if (!data || !data.hypotheses.length) {
+      hypResults.appendChild(el("p", { class: "sub" }, "No hypotheses tested yet."));
+      return;
+    }
+    hypResults.appendChild(
+      table(
+        ["Statement", "Verdict", "Reason"],
+        data.hypotheses.map((h) => [h.statement, h.verdict, h.reason])
+      )
+    );
+  }
+  await loadHypotheses();
+  nodes.push(hypResults);
+
+  const hSymbol = el("input", { type: "text", placeholder: "Symbol (e.g. BTC)" });
+  const hEventA = el("input", { type: "text", placeholder: "Event A (e.g. fomc)" });
+  const hEventB = el("input", { type: "text", placeholder: "Event B (e.g. cpi)" });
+  const hBtn = el("button", {}, "Test hypothesis");
+  hBtn.addEventListener("click", async () => {
+    try {
+      await fetchJSON("/api/hypothesis/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: hSymbol.value, event_a: hEventA.value, event_b: hEventB.value }),
+      });
+      await loadHypotheses();
+    } catch (err) {
+      hypResults.prepend(errorBox(err));
+    }
+  });
+  nodes.push(el("div", { class: "controls" }, [hSymbol, hEventA, hEventB, hBtn]));
+
+  nodes.push(el("h2", {}, "Event Research"));
+  const rSymbol = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const rEvent = el("input", { type: "text", value: "cpi", placeholder: "Event category" });
+  const rBtn = el("button", {}, "Run");
+  const rResults = el("div");
+  rBtn.addEventListener("click", async () => {
+    rResults.innerHTML = "";
+    try {
+      const r = await fetchJSON(
+        `/api/research?symbol=${encodeURIComponent(rSymbol.value)}&event=${encodeURIComponent(rEvent.value)}`
+      );
+      rResults.appendChild(
+        el("div", { class: "grid" }, [
+          card("Occurrences", r.occurrences),
+          card("Win rate", `${r.win_rate_pct}%`),
+          card("Avg return", fmtPct(r.avg_return_pct)),
+          card("Sharpe", r.sharpe_ratio ?? "n/a"),
+        ])
+      );
+    } catch (err) {
+      rResults.appendChild(errorBox(err));
+    }
+  });
+  nodes.push(el("div", { class: "controls" }, [rSymbol, rEvent, rBtn]), rResults);
+
+  return nodes;
+}
+
+async function renderStrategies() {
+  const nodes = [el("h2", {}, "Strategies")];
+  const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Target symbol" });
+  const condInput = el("input", {
+    type: "text",
+    value: "BTC:rsi:lt:30",
+    placeholder: "Condition SYMBOL:field:op:value",
+  });
+  const horizonInput = el("input", { type: "text", value: "5", placeholder: "Horizon" });
+  const slInput = el("input", { type: "text", placeholder: "Stop loss (e.g. 0.05)" });
+  const tpInput = el("input", { type: "text", placeholder: "Take profit (e.g. 0.1)" });
+  const modeSelect = el(
+    "select",
+    {},
+    ["run", "walk_forward", "monte_carlo"].map((m) => el("option", { value: m }, m))
+  );
+  const runBtn = el("button", {}, "Run");
+  nodes.push(
+    el("div", { class: "controls" }, [
+      symbolInput,
+      condInput,
+      horizonInput,
+      slInput,
+      tpInput,
+      modeSelect,
+      runBtn,
+    ])
+  );
+  const results = el("div");
+  nodes.push(results);
+
+  function parseCondition(text) {
+    const parts = text.split(":");
+    if (parts.length !== 4) return null;
+    return { symbol: parts[0], field: parts[1], operator: parts[2], value: parseFloat(parts[3]) };
+  }
+
+  runBtn.addEventListener("click", async () => {
+    results.innerHTML = "";
+    const condition = parseCondition(condInput.value);
+    if (!condition) {
+      results.appendChild(el("p", { class: "error" }, "Condition must look like SYMBOL:field:op:value"));
+      return;
+    }
+    try {
+      const body = {
+        target_symbol: symbolInput.value,
+        conditions: [condition],
+        horizon: parseInt(horizonInput.value, 10) || 1,
+        stop_loss_pct: slInput.value ? parseFloat(slInput.value) : null,
+        take_profit_pct: tpInput.value ? parseFloat(tpInput.value) : null,
+        mode: modeSelect.value,
+      };
+      const r = await fetchJSON("/api/strategy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (modeSelect.value === "walk_forward") {
+        results.appendChild(
+          table(
+            ["Fold", "Start", "End", "Occurrences", "Win rate"],
+            r.folds.map((f) => [
+              String(f.fold),
+              f.start_date.slice(0, 10),
+              f.end_date.slice(0, 10),
+              f.metrics ? String(f.metrics.occurrences) : "0",
+              f.metrics ? `${f.metrics.win_rate_pct}%` : "n/a",
+            ])
+          )
+        );
+      } else if (modeSelect.value === "monte_carlo") {
+        results.appendChild(
+          el("div", { class: "grid" }, [
+            card("Total return p5", fmtPct(r.total_return_p5_pct)),
+            card("Total return p50", fmtPct(r.total_return_p50_pct)),
+            card("Total return p95", fmtPct(r.total_return_p95_pct)),
+            card("Max drawdown p50", `${r.max_drawdown_p50_pct}%`),
+            card("Max drawdown p95", `${r.max_drawdown_p95_pct}%`),
+          ])
+        );
+      } else {
+        results.appendChild(
+          el("div", { class: "grid" }, [
+            card("Occurrences", r.occurrences),
+            card("Win rate", `${r.win_rate_pct}%`),
+            card("Avg return", fmtPct(r.avg_return_pct)),
+            card("Max drawdown", `${r.max_drawdown_pct}%`),
+            card("Profit factor", r.profit_factor ?? "n/a"),
+            card("Sharpe", r.sharpe_ratio ?? "n/a"),
+          ])
+        );
+      }
+    } catch (err) {
+      results.appendChild(errorBox(err));
+    }
+  });
+
+  return nodes;
+}
+
 async function renderProbability() {
   const nodes = [el("h2", {}, "Probability")];
   const input = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
@@ -485,6 +707,7 @@ async function renderSettings() {
 const PAGES = {
   overview: renderOverview, macro: renderMacro, crypto: renderCrypto, stocks: renderStocks,
   correlations: renderCorrelations, similarity: renderSimilarity, brain: renderBrain,
+  research: renderResearch, strategies: renderStrategies,
   probability: renderProbability, scenarios: renderScenarios, whales: renderWhales, etf: renderEtf,
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, settings: renderSettings,
 };

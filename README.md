@@ -759,6 +759,194 @@ the real API.
   15 tabs with zero JavaScript errors.
 - 201 tests pass (59 new this sprint), `ruff check` clean.
 
+## V3: Institutional Research Platform
+
+Full repository inspection first (again, per the standing rule), then
+extended -- nothing rewritten. V3 was requested as a ten-phase "Global Data
+Lake / Feature Engine / Research Lab" build; every phase below is mapped
+onto a genuine extension of an existing Sprint/V2 engine rather than a
+parallel implementation (`_REGIME_RISK_SPLIT`, `compute_forward_returns`,
+`compute_backtest_metrics`, the Backtest Engine's row-loader and the Smart
+Alert Engine's `AlertLog` table are all reused, not duplicated). Two scope
+decisions were made explicitly with the user up front rather than guessed:
+the Data Lake stays at daily/4h/1h (the timeframes this project can
+actually validate) plus forex and a real-source-only economic calendar --
+no 1m/5m/15m or options/futures, since no honest free source exists for
+them in this project; and the AI Researcher's discovery step is fully
+deterministic statistics, with an LLM used only to turn already-computed
+findings into a readable note (never to judge or invent a finding).
+
+### 1. Global Data Lake extension (forex + economic calendar)
+
+`ForexHistory` (`app/database/models.py`) extends the existing
+`HistoryRegistry`/sync/validation/gap-repair pipeline (Sprint 6) to 6 major
+pairs -- no second sync path was written. `EconomicCalendarEngine`
+(`app/services/calendar/`) stores only real dated events: FRED release
+dates for CPI/PPI/NFP/GDP (`FredReleaseCalendarClient`, keyed by
+`FRED_API_KEY`, already configured) and a small curated seed of the 8 real
+2024 FOMC meeting dates -- deliberately not extended with guessed future
+dates, since this project has no verified live source for them. No
+forecast/consensus values are stored; none exist for free.
+
+```
+GET /api/calendar?days_back=&days_ahead=
+```
+
+### 2. Feature Engine
+
+`FeatureEngine` (`app/services/features/`) computes a documented set of
+derived features per symbol from data already synced by the History
+Registry -- returns, momentum (7/14/30/90d), RSI, MACD, ATR, realized
+volatility, drawdown, and (where a whale/ETF snapshot history exists)
+whale-flow and ETF-flow momentum -- and persists each run as a
+`FeatureSnapshot` JSON blob. A feature that isn't computable this cycle
+(e.g. no whale history for that symbol) is simply absent from the blob,
+never fabricated.
+
+```
+GET /api/features/{symbol}?compute=
+```
+
+### 3. Research Lab
+
+`ResearchEngine.test_hypothesis()` (`app/services/research/engine.py`)
+answers questions like "how does BTC move after CPI" by matching curated
+calendar dates to real stored bars (`nearest_bar_index`, shared with the
+Event Impact Engine below via `events_lookup.py`) and reusing Sprint 9's
+`compute_forward_returns`/`compute_backtest_metrics` -- the same forward-
+return math the Backtest Engine already uses, not a second formula. Returns
+occurrence count, average/median/max gain/max loss and win rate; 404s
+honestly if the event category is unknown or no bars exist yet.
+
+```
+GET /api/research?symbol=&event=&horizon=&timeframe=
+/research SYMBOL EVENT [horizon]
+```
+
+### 4. Strategy Lab
+
+`StrategyLabEngine` (`app/services/backtest/strategy_engine.py`) extends
+the existing condition-based Backtest Engine (Sprint 9) with stop
+loss/take profit exit simulation, position sizing, walk-forward validation
+(splits history into folds, reused verbatim by the Ranking Engine below)
+and Monte Carlo simulation -- a seeded bootstrap resample of the strategy's
+own real historical trade returns, never a fabricated return. Reuses the
+Backtest Engine's existing row-loading helper rather than a second data
+path.
+
+```
+POST /api/strategy   {"target_symbol","conditions",...,"mode":"run"|"walk_forward"|"monte_carlo"}
+/strategy SYMBOL SYMBOL:field:op:value [...] [horizon] [sl=X] [tp=X] [size=X] [mode=...]
+```
+
+### 5. Regime Classifier extension
+
+`MarketRegime` (`app/services/analysis/regime.py`) gained seven new states
+-- Bull, Bear, Accumulation, Distribution, Capitulation, Recovery, Sideways
+-- as priority-ordered rules layered onto the existing detector, not a
+replacement (`detect_regime()`'s new `whale_classification`,
+`momentum_30d`, `previous_regime` parameters all default to `None` and are
+fully backward compatible). Fixed a real latent bug while extending: the
+Global Score Engine's `_REGIME_RISK_SPLIT` lookup would have raised
+`KeyError` on every one of these seven regimes the moment `detect_regime()`
+could return them, crashing `/api/global-score` and everything downstream
+-- caught and fixed before it ever shipped. Accumulation/Distribution are
+explicitly documented as a derivatives-positioning proxy (same caveat as
+the existing Whale Engine), not literal on-chain accumulation.
+
+```
+GET /api/regime
+/regime
+```
+
+### 6. Event Impact Engine
+
+`EventImpactEngine` (`app/services/research/impact.py`) measures the real
+average return at 24h/7d/30d after every stored occurrence of a curated
+event category (Fed/CPI/PPI/NFP/GDP/halving/crash/regulatory/...), sharing
+the same bar-matching helper as the Research Lab. Extends `/api/events`
+rather than a new router.
+
+```
+GET /api/events/impact?category=&symbol=&timeframe=
+```
+
+### 7. AI Researcher
+
+`AIResearcherEngine` (`app/services/research/researcher.py`) runs daily,
+reusing the existing Smart Alert Engine's `AlertLog` history (Sprint 9/V2)
+as its discovery source instead of writing a second anomaly detector --
+discovery stays fully deterministic. An LLM (Anthropic-preferred,
+OpenAI-fallback, via the shared `generate_text()` helper added to
+`app/llm/client.py`) only narrates the pre-computed discoveries into a
+readable note; with no LLM key configured it degrades to a plain
+discovery list rather than failing.
+
+```
+GET  /api/research/notes/latest
+POST /api/research/notes/generate?window_hours=
+```
+
+### 8. AI Hypothesis Engine
+
+`HypothesisEngine` (`app/services/hypothesis/`) auto-generates comparison
+hypotheses from a small template set (e.g. "BTC reacts stronger to FOMC
+than to CPI") across BTC/ETH/SPX/NASDAQ, tests each side through the
+Research Lab's own `test_hypothesis()`, and reaches a deterministic
+accept/reject/inconclusive verdict via a fixed magnitude-margin comparison
+(`evaluate_comparison()`) -- never an LLM's judgment call. Runs weekly on
+the scheduler.
+
+```
+GET  /api/hypothesis
+POST /api/hypothesis/test   {"symbol","event_a","event_b"}
+POST /api/hypothesis/test-all
+/hypothesis [SYMBOL EVENT_A EVENT_B]
+```
+
+### 9. Ranking Engine
+
+`RankingEngine` (`app/services/ranking/`) ranks each of the six factors
+that already drive the Signal Engine's confidence score (RSI, momentum,
+volatility, correlation, whale flow, regime alignment -- `etf_inflow` is
+honestly excluded, since no historical snapshot table backs it yet) by
+real predictive edge. Reuses the Strategy Lab's own `walk_forward` with
+`folds=2`: the older fold doubles as "historical importance", the newer
+fold as "current importance", avoiding a second backtest implementation.
+
+```
+GET /api/ranking?symbol=&compute=
+/ranking [SYMBOL]
+```
+
+### 10. Executive Dashboard extension
+
+Two new pages added to the existing 15-page dashboard (`app/static/
+dashboard/`, still dependency-free vanilla JS): **Research Lab** (daily AI
+note + manual generate, factor ranking table, hypothesis list/test form,
+event-research query form) and **Strategies** (a condition-builder that
+drives `/api/strategy` in all three modes). Verified with `node --check
+app.js` (syntax only) -- unlike the original 15 pages, these two were
+**not** verified in a live headless-Chromium session in this sandbox (no
+running Postgres/Redis available at the time), which remains an open
+verification gap for a future session with a live stack.
+
+### What was actually verified (V3)
+
+- The `_REGIME_RISK_SPLIT` `KeyError` bug was caught and fixed before any
+  of the seven new regimes could reach `/api/global-score` in production.
+- The hand-implemented Dickey-Fuller/cointegration math was checked against
+  a live one-off script with known stationary/non-stationary/cointegrated
+  synthetic series before the tests were finalized.
+- Migrations 0011-0016 each carry a real, reviewed `upgrade()`/`downgrade()`
+  (the regime-enum migration's downgrade is a documented no-op --
+  PostgreSQL has no `DROP VALUE` for enum types).
+- 328 tests pass (94 new this sprint), `ruff check` clean.
+- No new environment variables or Docker/compose services were needed --
+  V3 reuses every existing key (`FRED_API_KEY`, `ANTHROPIC_API_KEY`/
+  `OPENAI_API_KEY`, `COINGLASS_API_KEY`/`COINALYZE_API_KEY`) and every
+  existing process type (`app`, `bot`, scheduler jobs in-process).
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

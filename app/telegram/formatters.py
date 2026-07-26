@@ -410,6 +410,115 @@ def format_portfolio(health: dict) -> str:
     return "\n".join(lines)
 
 
+def format_research_result(result: dict | None) -> str:
+    if result is None:
+        return "No usable result -- unknown event category, no recorded events, or no history."
+    return "\n".join(
+        [
+            f"*RESEARCH: {result['target_symbol']} after {result['event_category'].upper()}* "
+            f"({result['timeframe']}, {result['horizon_periods']}-period horizon)",
+            "",
+            f"Occurrences: {result['occurrences']}",
+            f"Win rate: {result['win_rate_pct']}%",
+            f"Avg return: {result['avg_return_pct']}%",
+            f"Max drawdown: {result['max_drawdown_pct']}%",
+            f"Profit factor: {result['profit_factor']}",
+            f"Sharpe ratio: {result['sharpe_ratio']}",
+        ]
+    )
+
+
+def format_strategy_result(result: dict | None) -> str:
+    if result is None:
+        return "No historical occurrences of this rule found."
+    lines = [
+        f"*STRATEGY: {result['target_symbol']}* ({result['timeframe']}, "
+        f"{result['horizon_periods']}-period horizon)",
+        "",
+        f"Occurrences: {result['occurrences']}",
+        f"Win rate: {result['win_rate_pct']}%",
+        f"Avg return: {result['avg_return_pct']}%",
+        f"Max drawdown: {result['max_drawdown_pct']}%",
+        f"Profit factor: {result['profit_factor']}",
+        f"Sharpe ratio: {result['sharpe_ratio']}",
+    ]
+    if result.get("stop_loss_pct") is not None:
+        lines.append(f"Stop loss: {result['stop_loss_pct']:.2%}")
+    if result.get("take_profit_pct") is not None:
+        lines.append(f"Take profit: {result['take_profit_pct']:.2%}")
+    if result.get("position_size_pct") is not None:
+        lines.append(f"Position size: {result['position_size_pct']:.0%}")
+    return "\n".join(lines)
+
+
+def format_walk_forward(folds: list[dict]) -> str:
+    if not folds:
+        return "Not enough stored history for walk-forward testing."
+    lines = ["*WALK-FORWARD TEST*", ""]
+    for fold in folds:
+        metrics = fold["metrics"]
+        lines.append(f"Fold {fold['fold']} ({fold['start_date'][:10]} to {fold['end_date'][:10]}):")
+        if metrics is None:
+            lines.append("  No occurrences in this window.")
+        else:
+            lines.append(
+                f"  {metrics['occurrences']} trades, {metrics['win_rate_pct']}% win rate, "
+                f"{metrics['avg_return_pct']}% avg return"
+            )
+    return "\n".join(lines)
+
+
+def format_monte_carlo(result: dict | None) -> str:
+    if result is None:
+        return "Not enough historical trades to run a Monte Carlo simulation (need at least 2)."
+    return "\n".join(
+        [
+            f"*MONTE CARLO: {result['target_symbol']}* "
+            f"({result['n_simulations']} simulations, {result['trades_per_sim']} trades each)",
+            "",
+            f"Total return: {result['total_return_p5_pct']}% (p5) / "
+            f"{result['total_return_p50_pct']}% (p50) / {result['total_return_p95_pct']}% (p95)",
+            f"Max drawdown: {result['max_drawdown_p50_pct']}% (p50) / "
+            f"{result['max_drawdown_p95_pct']}% (p95)",
+        ]
+    )
+
+
+def format_hypothesis(row) -> str:
+    lines = [
+        f"*HYPOTHESIS: {row.statement}*",
+        "",
+        f"Verdict: {row.verdict.value.upper()}",
+        row.reason,
+    ]
+    return "\n".join(lines)
+
+
+def format_hypothesis_list(rows: list) -> str:
+    if not rows:
+        return "No hypotheses tested yet."
+    lines = ["*RECENT HYPOTHESES*", ""]
+    for row in rows:
+        lines.append(f"- [{row.verdict.value.upper()}] {row.statement}")
+    return "\n".join(lines)
+
+
+def format_ranking(row) -> str:
+    if row is None:
+        return "No ranking computed yet."
+    lines = [f"*FACTOR RANKING vs {row.target_symbol}*", ""]
+    for entry in row.rankings:
+        current = entry.get("current_importance_pct")
+        historical = entry.get("historical_importance_pct")
+        current_str = f"{current}%" if current is not None else "n/a"
+        historical_str = f"{historical}%" if historical is not None else "n/a"
+        lines.append(
+            f"{entry['rank']}. {entry['factor']} -- current edge {current_str}, "
+            f"historical edge {historical_str}, confidence (n={entry['confidence']})"
+        )
+    return "\n".join(lines)
+
+
 def format_backtest_result(result: dict | None) -> str:
     if result is None:
         return "No historical occurrences of this rule found."

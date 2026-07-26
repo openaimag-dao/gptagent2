@@ -11,12 +11,15 @@ from app.api.agents import router as agents_router
 from app.api.backtest import router as backtest_router
 from app.api.brain import router as brain_router
 from app.api.btc import router as btc_router
+from app.api.calendar import router as calendar_router
 from app.api.conviction import router as conviction_router
 from app.api.correlations import router as correlations_router
 from app.api.etf import router as etf_router
 from app.api.events import router as events_router
+from app.api.features import router as features_router
 from app.api.global_score import router as global_score_router
 from app.api.history import router as history_router
+from app.api.hypothesis import router as hypothesis_router
 from app.api.knowledge import router as knowledge_router
 from app.api.liquidity import router as liquidity_router
 from app.api.market import router as market_router
@@ -25,12 +28,15 @@ from app.api.news import router as news_router
 from app.api.patterns import router as patterns_router
 from app.api.portfolio import router as portfolio_router
 from app.api.probability import router as probability_router
+from app.api.ranking import router as ranking_router
 from app.api.regime import router as regime_router
 from app.api.reports import router as reports_router
+from app.api.research import router as research_router
 from app.api.scenarios import router as scenarios_router
 from app.api.sentiment import router as sentiment_router
 from app.api.signals import router as signals_router
 from app.api.similar import router as similar_router
+from app.api.strategy import router as strategy_router
 from app.api.whales import router as whales_router
 from app.config import get_settings
 from app.scheduler.jobs import shutdown_scheduler, start_scheduler
@@ -71,6 +77,12 @@ app.include_router(signals_router)
 app.include_router(reports_router)
 app.include_router(history_router)
 app.include_router(events_router)
+app.include_router(calendar_router)
+app.include_router(features_router)
+app.include_router(research_router)
+app.include_router(strategy_router)
+app.include_router(hypothesis_router)
+app.include_router(ranking_router)
 app.include_router(probability_router)
 app.include_router(patterns_router)
 app.include_router(knowledge_router)

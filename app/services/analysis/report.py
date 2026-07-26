@@ -57,9 +57,24 @@ _KEY_SYMBOLS: tuple[str, ...] = (
 )
 
 _HIGH_RISK_REGIMES = frozenset(
-    {MarketRegime.RISK_OFF, MarketRegime.FLIGHT_TO_SAFETY, MarketRegime.LIQUIDITY_CONTRACTION}
+    {
+        MarketRegime.RISK_OFF,
+        MarketRegime.FLIGHT_TO_SAFETY,
+        MarketRegime.LIQUIDITY_CONTRACTION,
+        MarketRegime.BEAR,
+        MarketRegime.CAPITULATION,
+        MarketRegime.DISTRIBUTION,
+    }
 )
-_LOW_RISK_REGIMES = frozenset({MarketRegime.RISK_ON, MarketRegime.LIQUIDITY_EXPANSION})
+_LOW_RISK_REGIMES = frozenset(
+    {
+        MarketRegime.RISK_ON,
+        MarketRegime.LIQUIDITY_EXPANSION,
+        MarketRegime.BULL,
+        MarketRegime.RECOVERY,
+        MarketRegime.ACCUMULATION,
+    }
+)
 
 SYSTEM_PROMPT = """You are a senior macro and crypto market analyst, in the style of a \
 Bloomberg Terminal / Glassnode / institutional research desk. You are given real, \

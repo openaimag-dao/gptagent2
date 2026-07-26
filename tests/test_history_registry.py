@@ -40,6 +40,13 @@ def test_registry_covers_the_expected_symbol_universe():
         "OIL",
         "CPI",
         "M2",
+        # forex
+        "EURUSD",
+        "GBPUSD",
+        "USDJPY",
+        "USDCHF",
+        "AUDUSD",
+        "USDCAD",
     }
     assert symbols == expected
 
@@ -54,4 +61,4 @@ def test_fred_backed_macro_symbols_are_daily_only():
 
 def test_every_symbol_declares_a_market_for_gap_tolerance():
     registry = build_registry()
-    assert all(c.market in ("crypto", "equity") for c in registry)
+    assert all(c.market in ("crypto", "equity", "forex") for c in registry)

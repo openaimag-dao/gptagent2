@@ -15,12 +15,15 @@ from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
 from app.services.backtest.conditions import Condition
 from app.services.backtest.engine import BacktestEngine
+from app.services.backtest.strategy_engine import StrategyLabEngine
 from app.services.conviction.engine import ConvictionEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
+from app.services.hypothesis.engine import HypothesisEngine
+from app.services.hypothesis.templates import HypothesisTemplate
 from app.services.knowledge.engine import KnowledgeEngine
 from app.services.market.repository import MarketRepository
 from app.services.memory.engine import CATEGORY_NAMES, MemoryEngine
@@ -28,6 +31,8 @@ from app.services.news.repository import NewsRepository
 from app.services.patterns.engine import PatternEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
+from app.services.ranking.engine import RankingEngine
+from app.services.research.engine import ResearchEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.signals.engine import SignalEngine
@@ -43,19 +48,26 @@ from app.telegram.formatters import (
     format_events,
     format_global_score,
     format_history,
+    format_hypothesis,
+    format_hypothesis_list,
     format_knowledge,
     format_liquidity,
     format_market_summary,
+    format_monte_carlo,
     format_news,
     format_patterns,
     format_portfolio,
     format_probability,
+    format_ranking,
     format_report,
+    format_research_result,
     format_scenarios,
     format_sentiment,
     format_signal,
     format_similar_periods,
     format_single_asset,
+    format_strategy_result,
+    format_walk_forward,
     format_whale_snapshot,
 )
 
@@ -90,6 +102,16 @@ HELP_TEXT = (
     "/similar SYMBOL [timeframe] -- 25 most similar historical periods\n"
     "/backtest SYMBOL SYMBOL:field:op:value [...] [horizon] -- backtest a rule "
     "(e.g. /backtest BTC BTC:rsi:lt:30 1)\n"
+    "/research SYMBOL EVENT [horizon] -- forward returns after an event "
+    "(e.g. /research BTC cpi 1; events: cpi/ppi/nfp/gdp/fomc/ecb/boj/pboc/halving/crash/"
+    "macro_policy/regulatory/black_swan)\n"
+    "/strategy SYMBOL SYMBOL:field:op:value [...] [horizon] [sl=X] [tp=X] [size=X] "
+    "[mode=run|walk_forward|monte_carlo] -- backtest with stop-loss/take-profit/position "
+    "sizing, walk-forward or Monte Carlo (e.g. /strategy BTC BTC:rsi:lt:30 5 sl=0.05 tp=0.1)\n"
+    "/hypothesis [SYMBOL EVENT_A EVENT_B] -- test or list AI hypotheses "
+    "(e.g. /hypothesis BTC fomc cpi; no args shows recent ones)\n"
+    "/ranking [SYMBOL] -- ranks the signal factors by real predictive power "
+    "(current vs historical edge, e.g. /ranking BTC)\n"
     "/whales -- whale/on-chain intelligence (requires a configured data source)\n"
     "/etf -- ETF flow proxy from ETF-category news sentiment\n"
     "/score -- Global Market Score\n"
@@ -368,6 +390,123 @@ async def cmd_backtest(message: Message, command: CommandObject) -> None:
     engine = BacktestEngine(get_session_factory())
     result = await engine.run(conditions, target_symbol, horizon=horizon)
     await _answer(message, format_backtest_result(result))
+
+
+@router.message(Command("research"))
+async def cmd_research(message: Message, command: CommandObject) -> None:
+    parts = (command.args or "").split()
+    if len(parts) < 2:
+        await _answer(
+            message,
+            "Usage: /research SYMBOL EVENT [horizon]\n"
+            "Example: /research BTC cpi 1\n"
+            "Events: cpi, ppi, nfp, gdp, fomc, ecb, boj, pboc, halving, crash, "
+            "macro_policy, regulatory, black_swan",
+        )
+        return
+
+    symbol, event = parts[0].upper(), parts[1].lower()
+    horizon = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
+
+    engine = ResearchEngine(get_session_factory())
+    result = await engine.test_hypothesis(symbol, event, horizon=horizon)
+    await _answer(message, format_research_result(result))
+
+
+@router.message(Command("strategy"))
+async def cmd_strategy(message: Message, command: CommandObject) -> None:
+    parts = (command.args or "").split()
+    if len(parts) < 2:
+        await _answer(
+            message,
+            "Usage: /strategy SYMBOL SYMBOL:field:op:value [...] [horizon] "
+            "[sl=X] [tp=X] [size=X] [mode=run|walk_forward|monte_carlo]\n"
+            "Example: /strategy BTC BTC:rsi:lt:30 5 sl=0.05 tp=0.1 mode=monte_carlo",
+        )
+        return
+
+    target_symbol = parts[0].upper()
+    kv_tokens = [p for p in parts[1:] if "=" in p]
+    remaining = [p for p in parts[1:] if "=" not in p]
+
+    horizon = 1
+    if remaining and remaining[-1].isdigit():
+        horizon = int(remaining[-1])
+        remaining = remaining[:-1]
+
+    conditions = [_parse_condition(t) for t in remaining]
+    if not remaining or any(c is None for c in conditions):
+        await _answer(
+            message,
+            "Couldn't parse conditions. Use SYMBOL:field:op:value, e.g. BTC:rsi:lt:30.",
+        )
+        return
+
+    kv = dict(token.split("=", 1) for token in kv_tokens)
+    try:
+        stop_loss_pct = float(kv["sl"]) if "sl" in kv else None
+        take_profit_pct = float(kv["tp"]) if "tp" in kv else None
+        position_size_pct = float(kv["size"]) if "size" in kv else 1.0
+    except ValueError:
+        await _answer(message, "sl/tp/size must be numbers, e.g. sl=0.05")
+        return
+
+    mode = kv.get("mode", "run")
+    engine = StrategyLabEngine(get_session_factory())
+    common_kwargs = dict(
+        conditions=conditions,
+        target_symbol=target_symbol,
+        horizon=horizon,
+        stop_loss_pct=stop_loss_pct,
+        take_profit_pct=take_profit_pct,
+        position_size_pct=position_size_pct,
+    )
+
+    if mode == "walk_forward":
+        results = await engine.walk_forward(**common_kwargs)
+        await _answer(message, format_walk_forward(results))
+    elif mode == "monte_carlo":
+        result = await engine.monte_carlo(**common_kwargs)
+        await _answer(message, format_monte_carlo(result))
+    else:
+        result = await engine.run(**common_kwargs)
+        await _answer(message, format_strategy_result(result))
+
+
+@router.message(Command("hypothesis"))
+async def cmd_hypothesis(message: Message, command: CommandObject) -> None:
+    parts = (command.args or "").split()
+    engine = HypothesisEngine(get_session_factory())
+
+    if not parts:
+        rows = await engine.get_latest(limit=10)
+        await _answer(message, format_hypothesis_list(rows))
+        return
+
+    if len(parts) < 3:
+        await _answer(
+            message,
+            "Usage: /hypothesis SYMBOL EVENT_A EVENT_B -- tests a new hypothesis\n"
+            "Usage: /hypothesis -- shows the 10 most recently tested hypotheses\n"
+            "Example: /hypothesis BTC fomc cpi",
+        )
+        return
+
+    hypothesis = HypothesisTemplate(
+        symbol=parts[0].upper(), event_a=parts[1].lower(), event_b=parts[2].lower()
+    )
+    row = await engine.test(hypothesis)
+    await _answer(message, format_hypothesis(row))
+
+
+@router.message(Command("ranking"))
+async def cmd_ranking(message: Message, command: CommandObject) -> None:
+    symbol = (command.args or "BTC").strip().upper() or "BTC"
+    engine = RankingEngine(get_session_factory())
+    row = await engine.get_latest(symbol)
+    if row is None:
+        row = await engine.compute_and_store(symbol)
+    await _answer(message, format_ranking(row))
 
 
 @router.message(Command("agents"))

@@ -7,6 +7,7 @@
     python sync_history.py --validate-only         # skip sync, just validate + repair
     python sync_history.py --no-repair              # report gaps/duplicates without fixing them
     python sync_history.py --seed-events            # load the curated historical-events seed
+    python sync_history.py --sync-calendar           # sync FRED release dates + FOMC seed
 
 Builds a resumable historical OHLCV + indicator database (daily/4h/1h) for
 crypto, US equities/indices and macro indicators, then validates the result
@@ -19,6 +20,7 @@ import asyncio
 import logging
 
 from app.database.session import get_session_factory
+from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.history.events import seed_events
 from app.services.history.registry import HistorySymbolConfig, build_registry
 from app.services.history.repair import repair_duplicates, repair_gaps
@@ -50,6 +52,11 @@ def _parse_args() -> argparse.Namespace:
         "--seed-events",
         action="store_true",
         help="Load the curated historical-events seed and exit",
+    )
+    parser.add_argument(
+        "--sync-calendar",
+        action="store_true",
+        help="Sync FRED release dates + the curated FOMC seed and exit",
     )
     return parser.parse_args()
 
@@ -143,6 +150,13 @@ async def _run(args: argparse.Namespace) -> None:
     if args.seed_events:
         inserted = await seed_events(get_session_factory())
         logger.info("Seeded %d historical event(s)", inserted)
+        return
+
+    if args.sync_calendar:
+        engine = EconomicCalendarEngine(get_session_factory())
+        inserted = await engine.sync_fred_releases()
+        inserted += await engine.seed_central_bank_meetings()
+        logger.info("Synced %d economic calendar event(s)", inserted)
         return
 
     registry = _filter_registry(build_registry(), args.symbol, args.timeframe)
