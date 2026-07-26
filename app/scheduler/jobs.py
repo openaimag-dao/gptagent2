@@ -16,6 +16,7 @@ from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.features.engine import FeatureEngine
 from app.services.global_score.engine import GlobalScoreEngine
+from app.services.hypothesis.engine import HypothesisEngine
 from app.services.market.aggregator import MarketDataAggregator
 from app.services.market.repository import MarketRepository
 from app.services.news.aggregator import NewsAggregator
@@ -45,6 +46,7 @@ REPORT_JOB_ID = "generate_scheduled_report"
 ECONOMIC_CALENDAR_JOB_ID = "sync_economic_calendar"
 FEATURE_JOB_ID = "compute_features"
 AI_RESEARCHER_JOB_ID = "generate_research_note"
+HYPOTHESIS_JOB_ID = "test_hypotheses"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -261,6 +263,15 @@ async def generate_research_note_job() -> None:
         logger.exception("AI Researcher note generation failed")
 
 
+async def test_hypotheses_job() -> None:
+    engine = HypothesisEngine(get_session_factory())
+    try:
+        results = await engine.test_all()
+        logger.info("Hypotheses tested: %d", len(results))
+    except Exception:
+        logger.exception("Hypothesis testing job failed")
+
+
 async def check_alerts_job() -> None:
     engine = build_alert_engine()
     try:
@@ -405,6 +416,13 @@ def start_scheduler() -> AsyncIOScheduler:
         generate_research_note_job,
         trigger=CronTrigger(hour=3, minute=0, timezone="UTC"),
         id=AI_RESEARCHER_JOB_ID,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        test_hypotheses_job,
+        trigger=CronTrigger(day_of_week="mon", hour=4, minute=0, timezone="UTC"),
+        id=HYPOTHESIS_JOB_ID,
         max_instances=1,
         coalesce=True,
     )

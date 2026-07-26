@@ -484,6 +484,25 @@ def format_monte_carlo(result: dict | None) -> str:
     )
 
 
+def format_hypothesis(row) -> str:
+    lines = [
+        f"*HYPOTHESIS: {row.statement}*",
+        "",
+        f"Verdict: {row.verdict.value.upper()}",
+        row.reason,
+    ]
+    return "\n".join(lines)
+
+
+def format_hypothesis_list(rows: list) -> str:
+    if not rows:
+        return "No hypotheses tested yet."
+    lines = ["*RECENT HYPOTHESES*", ""]
+    for row in rows:
+        lines.append(f"- [{row.verdict.value.upper()}] {row.statement}")
+    return "\n".join(lines)
+
+
 def format_backtest_result(result: dict | None) -> str:
     if result is None:
         return "No historical occurrences of this rule found."

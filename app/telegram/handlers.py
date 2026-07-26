@@ -22,6 +22,8 @@ from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
+from app.services.hypothesis.engine import HypothesisEngine
+from app.services.hypothesis.templates import HypothesisTemplate
 from app.services.knowledge.engine import KnowledgeEngine
 from app.services.market.repository import MarketRepository
 from app.services.memory.engine import CATEGORY_NAMES, MemoryEngine
@@ -45,6 +47,8 @@ from app.telegram.formatters import (
     format_events,
     format_global_score,
     format_history,
+    format_hypothesis,
+    format_hypothesis_list,
     format_knowledge,
     format_liquidity,
     format_market_summary,
@@ -102,6 +106,8 @@ HELP_TEXT = (
     "/strategy SYMBOL SYMBOL:field:op:value [...] [horizon] [sl=X] [tp=X] [size=X] "
     "[mode=run|walk_forward|monte_carlo] -- backtest with stop-loss/take-profit/position "
     "sizing, walk-forward or Monte Carlo (e.g. /strategy BTC BTC:rsi:lt:30 5 sl=0.05 tp=0.1)\n"
+    "/hypothesis [SYMBOL EVENT_A EVENT_B] -- test or list AI hypotheses "
+    "(e.g. /hypothesis BTC fomc cpi; no args shows recent ones)\n"
     "/whales -- whale/on-chain intelligence (requires a configured data source)\n"
     "/etf -- ETF flow proxy from ETF-category news sentiment\n"
     "/score -- Global Market Score\n"
@@ -461,6 +467,32 @@ async def cmd_strategy(message: Message, command: CommandObject) -> None:
     else:
         result = await engine.run(**common_kwargs)
         await _answer(message, format_strategy_result(result))
+
+
+@router.message(Command("hypothesis"))
+async def cmd_hypothesis(message: Message, command: CommandObject) -> None:
+    parts = (command.args or "").split()
+    engine = HypothesisEngine(get_session_factory())
+
+    if not parts:
+        rows = await engine.get_latest(limit=10)
+        await _answer(message, format_hypothesis_list(rows))
+        return
+
+    if len(parts) < 3:
+        await _answer(
+            message,
+            "Usage: /hypothesis SYMBOL EVENT_A EVENT_B -- tests a new hypothesis\n"
+            "Usage: /hypothesis -- shows the 10 most recently tested hypotheses\n"
+            "Example: /hypothesis BTC fomc cpi",
+        )
+        return
+
+    hypothesis = HypothesisTemplate(
+        symbol=parts[0].upper(), event_a=parts[1].lower(), event_b=parts[2].lower()
+    )
+    row = await engine.test(hypothesis)
+    await _answer(message, format_hypothesis(row))
 
 
 @router.message(Command("agents"))

@@ -742,3 +742,41 @@ class ResearchNote(Base):
     generated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class HypothesisVerdict(str, enum.Enum):
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    INCONCLUSIVE = "inconclusive"
+
+
+class Hypothesis(Base):
+    """A tested AI Hypothesis (V3 Phase 8): "{SYMBOL} reacts stronger to
+    {EVENT_A} than to {EVENT_B}", tested statistically via the Research
+    Engine (app/services/hypothesis/evaluation.py) -- accepted/rejected/
+    inconclusive is a deterministic magnitude comparison with a minimum
+    sample-size gate, never an LLM's judgment call. `result_a`/`result_b`
+    store the exact Research Engine outputs the verdict was computed
+    from, so every verdict is auditable against its real inputs."""
+
+    __tablename__ = "hypotheses"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    statement: Mapped[str] = mapped_column(String(300))
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    event_a: Mapped[str] = mapped_column(String(30))
+    event_b: Mapped[str] = mapped_column(String(30))
+    verdict: Mapped[HypothesisVerdict] = mapped_column(
+        Enum(
+            HypothesisVerdict,
+            name="hypothesis_verdict",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
+        index=True,
+    )
+    reason: Mapped[str] = mapped_column(Text)
+    result_a: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result_b: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    tested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

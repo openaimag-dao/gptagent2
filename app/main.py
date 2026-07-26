@@ -19,6 +19,7 @@ from app.api.events import router as events_router
 from app.api.features import router as features_router
 from app.api.global_score import router as global_score_router
 from app.api.history import router as history_router
+from app.api.hypothesis import router as hypothesis_router
 from app.api.knowledge import router as knowledge_router
 from app.api.liquidity import router as liquidity_router
 from app.api.market import router as market_router
@@ -79,6 +80,7 @@ app.include_router(calendar_router)
 app.include_router(features_router)
 app.include_router(research_router)
 app.include_router(strategy_router)
+app.include_router(hypothesis_router)
 app.include_router(probability_router)
 app.include_router(patterns_router)
 app.include_router(knowledge_router)
