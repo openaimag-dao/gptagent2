@@ -56,8 +56,12 @@ def test_whale_accumulation_never_fires_when_unavailable():
 
 
 def test_whale_accumulation_fires_when_classified():
-    result = detect_whale_accumulation({"available": True, "classification": "accumulation"})
-    assert result["alert_type"] == "whale_accumulation"
+    result = detect_whale_accumulation({"available": True, "classification": "long_heavy"})
+    assert result["alert_type"] == "whale_positioning"
+
+
+def test_whale_accumulation_none_when_balanced():
+    assert detect_whale_accumulation({"available": True, "classification": "balanced"}) is None
 
 
 def test_etf_milestone_fires_on_new_bullish_lean():
