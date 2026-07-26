@@ -1,8 +1,30 @@
+import logging
+
+import anthropic
 from openai import AsyncOpenAI
 
 from app.config import get_settings
 
-_client: AsyncOpenAI | None = None
+logger = logging.getLogger(__name__)
+
+_openai_client: AsyncOpenAI | None = None
+_anthropic_client: anthropic.AsyncAnthropic | None = None
+
+_ANTHROPIC_MAX_TOKENS = 4096
+
+
+def _get_openai_client() -> AsyncOpenAI:
+    global _openai_client
+    if _openai_client is None:
+        settings = get_settings()
+        if not settings.openai_api_key:
+            raise RuntimeError(
+                "OPENAI_API_KEY is not configured; AI analysis/report generation is unavailable"
+            )
+        _openai_client = AsyncOpenAI(
+            api_key=settings.openai_api_key, base_url=settings.openai_base_url
+        )
+    return _openai_client
 
 
 def get_llm_client() -> AsyncOpenAI:
@@ -11,12 +33,66 @@ def get_llm_client() -> AsyncOpenAI:
     Raises a clear error if no key is configured, rather than silently
     returning a client that will fail on first use.
     """
-    global _client
-    if _client is None:
-        settings = get_settings()
-        if not settings.openai_api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY is not configured; AI analysis/report generation is unavailable"
-            )
-        _client = AsyncOpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
-    return _client
+    return _get_openai_client()
+
+
+def _get_anthropic_client() -> anthropic.AsyncAnthropic:
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic.AsyncAnthropic(api_key=get_settings().anthropic_api_key)
+    return _anthropic_client
+
+
+async def _anthropic_completion(system_prompt: str, user_prompt: str) -> str:
+    settings = get_settings()
+    client = _get_anthropic_client()
+    response = await client.messages.create(
+        model=settings.anthropic_model,
+        max_tokens=_ANTHROPIC_MAX_TOKENS,
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
+        temperature=0.3,
+    )
+    return "".join(block.text for block in response.content if block.type == "text")
+
+
+async def _openai_completion(system_prompt: str, user_prompt: str) -> str:
+    settings = get_settings()
+    client = _get_openai_client()
+    response = await client.chat.completions.create(
+        model=settings.openai_model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.3,
+    )
+    return response.choices[0].message.content or ""
+
+
+async def generate_analysis_json(system_prompt: str, user_prompt: str) -> str:
+    """Runs the report-generation completion and returns the raw JSON text.
+
+    Anthropic (Claude) is preferred when ANTHROPIC_API_KEY is configured --
+    falling back to the OpenAI-compatible client if the Anthropic call fails
+    and OpenAI is also configured. Both providers get the exact same
+    prompts; only the transport differs, so the caller's JSON parsing and
+    validation stays provider-agnostic.
+    """
+    settings = get_settings()
+    if not settings.anthropic_api_key and not settings.openai_api_key:
+        raise RuntimeError(
+            "Neither ANTHROPIC_API_KEY nor OPENAI_API_KEY is configured; "
+            "AI analysis/report generation is unavailable"
+        )
+
+    if settings.anthropic_api_key:
+        try:
+            return await _anthropic_completion(system_prompt, user_prompt)
+        except anthropic.APIError as exc:
+            if not settings.openai_api_key:
+                raise RuntimeError(f"Anthropic report generation failed: {exc}") from exc
+            logger.warning("Anthropic report generation failed, falling back to OpenAI: %s", exc)
+
+    return await _openai_completion(system_prompt, user_prompt)

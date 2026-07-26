@@ -70,7 +70,8 @@ Required variables per service:
 | `DATABASE_URL` | required | required | `${{Postgres.DATABASE_URL}}` |
 | `REDIS_URL` | required | required | `${{Redis.REDIS_URL}}` |
 | `TELEGRAM_BOT_TOKEN` | - | required | from @BotFather |
-| `OPENAI_API_KEY` | required | - | for `/api/report/generate` and scheduled reports |
+| `OPENAI_API_KEY` | required* | - | for `/api/report/generate` and scheduled reports (*not required if `ANTHROPIC_API_KEY` is set instead) |
+| `ANTHROPIC_API_KEY` | optional | - | preferred over OpenAI for report generation when set, falls back to OpenAI on failure |
 | `COINGECKO_API_KEY` | optional | - | raises free-tier rate limit; may be required for `sync_history.py`'s historical endpoint (observed 401 without one) |
 | `FRED_API_KEY` | required for macro data | - | free: https://fred.stlouisfed.org/docs/api/api_key.html |
 | `TWELVEDATA_API_KEY` | optional | - | primary source for indices/Mag 7/DXY/Gold/Silver, free tier 800 req/day |
