@@ -694,3 +694,22 @@ class SimilarMarketMatch(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class FeatureSnapshot(Base):
+    """A computed-feature read for one symbol -- momentum/beta/cointegration/
+    market breadth/funding momentum/OI change (see app/services/features/).
+    Stored as a flexible JSON blob (like SignalSnapshot.factors and
+    MarketRegimeSnapshot.inputs) since the feature set grows over time and a
+    fixed-column table would need a migration for every addition -- each key
+    present means that feature was actually computable this cycle, an
+    absent key means it honestly wasn't (never a fabricated 0/null value)."""
+
+    __tablename__ = "feature_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    features: Mapped[dict] = mapped_column(JSON, default=dict)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

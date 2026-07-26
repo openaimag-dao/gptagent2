@@ -16,6 +16,7 @@ from app.api.conviction import router as conviction_router
 from app.api.correlations import router as correlations_router
 from app.api.etf import router as etf_router
 from app.api.events import router as events_router
+from app.api.features import router as features_router
 from app.api.global_score import router as global_score_router
 from app.api.history import router as history_router
 from app.api.knowledge import router as knowledge_router
@@ -73,6 +74,7 @@ app.include_router(reports_router)
 app.include_router(history_router)
 app.include_router(events_router)
 app.include_router(calendar_router)
+app.include_router(features_router)
 app.include_router(probability_router)
 app.include_router(patterns_router)
 app.include_router(knowledge_router)

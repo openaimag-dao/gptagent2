@@ -14,6 +14,7 @@ from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
 from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.etf.engine import ETFIntelligenceEngine
+from app.services.features.engine import FeatureEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.market.aggregator import MarketDataAggregator
 from app.services.market.repository import MarketRepository
@@ -41,6 +42,7 @@ WHALE_ETF_SNAPSHOT_JOB_ID = "snapshot_whale_etf"
 ALERT_CHECK_JOB_ID = "check_alerts"
 REPORT_JOB_ID = "generate_scheduled_report"
 ECONOMIC_CALENDAR_JOB_ID = "sync_economic_calendar"
+FEATURE_JOB_ID = "compute_features"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -105,6 +107,32 @@ def build_etf_engine() -> ETFIntelligenceEngine:
 
 def build_economic_calendar_engine() -> EconomicCalendarEngine:
     return EconomicCalendarEngine(get_session_factory())
+
+
+def build_feature_engine() -> FeatureEngine:
+    market_repository = MarketRepository(get_session_factory(), get_redis())
+    return FeatureEngine(get_session_factory(), market_repository)
+
+
+# Symbols worth computing features for on every cycle -- crypto majors,
+# broad indices and the Magnificent 7, matching _KEY_SYMBOLS in
+# app/services/analysis/report.py.
+FEATURE_SYMBOLS: tuple[str, ...] = (
+    "BTC",
+    "ETH",
+    "SOL",
+    "NASDAQ",
+    "SPX",
+    "DJI",
+    "RUT",
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "TSLA",
+    "AMZN",
+    "META",
+    "GOOGL",
+)
 
 
 async def collect_market_data_job() -> None:
@@ -211,6 +239,15 @@ async def sync_economic_calendar_job() -> None:
         logger.info("Economic calendar synced: %d new entries", inserted)
     except Exception:
         logger.exception("Economic calendar sync job failed")
+
+
+async def compute_features_job() -> None:
+    engine = build_feature_engine()
+    for symbol in FEATURE_SYMBOLS:
+        try:
+            await engine.compute_and_store(symbol)
+        except Exception:
+            logger.exception("Feature computation failed for %s", symbol)
 
 
 async def check_alerts_job() -> None:
@@ -324,6 +361,14 @@ def start_scheduler() -> AsyncIOScheduler:
         sync_economic_calendar_job,
         trigger=CronTrigger(hour=2, minute=0, timezone="UTC"),
         id=ECONOMIC_CALENDAR_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_features_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=FEATURE_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,
