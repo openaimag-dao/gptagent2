@@ -982,6 +982,42 @@ async function renderSettings() {
     nodes.push(el("h2", {}, "Available Memory Categories"));
     nodes.push(el("p", { class: "sub" }, memory.categories.join(", ")));
   }
+
+  nodes.push(el("h2", {}, "Historical Data Sync"));
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      "Backfills the History/Events/Patterns pages' OHLCV data, curated events and economic " +
+        "calendar. Runs in the background on this deployment; can take several minutes."
+    )
+  );
+  const yearsInput = el("input", { type: "text", value: "10", placeholder: "Years" });
+  const syncBtn = el("button", {}, "Sync now");
+  const statusBox = el("p", { class: "sub" });
+  nodes.push(el("div", { class: "controls" }, [yearsInput, syncBtn]), statusBox);
+
+  async function pollStatus() {
+    try {
+      const s = await fetchJSON("/api/admin/sync-history");
+      statusBox.textContent = `Status: ${s.state}` + (s.error ? ` (${s.error})` : "");
+      if (s.state === "running") setTimeout(pollStatus, 5000);
+    } catch (err) {
+      statusBox.textContent = `Error checking status: ${err.message}`;
+    }
+  }
+  syncBtn.addEventListener("click", async () => {
+    try {
+      const years = parseInt(yearsInput.value, 10) || 10;
+      const s = await fetchJSON(`/api/admin/sync-history?years=${years}`, { method: "POST" });
+      statusBox.textContent = `Status: ${s.state}`;
+      pollStatus();
+    } catch (err) {
+      statusBox.textContent = `Error: ${err.message}`;
+    }
+  });
+  await pollStatus();
+
   return nodes;
 }
 

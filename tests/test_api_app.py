@@ -41,6 +41,7 @@ EXPECTED_PREFIXES = {
     "/api/conviction",
     "/api/portfolio",
     "/api/liquidity",
+    "/api/admin",
 }
 
 

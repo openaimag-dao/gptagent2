@@ -22,12 +22,9 @@ import logging
 from app.database.session import get_session_factory
 from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.history.events import seed_events
+from app.services.history.pipeline import run_sync, run_validation
 from app.services.history.registry import HistorySymbolConfig, build_registry
-from app.services.history.repair import repair_duplicates, repair_gaps
-from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
-from app.services.history.sync import HistorySyncEngine
-from app.services.history.validation import find_duplicate_timestamps, find_gaps
 from app.utils.logging import configure_logging
 
 logger = logging.getLogger("sync_history")
@@ -86,66 +83,6 @@ def _filter_registry(
     return registry
 
 
-async def _run_sync(registry: list[HistorySymbolConfig], years: int) -> None:
-    engine = HistorySyncEngine(get_session_factory(), registry=registry)
-    outcomes = await engine.sync_all(lookback_years=years)
-    for outcome in outcomes:
-        if outcome.error:
-            logger.error("%s/%s FAILED: %s", outcome.symbol, outcome.timeframe.value, outcome.error)
-        else:
-            logger.info(
-                "%s/%s: fetched %d, inserted %d, indicators computed for %d rows",
-                outcome.symbol,
-                outcome.timeframe.value,
-                outcome.candles_fetched,
-                outcome.candles_inserted,
-                outcome.indicators_computed,
-            )
-
-
-async def _run_validation(registry: list[HistorySymbolConfig], repair: bool) -> None:
-    session_factory = get_session_factory()
-    for config in registry:
-        for timeframe in config.timeframes:
-            rows = await get_series(session_factory, config.model, config.symbol, timeframe)
-            if not rows:
-                continue
-            timestamps = [row.timestamp for row in rows]
-
-            duplicates = find_duplicate_timestamps(timestamps)
-            if duplicates:
-                logger.warning(
-                    "%s/%s: %d duplicate candle(s) found",
-                    config.symbol,
-                    timeframe.value,
-                    len(duplicates),
-                )
-                if repair:
-                    removed = await repair_duplicates(
-                        session_factory, config.model, config.symbol, timeframe
-                    )
-                    logger.info(
-                        "%s/%s: removed %d duplicate row(s)",
-                        config.symbol,
-                        timeframe.value,
-                        removed,
-                    )
-
-            gaps = find_gaps(sorted(set(timestamps)), timeframe, config.market)
-            if gaps:
-                logger.warning(
-                    "%s/%s: %d gap(s) detected", config.symbol, timeframe.value, len(gaps)
-                )
-                if repair:
-                    inserted = await repair_gaps(session_factory, config, timeframe, gaps)
-                    logger.info(
-                        "%s/%s: backfilled %d candle(s) across gaps",
-                        config.symbol,
-                        timeframe.value,
-                        inserted,
-                    )
-
-
 async def _run(args: argparse.Namespace) -> None:
     if args.seed_events:
         inserted = await seed_events(get_session_factory())
@@ -160,11 +97,12 @@ async def _run(args: argparse.Namespace) -> None:
         return
 
     registry = _filter_registry(build_registry(), args.symbol, args.timeframe)
+    session_factory = get_session_factory()
 
     if not args.validate_only:
-        await _run_sync(registry, args.years)
+        await run_sync(session_factory, registry, args.years)
 
-    await _run_validation(registry, repair=not args.no_repair)
+    await run_validation(session_factory, registry, repair=not args.no_repair)
 
 
 def main() -> None:
