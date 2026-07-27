@@ -77,6 +77,44 @@ async def test_run_validation_skips_repair_when_repair_false():
         repair_gap.assert_not_awaited()
 
 
+async def test_run_validation_continues_past_a_gap_repair_failure():
+    """A rate-limited/failing provider call while repairing one symbol's gaps
+    must not abort validation for the rest of the registry -- same
+    fault-tolerance contract as HistorySyncEngine.sync_all()."""
+    configs = [_config("BTC"), _config("ETH")]
+    with (
+        patch(
+            "app.services.history.pipeline.get_series",
+            new=AsyncMock(return_value=[SimpleNamespace(timestamp="2026-01-01")]),
+        ),
+        patch("app.services.history.pipeline.find_duplicate_timestamps", return_value=[]),
+        patch("app.services.history.pipeline.find_gaps", return_value=["gap"]),
+        patch(
+            "app.services.history.pipeline.repair_gaps",
+            new=AsyncMock(side_effect=[RuntimeError("429 Too Many Requests"), 2]),
+        ) as repair_gap,
+    ):
+        await run_validation(AsyncMock(), configs, repair=True)  # must not raise
+
+        assert repair_gap.await_count == 2
+
+
+async def test_run_validation_continues_past_a_duplicate_repair_failure():
+    with (
+        patch(
+            "app.services.history.pipeline.get_series",
+            new=AsyncMock(return_value=[SimpleNamespace(timestamp="2026-01-01")]),
+        ),
+        patch("app.services.history.pipeline.find_duplicate_timestamps", return_value=["dup"]),
+        patch("app.services.history.pipeline.find_gaps", return_value=[]),
+        patch(
+            "app.services.history.pipeline.repair_duplicates",
+            new=AsyncMock(side_effect=RuntimeError("db error")),
+        ),
+    ):
+        await run_validation(AsyncMock(), [_config()], repair=True)  # must not raise
+
+
 async def test_run_validation_skips_symbols_with_no_stored_rows():
     with (
         patch("app.services.history.pipeline.get_series", new=AsyncMock(return_value=[])),

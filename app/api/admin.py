@@ -23,9 +23,16 @@ async def _run_history_sync(years: int) -> None:
         await run_sync(session_factory, registry, years)
         await run_validation(session_factory, registry, repair=True)
 
-        calendar_engine = EconomicCalendarEngine(session_factory)
-        await calendar_engine.sync_fred_releases()
-        await calendar_engine.seed_central_bank_meetings()
+        # Best-effort: the calendar sync hits the same external (rate-limited)
+        # APIs as the OHLCV backfill above, so a failure here shouldn't erase
+        # a sync that otherwise completed.
+        try:
+            calendar_engine = EconomicCalendarEngine(session_factory)
+            await calendar_engine.sync_fred_releases()
+            await calendar_engine.seed_central_bank_meetings()
+        except Exception:
+            logger.warning("Admin-triggered history sync: calendar sync failed", exc_info=True)
+
         await seed_events(session_factory)
 
         _status["state"] = "done"

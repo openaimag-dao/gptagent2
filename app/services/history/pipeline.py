@@ -57,15 +57,23 @@ async def run_validation(
                     len(duplicates),
                 )
                 if repair:
-                    removed = await repair_duplicates(
-                        session_factory, config.model, config.symbol, timeframe
-                    )
-                    logger.info(
-                        "%s/%s: removed %d duplicate row(s)",
-                        config.symbol,
-                        timeframe.value,
-                        removed,
-                    )
+                    try:
+                        removed = await repair_duplicates(
+                            session_factory, config.model, config.symbol, timeframe
+                        )
+                        logger.info(
+                            "%s/%s: removed %d duplicate row(s)",
+                            config.symbol,
+                            timeframe.value,
+                            removed,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "%s/%s: failed to repair duplicates",
+                            config.symbol,
+                            timeframe.value,
+                            exc_info=True,
+                        )
 
             gaps = find_gaps(sorted(set(timestamps)), timeframe, config.market)
             if gaps:
@@ -73,13 +81,24 @@ async def run_validation(
                     "%s/%s: %d gap(s) detected", config.symbol, timeframe.value, len(gaps)
                 )
                 if repair:
-                    inserted = await repair_gaps(session_factory, config, timeframe, gaps)
-                    logger.info(
-                        "%s/%s: backfilled %d candle(s) across gaps",
-                        config.symbol,
-                        timeframe.value,
-                        inserted,
-                    )
+                    # A single rate-limited/failed provider call here must not abort
+                    # validation for every other symbol/timeframe -- same
+                    # fault-tolerance contract as HistorySyncEngine.sync_all().
+                    try:
+                        inserted = await repair_gaps(session_factory, config, timeframe, gaps)
+                        logger.info(
+                            "%s/%s: backfilled %d candle(s) across gaps",
+                            config.symbol,
+                            timeframe.value,
+                            inserted,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "%s/%s: failed to repair gaps",
+                            config.symbol,
+                            timeframe.value,
+                            exc_info=True,
+                        )
 
 
 async def sync_and_validate(
