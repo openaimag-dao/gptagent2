@@ -37,17 +37,27 @@ class Settings(BaseSettings):
     # Comma-separated chat IDs automatic reports are broadcast to, e.g. "123456789,-100987654321"
     telegram_broadcast_chat_ids: str | None = None
 
+    # ---- LLM (Google Gemini, optional) ----
+    # Preferred provider when configured -- Gemini has a genuine ongoing
+    # free tier (unlike Anthropic/OpenAI below, which are pay-per-token
+    # with only a one-time trial credit). Falls back to Anthropic, then
+    # OpenAI, in that order, when unconfigured or its call fails. See
+    # app/llm/client.py.
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.5-flash"
+
+    # ---- LLM (Anthropic Claude, optional) ----
+    # Second choice, tried when Gemini is unconfigured or fails. Falls back
+    # to the OpenAI-compatible client below on its own failure.
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-sonnet-4-5-20250929"
+
     # ---- LLM (OpenAI-compatible) ----
+    # Last-resort fallback, or the only provider if Gemini/Anthropic are
+    # both unconfigured.
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
-
-    # ---- LLM (Anthropic Claude, optional) ----
-    # When set, report generation prefers Claude over the OpenAI-compatible
-    # client above, falling back to it if the Anthropic call fails (or
-    # using it directly if ANTHROPIC_API_KEY is unset). See app/llm/client.py.
-    anthropic_api_key: str | None = None
-    anthropic_model: str = "claude-sonnet-4-5-20250929"
 
     # ---- Crypto data (CoinGecko) ----
     coingecko_api_key: str | None = None

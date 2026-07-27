@@ -70,8 +70,9 @@ Required variables per service:
 | `DATABASE_URL` | required | required | `${{Postgres.DATABASE_URL}}` |
 | `REDIS_URL` | required | required | `${{Redis.REDIS_URL}}` |
 | `TELEGRAM_BOT_TOKEN` | - | required | from @BotFather |
-| `OPENAI_API_KEY` | required* | - | for `/api/report/generate` and scheduled reports (*not required if `ANTHROPIC_API_KEY` is set instead) |
-| `ANTHROPIC_API_KEY` | optional | - | preferred over OpenAI for report generation when set, falls back to OpenAI on failure |
+| `GEMINI_API_KEY` | required* | - | for `/api/report/generate` and scheduled reports (*not required if `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is set instead); preferred provider -- genuine ongoing free tier, free key: https://aistudio.google.com/apikey |
+| `ANTHROPIC_API_KEY` | optional | - | second choice, tried when Gemini is unconfigured or fails, falls back to OpenAI on its own failure |
+| `OPENAI_API_KEY` | optional | - | last-resort fallback, or the only provider if Gemini/Anthropic are both unconfigured |
 | `COINGECKO_API_KEY` | optional | - | raises free-tier rate limit; may be required for `sync_history.py`'s historical endpoint (observed 401 without one) |
 | `FRED_API_KEY` | required for macro data | - | free: https://fred.stlouisfed.org/docs/api/api_key.html |
 | `TWELVEDATA_API_KEY` | optional | - | primary source for indices/Mag 7/DXY/Gold/Silver, free tier 800 req/day |
