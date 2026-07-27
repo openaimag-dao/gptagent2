@@ -64,6 +64,26 @@ async def test_run_history_sync_marks_done_on_success():
         assert admin._status["finished_at"] is not None
 
 
+async def test_run_history_sync_survives_calendar_sync_failure():
+    """The calendar sync hits the same external, rate-limited APIs as the
+    OHLCV backfill -- a failure there must not erase a sync that otherwise
+    completed successfully."""
+    with (
+        patch("app.api.admin.run_sync", new=AsyncMock()),
+        patch("app.api.admin.run_validation", new=AsyncMock()),
+        patch("app.api.admin.build_registry", return_value=[]),
+        patch("app.api.admin.get_session_factory", return_value=object()),
+        patch(
+            "app.api.admin.EconomicCalendarEngine",
+            side_effect=RuntimeError("429 Too Many Requests"),
+        ),
+        patch("app.api.admin.seed_events", new=AsyncMock()),
+    ):
+        await admin._run_history_sync(years=10)
+
+        assert admin._status["state"] == "done"
+
+
 async def test_run_history_sync_marks_failed_on_exception():
     with (
         patch("app.api.admin.run_sync", new=AsyncMock(side_effect=RuntimeError("boom"))),
