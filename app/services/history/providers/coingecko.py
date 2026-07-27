@@ -23,7 +23,14 @@ COINGECKO_SYMBOL_IDS: dict[str, str] = {
 # only); it auto-selects granularity by the requested day range: 1 day ->
 # 5-minutely, 2-90 days -> hourly, above 90 days -> daily. We pick `days` to
 # land on the granularity we want rather than requesting it directly.
-_DAILY_DAYS = "max"
+#
+# `days=max` (or any range past 365 days) 401s for every free/"Demo"-plan
+# caller -- keyed or not -- with "Public API users are limited to querying
+# historical data within the past 365 days" (live-verified; this is a
+# CoinGecko-side policy change, not a bug in this client). 365 days is the
+# most this engine can honestly backfill for BTC/ETH/SOL without a paid
+# CoinGecko plan.
+_DAILY_DAYS = 365
 _HOURLY_WINDOW_DAYS = 90
 
 

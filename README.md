@@ -302,12 +302,17 @@ source constraints are documented rather than worked around with guesses:
   CoinGecko's free API only exposes these via the live `/global` snapshot,
   not a historical endpoint -- they're excluded from `crypto_history` rather
   than approximated.
-- **CoinGecko's historical endpoint is auth/rate-limited from this sandbox.**
-  `/coins/{id}/market_chart` returned HTTP 401 then 429 during development
-  here -- an undocumented tightening of CoinGecko's free tier, similar in
-  spirit to the Yahoo Finance issue below. Expected to work with a
-  `COINGECKO_API_KEY` or a less-restricted egress IP; the pipeline itself was
-  instead verified end-to-end against FRED (see below).
+- **CoinGecko's free tier caps `/coins/{id}/market_chart` at 365 days of
+  history**, live-verified against production (both keyless and with a
+  `COINGECKO_API_KEY` Demo key): requesting `days=max` 401s with "Public API
+  users are limited to querying historical data within the past 365 days" --
+  a CoinGecko-side policy change, not a bug in this client. `_DAILY_DAYS` is
+  set to `365` accordingly, so BTC/ETH/SOL backfill here is bounded to the
+  trailing year regardless of the engine's configured `--years` lookback; a
+  paid CoinGecko plan is the only way to get the full historical depth other
+  symbols have. Separately, CoinGecko's per-minute rate limit can still 429
+  a burst of calls (retried with backoff) -- a `COINGECKO_API_KEY` raises
+  that ceiling but doesn't change the 365-day cap.
 - **4h candles are resampled, not native.** Neither CoinGecko's free tier nor
   yfinance offers a native 4-hour bar; `resample.py` aggregates 1h bars up to
   4h, so 4h history is bounded by whatever 1h history is available.
