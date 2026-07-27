@@ -37,17 +37,40 @@ class Settings(BaseSettings):
     # Comma-separated chat IDs automatic reports are broadcast to, e.g. "123456789,-100987654321"
     telegram_broadcast_chat_ids: str | None = None
 
+    # ---- LLM (Google Gemini, optional) ----
+    # Preferred provider when configured -- Gemini has a genuine ongoing
+    # free tier (unlike Anthropic/OpenAI/xAI below, which are pay-per-token
+    # with only a one-time trial credit). Falls back to Anthropic, then
+    # OpenAI, then xAI, in that order, when unconfigured or its call fails.
+    # See app/llm/client.py. Model defaults to the "-latest" alias rather
+    # than a pinned version -- pinned Gemini model names get deprecated for
+    # new API keys/projects without warning (observed live: gemini-2.5-flash
+    # returned 404 "no longer available to new users" while still listed by
+    # the models endpoint).
+    gemini_api_key: str | None = None
+    gemini_model: str = "gemini-flash-latest"
+
+    # ---- LLM (Anthropic Claude, optional) ----
+    # Second choice, tried when Gemini is unconfigured or fails. Falls back
+    # to the OpenAI-compatible client below on its own failure.
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-sonnet-4-5-20250929"
+
     # ---- LLM (OpenAI-compatible) ----
+    # Third choice, tried when Gemini/Anthropic are both unconfigured or
+    # fail. Falls back to xAI below on its own failure.
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
 
-    # ---- LLM (Anthropic Claude, optional) ----
-    # When set, report generation prefers Claude over the OpenAI-compatible
-    # client above, falling back to it if the Anthropic call fails (or
-    # using it directly if ANTHROPIC_API_KEY is unset). See app/llm/client.py.
-    anthropic_api_key: str | None = None
-    anthropic_model: str = "claude-sonnet-4-5-20250929"
+    # ---- LLM (xAI Grok, optional) ----
+    # Last-resort fallback, or the only provider if Gemini/Anthropic/OpenAI
+    # are all unconfigured. xAI's API is OpenAI-compatible, so this reuses
+    # the same transport as the OpenAI client above with a different
+    # base URL/model.
+    xai_api_key: str | None = None
+    xai_base_url: str = "https://api.x.ai/v1"
+    xai_model: str = "grok-4.5"
 
     # ---- Crypto data (CoinGecko) ----
     coingecko_api_key: str | None = None

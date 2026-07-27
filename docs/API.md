@@ -136,8 +136,9 @@ for `/api/strategy` are the same as `/api/backtest` above.
 
 No new environment variables were introduced for V3 -- `/api/calendar`
 reuses the already-configured `FRED_API_KEY`, and the AI Researcher reuses
-`ANTHROPIC_API_KEY`/`OPENAI_API_KEY` (degrades to a plain discovery list,
-no note text, if neither is set).
+the same `GEMINI_API_KEY`/`ANTHROPIC_API_KEY`/`OPENAI_API_KEY` chain as
+report generation (degrades to a plain discovery list, no note text, if
+none is set).
 
 ## Error shape
 
