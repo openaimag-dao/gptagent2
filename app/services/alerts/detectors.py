@@ -75,8 +75,9 @@ def detect_dxy_reversal(
 
 
 def detect_whale_accumulation(whale_snapshot: dict) -> dict | None:
-    """Only ever fires if CoinGlass or Coinalyze is configured (see
-    app/services/whales/engine.py) -- with neither configured, this
+    """Only ever fires if a derivatives snapshot is actually available --
+    CoinGlass (if configured) or CoinGecko's keyless fallback (see
+    app/services/whales/engine.py). If both calls fail this cycle, this
     honestly never triggers rather than inventing a positioning signal.
     Flags lopsided leveraged positioning (funding rate + long/short ratio),
     not on-chain accumulation/distribution -- that data isn't available."""

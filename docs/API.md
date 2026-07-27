@@ -76,7 +76,7 @@ synced history yet to compute a result -- run `sync_history.py` first.
 | GET | `/api/knowledge/rules/{id}` | Get one rule + its latest backtest result |
 | POST | `/api/knowledge/rules/{id}/backtest` | Re-run a rule's backtest |
 | GET | `/api/etf?window_hours=72` | ETF news-sentiment flow proxy (`"proxy_only": true` -- not confirmed dollar flows) |
-| GET | `/api/whales?symbol=BTC` | Derivatives-positioning snapshot (funding rate, open interest, liquidations, long/short ratio) -- `"available": false` unless `COINGLASS_API_KEY` or `COINALYZE_API_KEY` is set |
+| GET | `/api/whales?symbol=BTC` | Derivatives-positioning snapshot (funding rate, open interest, liquidations, long/short ratio) -- falls back to CoinGecko's keyless `/derivatives` endpoint (funding rate + open interest only) if `COINGLASS_API_KEY` is unset or its call fails; `"available": false` only if that fallback also fails |
 | GET | `/api/global-score` | Deterministic Risk-On/Off, Liquidity, Fear/Greed, Macro Pressure, Institutional Activity, Crypto/Stock Strength + one global 0-100 score |
 
 `Condition.operator` is one of `gt`, `lt`, `gte`, `lte`. `Condition.field` is

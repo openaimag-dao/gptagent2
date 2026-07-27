@@ -1,16 +1,17 @@
 """Whale Intelligence: derivatives-market positioning via CoinGlass
-(primary) with Coinalyze as a fallback when CoinGlass is unconfigured or
-its call fails.
+(primary) with CoinGecko's keyless `/derivatives` endpoint as a fallback
+when CoinGlass is unconfigured or its call fails.
 
 Exchange inflow/outflow, large-wallet tracking and stablecoin supply
 changes require a genuine on-chain wallet tracker (e.g. Glassnode,
-CryptoQuant) -- neither CoinGlass nor Coinalyze is one, they're
-derivatives-market aggregators. Consistent with this project's rule of
-never fabricating data, this engine only ever reports what those two
-sources can genuinely provide (funding rate, open interest, 24h
-liquidations, long/short ratio) and reports the rest as honestly
-unavailable rather than inventing accumulation/distribution numbers from
-data that doesn't support that conclusion.
+CryptoQuant) -- neither CoinGlass nor CoinGecko's derivatives endpoint is
+one, they're derivatives-market aggregators. Consistent with this
+project's rule of never fabricating data, this engine only ever reports
+what those two sources can genuinely provide (funding rate, open
+interest, and -- CoinGlass only -- 24h liquidations and long/short ratio)
+and reports the rest as honestly unavailable rather than inventing
+accumulation/distribution numbers from data that doesn't support that
+conclusion.
 
 `classification` is derived, not fetched: it labels *derivatives
 positioning* (long-heavy / short-heavy / balanced), not on-chain
@@ -27,7 +28,10 @@ from app.config import get_settings
 from app.database.models import WhaleSnapshot
 from app.database.redis import get_redis
 from app.services.market.providers.cache import RedisCooldownCache
-from app.services.whales.providers.coinalyze import CoinalyzeClient, CoinalyzeError
+from app.services.whales.providers.coingecko_derivatives import (
+    CoinGeckoDerivativesClient,
+    CoinGeckoDerivativesError,
+)
 from app.services.whales.providers.coinglass import CoinGlassClient, CoinGlassError
 
 logger = logging.getLogger(__name__)
@@ -64,12 +68,12 @@ class WhaleIntelligenceEngine:
         self,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         coinglass: CoinGlassClient | None = None,
-        coinalyze: CoinalyzeClient | None = None,
+        coingecko: CoinGeckoDerivativesClient | None = None,
     ) -> None:
         self._settings = get_settings()
         self._session_factory = session_factory
         self._coinglass = coinglass or CoinGlassClient()
-        self._coinalyze = coinalyze or CoinalyzeClient()
+        self._coingecko = coingecko or CoinGeckoDerivativesClient()
         self._cache = RedisCooldownCache(get_redis(), "whale_derivatives")
 
     async def get_snapshot(self, symbol: str = "BTC") -> dict:
@@ -88,21 +92,21 @@ class WhaleIntelligenceEngine:
             except CoinGlassError as exc:
                 logger.warning("CoinGlass snapshot failed for %s: %s", symbol, exc)
 
-        if not data and self._coinalyze.configured:
+        if not data and self._coingecko.configured:
             try:
-                data = await self._coinalyze.get_snapshot(symbol)
-                source = "coinalyze"
-            except CoinalyzeError as exc:
-                logger.warning("Coinalyze snapshot failed for %s: %s", symbol, exc)
+                data = await self._coingecko.get_snapshot(symbol)
+                source = "coingecko"
+            except CoinGeckoDerivativesError as exc:
+                logger.warning("CoinGecko derivatives snapshot failed for %s: %s", symbol, exc)
 
         if not data:
             result = {
                 "available": False,
                 "symbol": symbol,
                 "reason": (
-                    "Neither COINGLASS_API_KEY nor COINALYZE_API_KEY is configured (or both "
-                    "calls failed); derivatives-market data (funding rate, open interest, "
-                    "liquidations, long/short ratio) is unavailable this cycle."
+                    "COINGLASS_API_KEY is not configured and the CoinGecko derivatives "
+                    "fallback call failed; derivatives-market data (funding rate, open "
+                    "interest, liquidations, long/short ratio) is unavailable this cycle."
                 ),
                 "would_return": list(_RESPONSE_FIELDS),
             }
