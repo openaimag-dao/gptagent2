@@ -2,6 +2,7 @@ import logging
 from collections.abc import Awaitable, Callable
 
 import anthropic
+import openai
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 _openai_client: AsyncOpenAI | None = None
 _anthropic_client: anthropic.AsyncAnthropic | None = None
 _gemini_client: genai.Client | None = None
+_xai_client: AsyncOpenAI | None = None
 
 _ANTHROPIC_MAX_TOKENS = 8192
 
@@ -126,14 +128,30 @@ async def _anthropic_completion(
     return text
 
 
-async def _openai_completion(
-    system_prompt: str, user_prompt: str, *, json_mode: bool = True
+def _get_xai_client() -> AsyncOpenAI:
+    global _xai_client
+    if _xai_client is None:
+        settings = get_settings()
+        if not settings.xai_api_key:
+            raise RuntimeError("XAI_API_KEY is not configured; grok completion is unavailable")
+        _xai_client = AsyncOpenAI(api_key=settings.xai_api_key, base_url=settings.xai_base_url)
+    return _xai_client
+
+
+async def _openai_compatible_completion(
+    provider_name: str,
+    client: AsyncOpenAI,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    json_mode: bool,
 ) -> str:
-    settings = get_settings()
-    client = _get_openai_client()
+    """Shared transport for OpenAI and xAI (Grok) -- xAI's API is
+    explicitly OpenAI-compatible, so this is one implementation, not two."""
     extra = {"response_format": {"type": "json_object"}} if json_mode else {}
     response = await client.chat.completions.create(
-        model=settings.openai_model,
+        model=model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -143,7 +161,9 @@ async def _openai_completion(
     )
     choice = response.choices[0]
     text = choice.message.content or ""
-    logger.info("OpenAI response: finish_reason=%s, text_len=%d", choice.finish_reason, len(text))
+    logger.info(
+        "%s response: finish_reason=%s, text_len=%d", provider_name, choice.finish_reason, len(text)
+    )
     if not text.strip():
         # A 200 response with no message content (e.g. the model hit its
         # token budget before emitting anything under forced JSON mode) is
@@ -151,37 +171,64 @@ async def _openai_completion(
         # clear reason instead of handing an empty string to json.loads()
         # three layers up.
         raise RuntimeError(
-            f"OpenAI returned no message content (finish_reason={choice.finish_reason})"
+            f"{provider_name} returned no message content (finish_reason={choice.finish_reason})"
         )
     return text
 
 
-_PROVIDER_ERRORS = (genai_errors.APIError, anthropic.APIError, RuntimeError)
+async def _openai_completion(
+    system_prompt: str, user_prompt: str, *, json_mode: bool = True
+) -> str:
+    settings = get_settings()
+    return await _openai_compatible_completion(
+        "OpenAI",
+        _get_openai_client(),
+        settings.openai_model,
+        system_prompt,
+        user_prompt,
+        json_mode=json_mode,
+    )
+
+
+async def _xai_completion(system_prompt: str, user_prompt: str, *, json_mode: bool = True) -> str:
+    settings = get_settings()
+    return await _openai_compatible_completion(
+        "xAI",
+        _get_xai_client(),
+        settings.xai_model,
+        system_prompt,
+        user_prompt,
+        json_mode=json_mode,
+    )
+
+
+_PROVIDER_ERRORS = (genai_errors.APIError, anthropic.APIError, openai.APIError, RuntimeError)
 _CompletionFn = Callable[..., Awaitable[str]]
+_REQUIRED_KEYS_MESSAGE = (
+    "None of GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY is configured"
+)
 
 
 async def _generate_with_fallback(
     system_prompt: str, user_prompt: str, *, json_mode: bool, purpose: str
 ) -> str:
-    """Shared Gemini > Anthropic > OpenAI provider selection for both
+    """Shared Gemini > Anthropic > OpenAI > xAI provider selection for both
     generate_analysis_json and generate_text -- only whether the JSON
     response mode is forced differs between the two callers. Gemini is
-    preferred because it has a genuine ongoing free tier, unlike
-    Anthropic/OpenAI (pay-per-token, one-time trial credit only); each
-    provider is only tried if configured, and a failure falls through to
-    the next configured one rather than failing the whole call."""
+    preferred because it has a genuine ongoing free tier, unlike the other
+    three (pay-per-token, one-time trial credit only); each provider is
+    only tried if configured, and a failure falls through to the next
+    configured one rather than failing the whole call."""
     settings = get_settings()
     candidates: list[tuple[str, bool, _CompletionFn]] = [
         ("Gemini", bool(settings.gemini_api_key), _gemini_completion),
         ("Anthropic", bool(settings.anthropic_api_key), _anthropic_completion),
         ("OpenAI", bool(settings.openai_api_key), _openai_completion),
+        ("xAI", bool(settings.xai_api_key), _xai_completion),
     ]
     configured = [(name, fn) for name, is_configured, fn in candidates if is_configured]
     if not configured:
-        raise RuntimeError(
-            "None of GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY is configured; "
-            f"{purpose} is unavailable"
-        )
+        raise RuntimeError(f"{_REQUIRED_KEYS_MESSAGE}; {purpose} is unavailable")
 
     for i, (name, completion_fn) in enumerate(configured):
         try:
@@ -199,10 +246,10 @@ async def generate_analysis_json(system_prompt: str, user_prompt: str) -> str:
     """Runs the report-generation completion and returns the raw JSON text.
 
     Gemini is preferred when GEMINI_API_KEY is configured, then Anthropic,
-    then OpenAI -- each only tried if configured, falling through to the
-    next on failure. All providers get the exact same prompts; only the
-    transport differs, so the caller's JSON parsing and validation stays
-    provider-agnostic.
+    then OpenAI, then xAI (Grok) -- each only tried if configured, falling
+    through to the next on failure. All providers get the exact same
+    prompts; only the transport differs, so the caller's JSON parsing and
+    validation stays provider-agnostic.
     """
     return await _generate_with_fallback(
         system_prompt, user_prompt, json_mode=True, purpose="report generation"
@@ -210,8 +257,8 @@ async def generate_analysis_json(system_prompt: str, user_prompt: str) -> str:
 
 
 async def generate_text(system_prompt: str, user_prompt: str) -> str:
-    """Same Gemini > Anthropic > OpenAI selection as generate_analysis_json,
-    but without forcing a JSON response -- for free-text narrative
+    """Same Gemini > Anthropic > OpenAI > xAI selection as
+    generate_analysis_json, but without forcing a JSON response -- for free-text narrative
     generation (e.g. the AI Researcher's daily note) rather than a report
     that must parse as a fixed JSON schema.
     """

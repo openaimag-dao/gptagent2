@@ -879,9 +879,9 @@ GET /api/events/impact?category=&symbol=&timeframe=
 reusing the existing Smart Alert Engine's `AlertLog` history (Sprint 9/V2)
 as its discovery source instead of writing a second anomaly detector --
 discovery stays fully deterministic. An LLM (Gemini-preferred,
-Anthropic/OpenAI-fallback, via the shared `generate_text()` helper added to
-`app/llm/client.py`) only narrates the pre-computed discoveries into a
-readable note; with no LLM key configured it degrades to a plain
+Anthropic/OpenAI/xAI-fallback, via the shared `generate_text()` helper
+added to `app/llm/client.py`) only narrates the pre-computed discoveries
+into a readable note; with no LLM key configured it degrades to a plain
 discovery list rather than failing.
 
 ```
@@ -1126,13 +1126,16 @@ error that's logged and skipped, rather than fabricating data.
 | `COINGLASS_API_KEY` | funding rate, open interest, liquidations, long/short ratio | optional; primary derivatives source, free tier -- unconfigured falls back to CoinGecko's keyless `/derivatives` endpoint (funding rate + open interest only) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot | required to run `app.telegram.main` |
 | `TELEGRAM_BROADCAST_CHAT_IDS` | automatic report broadcast | comma-separated chat IDs |
-| `GEMINI_API_KEY` | AI analysis / `/report` | required for report generation, unless `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` is set; preferred provider, genuine ongoing free tier |
-| `GEMINI_MODEL` | AI analysis | default `gemini-2.5-flash` |
+| `GEMINI_API_KEY` | AI analysis / `/report` | required for report generation, unless `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `XAI_API_KEY` is set; preferred provider, genuine ongoing free tier |
+| `GEMINI_MODEL` | AI analysis | default `gemini-flash-latest` (a floating alias -- pinned Gemini model names get deprecated for new API keys without warning) |
 | `ANTHROPIC_API_KEY` | AI analysis / `/report` | optional; second choice, tried when Gemini is unconfigured or fails |
 | `ANTHROPIC_MODEL` | AI analysis | default `claude-sonnet-4-5-20250929` |
-| `OPENAI_API_KEY` | AI analysis / `/report` | optional; last-resort fallback, or the only provider if Gemini/Anthropic are both unconfigured |
+| `OPENAI_API_KEY` | AI analysis / `/report` | optional; third choice, tried when Gemini/Anthropic are both unconfigured or fail |
 | `OPENAI_BASE_URL` | AI analysis | any OpenAI-compatible endpoint |
 | `OPENAI_MODEL` | AI analysis | default `gpt-4o-mini` |
+| `XAI_API_KEY` | AI analysis / `/report` | optional; last-resort fallback, or the only provider if Gemini/Anthropic/OpenAI are all unconfigured |
+| `XAI_BASE_URL` | AI analysis | default `https://api.x.ai/v1` (OpenAI-compatible) |
+| `XAI_MODEL` | AI analysis | default `grok-4.5` |
 | `MARKET_DATA_INTERVAL_MINUTES` | scheduler | default `5` |
 | `NEWS_COLLECTION_INTERVAL_MINUTES` | scheduler | default `10` |
 | `ANALYSIS_INTERVAL_MINUTES` | scheduler | default `30` |

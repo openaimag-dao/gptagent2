@@ -10,6 +10,7 @@ from app.llm.client import (
     _anthropic_completion,
     _gemini_completion,
     _openai_completion,
+    _xai_completion,
     generate_analysis_json,
     generate_text,
 )
@@ -19,15 +20,19 @@ def _settings(
     gemini_api_key: str | None = None,
     anthropic_api_key: str | None = None,
     openai_api_key: str | None = None,
+    xai_api_key: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         gemini_api_key=gemini_api_key,
-        gemini_model="gemini-2.5-flash",
+        gemini_model="gemini-flash-latest",
         anthropic_api_key=anthropic_api_key,
         anthropic_model="claude-sonnet-4-5-20250929",
         openai_api_key=openai_api_key,
         openai_base_url="https://api.openai.com/v1",
         openai_model="gpt-4o-mini",
+        xai_api_key=xai_api_key,
+        xai_base_url="https://api.x.ai/v1",
+        xai_model="grok-4.5",
     )
 
 
@@ -186,6 +191,45 @@ async def test_raises_with_last_provider_name_when_all_configured_fail():
             await generate_analysis_json("system", "user")
 
 
+async def test_falls_back_to_xai_when_all_others_fail():
+    with (
+        patch(
+            "app.llm.client.get_settings",
+            return_value=_settings(
+                gemini_api_key="gm-key",
+                anthropic_api_key="claude-key",
+                openai_api_key="sk-openai",
+                xai_api_key="xai-key",
+            ),
+        ),
+        patch("app.llm.client._gemini_completion", new=AsyncMock(side_effect=_genai_error())),
+        patch("app.llm.client._anthropic_completion", new=AsyncMock(side_effect=_api_error())),
+        patch(
+            "app.llm.client._openai_completion",
+            new=AsyncMock(side_effect=RuntimeError("insufficient_quota")),
+        ),
+        patch(
+            "app.llm.client._xai_completion", new=AsyncMock(return_value='{"grok": true}')
+        ) as xai_call,
+    ):
+        result = await generate_analysis_json("system", "user")
+
+    assert result == '{"grok": true}'
+    xai_call.assert_awaited_once_with("system", "user", json_mode=True)
+
+
+async def test_raises_when_only_xai_configured_and_it_fails():
+    with (
+        patch("app.llm.client.get_settings", return_value=_settings(xai_api_key="xai-key")),
+        patch(
+            "app.llm.client._xai_completion",
+            new=AsyncMock(side_effect=RuntimeError("rate limited")),
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="xAI report generation failed"):
+            await generate_analysis_json("system", "user")
+
+
 async def test_generate_text_uses_openai_without_json_mode():
     with (
         patch("app.llm.client.get_settings", return_value=_settings(openai_api_key="sk-openai")),
@@ -269,3 +313,34 @@ async def test_gemini_completion_returns_text_when_present():
         result = await _gemini_completion("system", "user")
 
     assert result == "hello world"
+
+
+async def test_xai_completion_raises_when_no_message_content():
+    fake_response = _fake_openai_response(content=None, finish_reason="length")
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=AsyncMock(return_value=fake_response))
+        )
+    )
+    with (
+        patch("app.llm.client.get_settings", return_value=_settings(xai_api_key="xai-key")),
+        patch("app.llm.client._get_xai_client", return_value=fake_client),
+    ):
+        with pytest.raises(RuntimeError, match="no message content.*length"):
+            await _xai_completion("system", "user")
+
+
+async def test_xai_completion_returns_text_when_present():
+    fake_response = _fake_openai_response(content="grok says hi")
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=AsyncMock(return_value=fake_response))
+        )
+    )
+    with (
+        patch("app.llm.client.get_settings", return_value=_settings(xai_api_key="xai-key")),
+        patch("app.llm.client._get_xai_client", return_value=fake_client),
+    ):
+        result = await _xai_completion("system", "user")
+
+    assert result == "grok says hi"
