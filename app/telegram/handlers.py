@@ -136,11 +136,17 @@ async def _answer(message: Message, text: str) -> None:
     can contain characters like a stray "_" or "*" that Telegram's legacy
     Markdown parser treats as an unterminated entity, which raises
     TelegramBadRequest and would otherwise crash the handler.
+
+    The fallback passes parse_mode=None explicitly rather than omitting it:
+    the Bot is constructed with a default parse_mode of Markdown (see
+    app/telegram/bot.py), and aiogram resolves an omitted parse_mode to
+    that bot-level default -- so simply not passing it here would retry
+    with the exact same Markdown parsing that just failed.
     """
     try:
         await message.answer(text, parse_mode="Markdown")
     except TelegramBadRequest:
-        await message.answer(text)
+        await message.answer(text, parse_mode=None)
 
 
 @router.message(Command("start"))

@@ -1,5 +1,7 @@
 import logging
 
+from aiogram.exceptions import TelegramBadRequest
+
 from app.config import get_settings
 from app.database.models import Report
 from app.telegram.bot import build_bot
@@ -31,8 +33,18 @@ async def broadcast_text(text: str) -> None:
     bot = build_bot()
     try:
         for chat_id in chat_ids:
+            body = text[:4090]
             try:
-                await bot.send_message(chat_id=chat_id, text=text[:4090], parse_mode="Markdown")
+                await bot.send_message(chat_id=chat_id, text=body, parse_mode="Markdown")
+            except TelegramBadRequest:
+                # Same Markdown-entity-parsing failure _answer() guards
+                # against in handlers.py -- parse_mode=None must be passed
+                # explicitly, since the Bot's own default parse_mode is
+                # Markdown and an omitted parse_mode resolves to it.
+                try:
+                    await bot.send_message(chat_id=chat_id, text=body, parse_mode=None)
+                except Exception:
+                    logger.warning("Failed to broadcast to chat %s", chat_id, exc_info=True)
             except Exception:
                 logger.warning("Failed to broadcast to chat %s", chat_id, exc_info=True)
     finally:
