@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 _openai_client: AsyncOpenAI | None = None
 _anthropic_client: anthropic.AsyncAnthropic | None = None
 
-_ANTHROPIC_MAX_TOKENS = 4096
+_ANTHROPIC_MAX_TOKENS = 8192
 
 
 def _get_openai_client() -> AsyncOpenAI:
@@ -54,6 +54,13 @@ async def _anthropic_completion(system_prompt: str, user_prompt: str) -> str:
         temperature=0.3,
     )
     text = "".join(block.text for block in response.content if block.type == "text")
+    logger.info(
+        "Anthropic response: %d content block(s) (%s), stop_reason=%s, text_len=%d",
+        len(response.content),
+        ",".join(sorted({block.type for block in response.content})) or "none",
+        response.stop_reason,
+        len(text),
+    )
     if not text.strip():
         # A 200 response with no text block (all content non-text, or the
         # model stopped before emitting any) is not a raised APIError, but
@@ -81,7 +88,19 @@ async def _openai_completion(
         temperature=0.3,
         **extra,
     )
-    return response.choices[0].message.content or ""
+    choice = response.choices[0]
+    text = choice.message.content or ""
+    logger.info("OpenAI response: finish_reason=%s, text_len=%d", choice.finish_reason, len(text))
+    if not text.strip():
+        # A 200 response with no message content (e.g. the model hit its
+        # token budget before emitting anything under forced JSON mode) is
+        # just as unusable as an API error -- raise so the caller sees a
+        # clear reason instead of handing an empty string to json.loads()
+        # three layers up.
+        raise RuntimeError(
+            f"OpenAI returned no message content (finish_reason={choice.finish_reason})"
+        )
+    return text
 
 
 async def _generate_with_fallback(

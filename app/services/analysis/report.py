@@ -134,6 +134,31 @@ def derive_risk_level(regime: MarketRegime) -> str:
     return "moderate"
 
 
+def strip_json_fence(text: str) -> str:
+    """Strips a wrapping ```json / ``` markdown code fence, if present.
+
+    Anthropic has no forced-JSON response mode (unlike OpenAI's
+    `response_format: json_object`, used for the OpenAI path), so Claude
+    routinely wraps its JSON answer in a markdown fence despite being asked
+    for a bare JSON object -- left unstripped, that leading backtick makes
+    json.loads() fail immediately with a misleading "Expecting value: line
+    1 column 1 (char 0)". Only strips the opening fence line unconditionally
+    (a response truncated by max_tokens won't have a closing fence to
+    strip), so a genuinely truncated response still fails json.loads() with
+    an accurate error instead of being silently misinterpreted as empty.
+    """
+    text = text.strip()
+    if not text.startswith("```"):
+        return text
+    first_newline = text.find("\n")
+    if first_newline == -1:
+        return text
+    text = text[first_newline + 1 :]
+    if text.rstrip().endswith("```"):
+        text = text.rstrip()[:-3]
+    return text.strip()
+
+
 def _format_market_lines(assets: list[AssetPrice]) -> list[str]:
     return format_asset_lines(assets, _KEY_SYMBOLS)
 
@@ -342,7 +367,7 @@ class ReportGenerator:
         raw_content = await generate_analysis_json(SYSTEM_PROMPT, user_prompt)
 
         try:
-            analysis = AIAnalysisContent.model_validate(json.loads(raw_content))
+            analysis = AIAnalysisContent.model_validate(json.loads(strip_json_fence(raw_content)))
         except (json.JSONDecodeError, ValidationError) as exc:
             raise RuntimeError(f"LLM returned an invalid analysis payload: {exc}") from exc
 

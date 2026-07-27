@@ -5,7 +5,12 @@ import httpx
 import pytest
 from anthropic import APIError
 
-from app.llm.client import _anthropic_completion, generate_analysis_json, generate_text
+from app.llm.client import (
+    _anthropic_completion,
+    _openai_completion,
+    generate_analysis_json,
+    generate_text,
+)
 
 
 def _settings(anthropic_api_key: str | None, openai_api_key: str | None) -> SimpleNamespace:
@@ -174,4 +179,37 @@ async def test_raises_when_anthropic_returns_empty_content_and_no_openai_configu
         ),
     ):
         with pytest.raises(RuntimeError, match="Anthropic report generation failed"):
+            await generate_analysis_json("system", "user")
+
+
+def _fake_openai_response(content: str | None, finish_reason: str = "stop") -> SimpleNamespace:
+    message = SimpleNamespace(content=content)
+    choice = SimpleNamespace(message=message, finish_reason=finish_reason)
+    return SimpleNamespace(choices=[choice])
+
+
+async def test_openai_completion_raises_when_no_message_content():
+    fake_response = _fake_openai_response(content=None, finish_reason="length")
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=AsyncMock(return_value=fake_response))
+        )
+    )
+    with (
+        patch("app.llm.client.get_settings", return_value=_settings(None, "sk-openai")),
+        patch("app.llm.client._get_openai_client", return_value=fake_client),
+    ):
+        with pytest.raises(RuntimeError, match="no message content.*length"):
+            await _openai_completion("system", "user")
+
+
+async def test_raises_when_both_anthropic_and_openai_return_empty_content():
+    anthropic_error = RuntimeError("Anthropic returned no text content (stop_reason=max_tokens)")
+    openai_error = RuntimeError("OpenAI returned no message content (finish_reason=length)")
+    with (
+        patch("app.llm.client.get_settings", return_value=_settings("claude-key", "sk-openai")),
+        patch("app.llm.client._anthropic_completion", new=AsyncMock(side_effect=anthropic_error)),
+        patch("app.llm.client._openai_completion", new=AsyncMock(side_effect=openai_error)),
+    ):
+        with pytest.raises(RuntimeError, match="OpenAI returned no message content"):
             await generate_analysis_json("system", "user")

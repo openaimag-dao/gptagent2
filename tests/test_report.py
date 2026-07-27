@@ -8,7 +8,7 @@ from app.database.models import (
     SignalSnapshot,
 )
 from app.services.analysis.regime import MarketRegime
-from app.services.analysis.report import build_user_prompt, derive_risk_level
+from app.services.analysis.report import build_user_prompt, derive_risk_level, strip_json_fence
 
 
 def test_derive_risk_level_high_for_risk_off():
@@ -22,6 +22,26 @@ def test_derive_risk_level_low_for_risk_on():
 
 def test_derive_risk_level_moderate_otherwise():
     assert derive_risk_level(MarketRegime.NEUTRAL) == "moderate"
+
+
+def test_strip_json_fence_removes_json_fence_with_language_tag():
+    assert strip_json_fence('```json\n{"a": 1}\n```') == '{"a": 1}'
+
+
+def test_strip_json_fence_removes_bare_fence():
+    assert strip_json_fence('```\n{"a": 1}\n```') == '{"a": 1}'
+
+
+def test_strip_json_fence_handles_truncated_response_with_no_closing_fence():
+    assert strip_json_fence('```json\n{"a": 1, "b": "unterm') == '{"a": 1, "b": "unterm'
+
+
+def test_strip_json_fence_leaves_unfenced_content_unchanged():
+    assert strip_json_fence('{"a": 1}') == '{"a": 1}'
+
+
+def test_strip_json_fence_leaves_bare_fence_marker_unchanged():
+    assert strip_json_fence("```") == "```"
 
 
 def _asset(symbol: str, price: float, change_pct_24h: float | None) -> AssetPrice:
