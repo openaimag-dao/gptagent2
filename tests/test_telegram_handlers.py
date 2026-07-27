@@ -29,7 +29,7 @@ async def test_answer_falls_back_to_plain_text_on_bad_markdown():
     await _answer(message, "nasdaq_up broke it")
 
     assert message.answer.await_count == 2
-    message.answer.assert_awaited_with("nasdaq_up broke it")
+    message.answer.assert_awaited_with("nasdaq_up broke it", parse_mode=None)
 
 
 async def test_cmd_memory_rejects_unknown_category_without_touching_db():
