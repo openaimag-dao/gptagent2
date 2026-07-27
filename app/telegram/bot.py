@@ -3,9 +3,10 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import BotCommand
 
 from app.config import get_settings
-from app.telegram.handlers import router
+from app.telegram.handlers import BOT_COMMANDS, router
 
 logger = logging.getLogger(__name__)
 
@@ -30,5 +31,8 @@ async def run_bot() -> None:
     """Starts long polling. Runs forever -- intended as its own process/service."""
     bot = build_bot()
     dispatcher = build_dispatcher()
+    await bot.set_my_commands(
+        [BotCommand(command=name, description=description) for name, description in BOT_COMMANDS]
+    )
     logger.info("Starting Telegram bot (long polling)")
     await dispatcher.start_polling(bot)
