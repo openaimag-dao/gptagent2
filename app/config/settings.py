@@ -66,13 +66,15 @@ class Settings(BaseSettings):
     alphavantage_api_key: str | None = None
 
     # ---- Whale/on-chain derivatives data (optional) ----
-    # Primary: CoinGlass. Fallback: Coinalyze. Both cover derivatives-market
-    # aggregates only (funding rate, open interest, liquidations, long/short
-    # ratio) -- neither is an on-chain wallet tracker, so exchange netflow /
-    # large-wallet-change / stablecoin-supply-change stay honestly
-    # unavailable even with these configured. See app/services/whales/engine.py.
+    # Primary: CoinGlass. Fallback: CoinGecko's keyless `/derivatives`
+    # endpoint (no separate key needed -- reuses coingecko_api_key/
+    # coingecko_base_url above, or works unauthenticated). Both cover
+    # derivatives-market aggregates only (funding rate, open interest --
+    # CoinGlass adds liquidations and long/short ratio) -- neither is an
+    # on-chain wallet tracker, so exchange netflow / large-wallet-change /
+    # stablecoin-supply-change stay honestly unavailable even with these
+    # configured. See app/services/whales/engine.py.
     coinglass_api_key: str | None = None
-    coinalyze_api_key: str | None = None
 
     # ---- Scheduling / networking ----
     market_data_interval_minutes: int = 5

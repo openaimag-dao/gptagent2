@@ -487,23 +487,25 @@ POST /api/backtest   {"target_symbol", "conditions": [...], "timeframe", "horizo
 /backtest SYMBOL SYMBOL:field:op:value [...] [horizon]   (e.g. /backtest BTC BTC:rsi:lt:30 1)
 ```
 
-### 6. Whale Intelligence -- derivatives positioning via CoinGlass/Coinalyze
+### 6. Whale Intelligence -- derivatives positioning via CoinGlass/CoinGecko
 
 Exchange inflow/outflow, large-wallet tracking and stablecoin supply changes
 require a genuine on-chain wallet tracker (Glassnode, CryptoQuant) that isn't
 configured anywhere in this project, and there's no reliable free equivalent
--- `WhaleIntelligenceEngine` never claims those fields. Funding rate, open
-interest, 24h liquidations and long/short ratio *are* available for real
-from CoinGlass (`COINGLASS_API_KEY`, free tier) with Coinalyze
-(`COINALYZE_API_KEY`, free tier) as a fallback when CoinGlass is unconfigured
-or its call fails. `classification` (`long_heavy` / `short_heavy` /
-`balanced`) is derived from funding rate + long/short ratio -- it describes
+-- `WhaleIntelligenceEngine` never claims those fields. Funding rate and open
+interest *are* available for real from CoinGlass (`COINGLASS_API_KEY`, free
+tier) with CoinGecko's keyless `/derivatives` endpoint (no key needed) as a
+fallback when CoinGlass is unconfigured or its call fails; 24h liquidations
+and long/short ratio are CoinGlass-only, since CoinGecko's free derivatives
+endpoint doesn't offer either. `classification` (`long_heavy` / `short_heavy`
+/ `balanced`) is derived from funding rate + long/short ratio -- it describes
 current leveraged derivatives positioning, not on-chain accumulation or
 distribution, since neither source can honestly support that stronger claim.
-With neither key configured (or both calls failing), the engine reports
-`"available": false` with a clear reason and the exact response shape a real
-read would fill in -- the same principle that keeps `FredMacroProvider` from
-inventing a Fed Funds Rate when `FRED_API_KEY` is unset.
+If CoinGlass is unconfigured and the CoinGecko fallback call also fails, the
+engine reports `"available": false` with a clear reason and the exact
+response shape a real read would fill in -- the same principle that keeps
+`FredMacroProvider` from inventing a Fed Funds Rate when `FRED_API_KEY` is
+unset.
 
 ```
 GET /api/whales?symbol=BTC
@@ -693,7 +695,7 @@ dedicated API endpoint (not requested, and its output is naturally part of
 delta-detection functions (`detectors.py`) against the two most recent
 stored readings of each relevant snapshot: regime change, BTC/NASDAQ
 correlation break, DXY trend reversal, lopsided derivatives positioning
-(only ever fires if CoinGlass or Coinalyze is configured), ETF sentiment
+(only ever fires if a derivatives snapshot is actually available), ETF sentiment
 turning bullish, liquidity score swings, and upcoming curated macro/policy
 events. Every detection is conviction-classified and logged to
 `alert_logs` (`broadcast` flag records whether it cleared the gate); only
@@ -944,7 +946,7 @@ verification gap for a future session with a live stack.
 - 328 tests pass (94 new this sprint), `ruff check` clean.
 - No new environment variables or Docker/compose services were needed --
   V3 reuses every existing key (`FRED_API_KEY`, `ANTHROPIC_API_KEY`/
-  `OPENAI_API_KEY`, `COINGLASS_API_KEY`/`COINALYZE_API_KEY`) and every
+  `OPENAI_API_KEY`, `COINGLASS_API_KEY`) and every
   existing process type (`app`, `bot`, scheduler jobs in-process).
 
 ## Known operational limitation: Yahoo Finance
@@ -989,8 +991,8 @@ one key is configured. Consequences and mitigations already built in:
 cp .env.example .env
 # fill in TELEGRAM_BOT_TOKEN / OPENAI_API_KEY / COINGECKO_API_KEY / FRED_API_KEY
 # (FRED_API_KEY is free: https://fred.stlouisfed.org/docs/api/api_key.html)
-# optionally also: TWELVEDATA_API_KEY / ALPHAVANTAGE_API_KEY / COINGLASS_API_KEY /
-# COINALYZE_API_KEY -- see .env.example and the Yahoo Finance limitation section below
+# optionally also: TWELVEDATA_API_KEY / ALPHAVANTAGE_API_KEY / COINGLASS_API_KEY
+# -- see .env.example and the Yahoo Finance limitation section below
 docker compose up --build
 ```
 
@@ -1121,8 +1123,7 @@ error that's logged and skipped, rather than fabricating data.
 | `FRED_API_KEY` | Fed rate, VIX, US10Y/30Y, Oil | free key required |
 | `TWELVEDATA_API_KEY` | indices, Magnificent 7, DXY/Gold/Silver | optional; primary link of the fallback chain, free tier 800 req/day |
 | `ALPHAVANTAGE_API_KEY` | Magnificent 7 fallback, news sentiment fallback | optional; free tier 5 req/min, 25/day |
-| `COINGLASS_API_KEY` | funding rate, open interest, liquidations, long/short ratio | optional; primary derivatives source, free tier |
-| `COINALYZE_API_KEY` | same as above | optional; fallback derivatives source, free tier |
+| `COINGLASS_API_KEY` | funding rate, open interest, liquidations, long/short ratio | optional; primary derivatives source, free tier -- unconfigured falls back to CoinGecko's keyless `/derivatives` endpoint (funding rate + open interest only) |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot | required to run `app.telegram.main` |
 | `TELEGRAM_BROADCAST_CHAT_IDS` | automatic report broadcast | comma-separated chat IDs |
 | `OPENAI_API_KEY` | AI analysis / `/report` | required for report generation, unless `ANTHROPIC_API_KEY` is set |

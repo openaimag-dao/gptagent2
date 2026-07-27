@@ -72,7 +72,7 @@ def detect_regime(
        from a single day's Risk On/Off.
     5. Accumulation / Distribution -- needs `whale_classification` (from
        WhaleIntelligenceEngine: "long_heavy"/"short_heavy"/"balanced",
-       itself derived from CoinGlass/Coinalyze funding rate + long/short
+       itself derived from CoinGlass/CoinGecko funding rate + long/short
        ratio). This is a derivatives-positioning proxy, NOT literal
        on-chain wallet accumulation/distribution -- there's no free source
        for that (see app/services/whales/engine.py's own docstring for the

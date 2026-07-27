@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Standalone verification script for the new market-data provider fallback
 chains: Twelve Data -> Alpha Vantage -> yfinance for indices/Magnificent 7,
-Twelve Data -> yfinance for DXY/Gold/Silver, CoinGlass -> Coinalyze for
+Twelve Data -> yfinance for DXY/Gold/Silver, CoinGlass -> CoinGecko for
 crypto derivatives positioning, and Alpha Vantage as a news-sentiment
 fallback. Reuses the exact provider classes the live pipeline uses (not a
 reimplementation), so what this prints is what the scheduler will actually
@@ -50,7 +50,7 @@ async def _check_quote_provider(title: str, provider, symbol_info: dict) -> tupl
 
 
 async def _check_derivatives() -> tuple[int, int]:
-    _header("Crypto derivatives positioning (CoinGlass -> Coinalyze)")
+    _header("Crypto derivatives positioning (CoinGlass -> CoinGecko)")
     try:
         snapshot = await WhaleIntelligenceEngine().get_snapshot("BTC")
     except Exception as exc:  # noqa: BLE001
@@ -101,7 +101,6 @@ async def main() -> None:
         "twelvedata_api_key",
         "alphavantage_api_key",
         "coinglass_api_key",
-        "coinalyze_api_key",
         "fred_api_key",
     ):
         print(f"  {name}: {'set' if getattr(settings, name) else 'NOT SET'}")

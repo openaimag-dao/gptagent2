@@ -76,8 +76,7 @@ Required variables per service:
 | `FRED_API_KEY` | required for macro data | - | free: https://fred.stlouisfed.org/docs/api/api_key.html |
 | `TWELVEDATA_API_KEY` | optional | - | primary source for indices/Mag 7/DXY/Gold/Silver, free tier 800 req/day |
 | `ALPHAVANTAGE_API_KEY` | optional | - | Mag 7 + news sentiment fallback, free tier 5 req/min |
-| `COINGLASS_API_KEY` | optional | - | primary derivatives-positioning source, free tier |
-| `COINALYZE_API_KEY` | optional | - | derivatives-positioning fallback, free tier |
+| `COINGLASS_API_KEY` | optional | - | primary derivatives-positioning source, free tier -- unconfigured falls back to CoinGecko's keyless `/derivatives` endpoint automatically, no variable needed |
 | `TELEGRAM_BROADCAST_CHAT_IDS` | - | optional | comma-separated chat IDs for scheduled report pushes |
 
 ### Start commands
