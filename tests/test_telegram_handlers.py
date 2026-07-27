@@ -1,10 +1,11 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandObject
 from aiogram.methods import SendMessage
+from aiogram.types import ErrorEvent, Update
 
-from app.telegram.handlers import _answer, cmd_memory
+from app.telegram.handlers import BOT_COMMANDS, _answer, cmd_memory, cmd_portfolio, handle_errors
 
 
 def _bad_request() -> TelegramBadRequest:
@@ -32,6 +33,15 @@ async def test_answer_falls_back_to_plain_text_on_bad_markdown():
     message.answer.assert_awaited_with("nasdaq_up broke it", parse_mode=None)
 
 
+async def test_answer_truncates_to_telegram_message_cap():
+    message = AsyncMock()
+
+    await _answer(message, "x" * 5000)
+
+    (text,), kwargs = message.answer.call_args
+    assert len(text) == 4090
+
+
 async def test_cmd_memory_rejects_unknown_category_without_touching_db():
     message = AsyncMock()
     command = CommandObject(args="not_a_real_category")
@@ -41,3 +51,51 @@ async def test_cmd_memory_rejects_unknown_category_without_touching_db():
     message.answer.assert_awaited_once()
     (text,), kwargs = message.answer.call_args
     assert "Unknown category 'not_a_real_category'" in text
+
+
+async def test_cmd_portfolio_rejects_bad_entry_price_without_crashing():
+    message = AsyncMock()
+    command = CommandObject(args="add BTC 1 not_a_number")
+    portfolio = AsyncMock()
+    portfolio.get_or_create.return_value.id = 1
+
+    with (
+        patch("app.telegram.handlers.PortfolioEngine", return_value=portfolio),
+        patch("app.telegram.handlers._market_repository"),
+        patch("app.telegram.handlers.get_session_factory"),
+    ):
+        await cmd_portfolio(message, command)
+
+    portfolio.add_position.assert_not_awaited()
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "Couldn't add position" in text
+
+
+async def test_handle_errors_notifies_user_instead_of_staying_silent():
+    message = AsyncMock()
+    update = Update.model_construct(update_id=1, message=message)
+    event = ErrorEvent(update=update, exception=RuntimeError("boom"))
+
+    await handle_errors(event)
+
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "went wrong" in text.lower()
+
+
+async def test_handle_errors_swallows_telegram_bad_request_from_notification():
+    message = AsyncMock()
+    message.answer.side_effect = _bad_request()
+    update = Update.model_construct(update_id=1, message=message)
+    event = ErrorEvent(update=update, exception=RuntimeError("boom"))
+
+    await handle_errors(event)  # must not raise
+
+
+def test_bot_commands_are_valid_telegram_command_names():
+    for name, description in BOT_COMMANDS:
+        assert name.islower()
+        assert 1 <= len(name) <= 32
+        assert all(c.isalnum() or c == "_" for c in name)
+        assert 1 <= len(description) <= 256

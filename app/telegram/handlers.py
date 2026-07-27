@@ -3,7 +3,7 @@ import logging
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import ErrorEvent, Message
 from sqlalchemy import select
 
 from app.api.reports import build_report_generator
@@ -124,6 +124,45 @@ HELP_TEXT = (
     "/portfolio [add SYMBOL QTY [entry_price]] -- virtual portfolio health"
 )
 
+# Registered with Telegram via Bot.set_my_commands() so the client's "/" menu
+# is populated -- kept separate from HELP_TEXT since Telegram caps each
+# description at 256 chars and disallows newlines.
+BOT_COMMANDS: list[tuple[str, str]] = [
+    ("start", "Welcome message"),
+    ("help", "List all available commands"),
+    ("market", "Full market summary (crypto, indices, stocks, macro)"),
+    ("btc", "Bitcoin price and 24h change"),
+    ("crypto", "Crypto market summary"),
+    ("stocks", "US indices and Magnificent 7 summary"),
+    ("macro", "Macro indicators (DXY, Gold, VIX, yields, Fed rate)"),
+    ("news", "Latest classified news"),
+    ("signals", "Current bull/bear signal score"),
+    ("correlations", "Rolling BTC/ETH/SOL correlations"),
+    ("report", "Latest AI market analysis report"),
+    ("history", "Historical OHLCV + indicators, e.g. /history BTC 1d"),
+    ("events", "Curated historical market events"),
+    ("probability", "Empirical next-day up/down probability"),
+    ("patterns", "Detected technical patterns"),
+    ("knowledge", "Similar historical episodes for current conditions"),
+    ("brain", "AI Brain synthesis report (alias of /report)"),
+    ("similar", "Most similar historical periods"),
+    ("backtest", "Backtest a rule, e.g. /backtest BTC BTC:rsi:lt:30 1"),
+    ("research", "Forward returns after an event, e.g. /research BTC cpi 1"),
+    ("strategy", "Backtest with stop-loss/take-profit/position sizing"),
+    ("hypothesis", "Test or list AI hypotheses"),
+    ("ranking", "Ranks signal factors by real predictive power"),
+    ("whales", "Whale/derivatives positioning intelligence"),
+    ("etf", "ETF flow proxy from ETF-category news sentiment"),
+    ("score", "Global Market Score"),
+    ("agents", "Macro/Crypto/Equity/News/Sentiment agent read-outs"),
+    ("scenarios", "Probability-weighted forward scenarios"),
+    ("sentiment", "Fear & Greed + news sentiment"),
+    ("liquidity", "Liquidity + macro pressure sub-scores"),
+    ("conviction", "Confidence tier for the latest signal/probability"),
+    ("memory", "Recent entries from any stored history category"),
+    ("portfolio", "Virtual portfolio health"),
+]
+
 
 def _market_repository() -> MarketRepository:
     return MarketRepository(get_session_factory(), get_redis())
@@ -142,11 +181,39 @@ async def _answer(message: Message, text: str) -> None:
     app/telegram/bot.py), and aiogram resolves an omitted parse_mode to
     that bot-level default -- so simply not passing it here would retry
     with the exact same Markdown parsing that just failed.
+
+    Truncated to Telegram's 4096-char message cap here (not per-handler) so
+    no command can forget it -- an unbounded reply is also a TelegramBadRequest
+    ("message is too long"), which the parse_mode retry above can't fix
+    since it isn't a parsing error, so it would otherwise crash the handler.
     """
+    text = text[:4090]
     try:
         await message.answer(text, parse_mode="Markdown")
     except TelegramBadRequest:
         await message.answer(text, parse_mode=None)
+
+
+@router.errors()
+async def handle_errors(event: ErrorEvent) -> None:
+    """Guarantees every command gets a reply, even when its handler raises.
+
+    Without this, an unhandled exception in a handler (missing data source,
+    engine bug, etc.) is only logged -- the user sees no response at all,
+    indistinguishable from the bot being down. Converting silence into a
+    visible error message is itself the fix for that class of bug.
+    """
+    logger.error(
+        "Unhandled exception while processing update %s",
+        event.update.update_id,
+        exc_info=event.exception,
+    )
+    message = event.update.message
+    if message is not None:
+        try:
+            await message.answer("Something went wrong processing that command. Try again shortly.")
+        except TelegramBadRequest:
+            logger.warning("Failed to notify user of handler error", exc_info=True)
 
 
 @router.message(Command("start"))
@@ -229,9 +296,7 @@ async def cmd_report(message: Message) -> None:
         await _answer(message, format_report(None))
         return
 
-    text = format_report(report)
-    # Telegram caps messages at 4096 chars; trim defensively rather than error out.
-    await _answer(message, text[:4090])
+    await _answer(message, format_report(report))
 
 
 def _parse_symbol_and_timeframe(command: CommandObject, default_symbol: str = "BTC") -> tuple:
@@ -519,7 +584,7 @@ async def cmd_ranking(message: Message, command: CommandObject) -> None:
 async def cmd_agents(message: Message) -> None:
     orchestrator = build_agent_orchestrator()
     outputs = await orchestrator.run_all()
-    await _answer(message, format_agent_outputs(outputs)[:4090])
+    await _answer(message, format_agent_outputs(outputs))
 
 
 @router.message(Command("scenarios"))
@@ -619,7 +684,7 @@ async def cmd_memory(message: Message, command: CommandObject) -> None:
     lines = ["*MARKET MEMORY*", ""]
     for entry in entries:
         lines.append(f"[{entry['category']}] {entry['timestamp']}: {entry['summary']}")
-    await _answer(message, "\n".join(lines)[:4090])
+    await _answer(message, "\n".join(lines))
 
 
 @router.message(Command("portfolio"))
@@ -631,13 +696,13 @@ async def cmd_portfolio(message: Message, command: CommandObject) -> None:
     parts = (command.args or "").split()
     if parts and parts[0].lower() == "add" and len(parts) >= 3:
         symbol, quantity_raw = parts[1], parts[2]
-        entry_price = float(parts[3]) if len(parts) > 3 else None
         try:
             quantity = float(quantity_raw)
+            entry_price = float(parts[3]) if len(parts) > 3 else None
             await engine.add_position(portfolio.id, symbol, quantity, entry_price)
         except ValueError as exc:
             await _answer(message, f"Couldn't add position: {exc}")
             return
 
     health = await engine.compute_health(portfolio.id)
-    await _answer(message, format_portfolio(health)[:4090])
+    await _answer(message, format_portfolio(health))
