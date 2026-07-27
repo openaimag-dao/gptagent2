@@ -83,6 +83,31 @@ function table(headers, rows) {
   return t;
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svgLineChart(values, { width = 600, height = 160 } = {}) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "chart");
+  const nums = values.filter((v) => v != null);
+  if (!nums.length) return svg;
+  const min = Math.min(...nums);
+  const max = Math.max(...nums);
+  const range = max - min || 1;
+  const stepX = values.length > 1 ? width / (values.length - 1) : 0;
+  const points = values
+    .map((v, i) =>
+      v == null ? null : `${(i * stepX).toFixed(1)},${(height - ((v - min) / range) * height).toFixed(1)}`
+    )
+    .filter(Boolean)
+    .join(" ");
+  const polyline = document.createElementNS(SVG_NS, "polyline");
+  polyline.setAttribute("points", points);
+  svg.appendChild(polyline);
+  return svg;
+}
+
 const content = document.getElementById("content");
 
 async function render(fn) {
@@ -196,6 +221,262 @@ async function renderCorrelations() {
         String(c.data_points),
       ])
     )
+  );
+  return nodes;
+}
+
+async function renderNews() {
+  const nodes = [el("h2", {}, "News")];
+  const data = await safe("/api/news?limit=30");
+  if (!data || !data.items.length) {
+    nodes.push(el("p", { class: "error" }, "No news collected yet."));
+    return nodes;
+  }
+  nodes.push(
+    table(
+      ["Time", "Category", "Sentiment", "Title", "Source"],
+      data.items.map((n) => [
+        n.published_at ? n.published_at.slice(0, 16).replace("T", " ") : "n/a",
+        n.category,
+        el(
+          "span",
+          { class: n.sentiment === "bullish" ? "up" : n.sentiment === "bearish" ? "down" : "neutral" },
+          n.sentiment
+        ),
+        el("a", { href: n.url, target: "_blank", rel: "noopener" }, n.title),
+        n.source,
+      ])
+    )
+  );
+  return nodes;
+}
+
+async function renderHistory() {
+  const nodes = [el("h2", {}, "History")];
+  const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const tfSelect = el("select", {}, ["1d", "4h", "1h"].map((t) => el("option", { value: t }, t)));
+  const btn = el("button", {}, "Load");
+  nodes.push(el("div", { class: "controls" }, [symbolInput, tfSelect, btn]));
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    results.innerHTML = "";
+    results.appendChild(el("p", { class: "loading" }, "Loading..."));
+    try {
+      const data = await fetchJSON(
+        `/api/history/${encodeURIComponent(symbolInput.value)}?timeframe=${tfSelect.value}&limit=120`
+      );
+      results.innerHTML = "";
+      results.appendChild(svgLineChart(data.candles.map((c) => c.close)));
+      results.appendChild(
+        table(
+          ["Date", "Close", "Change", "RSI", "SMA 50", "SMA 200"],
+          data.candles
+            .slice(-20)
+            .reverse()
+            .map((c) => [
+              c.timestamp.slice(0, 10),
+              fmtNum(c.close),
+              el(
+                "span",
+                { class: changeClass(c.return_pct) },
+                fmtPct(c.return_pct != null ? c.return_pct * 100 : null)
+              ),
+              c.rsi != null ? c.rsi.toFixed(1) : "n/a",
+              c.sma_50 != null ? fmtNum(c.sma_50) : "n/a",
+              c.sma_200 != null ? fmtNum(c.sma_200) : "n/a",
+            ])
+        )
+      );
+    } catch (err) {
+      results.innerHTML = "";
+      results.appendChild(errorBox(err));
+    }
+  }
+  btn.addEventListener("click", load);
+  load();
+  return nodes;
+}
+
+async function renderEvents() {
+  const nodes = [el("h2", {}, "Historical Events")];
+  const data = await safe("/api/events");
+  if (data && data.events.length) {
+    nodes.push(
+      table(
+        ["Date", "Title", "Category", "Symbols"],
+        data.events.map((e) => [
+          e.event_date.slice(0, 10),
+          e.title,
+          e.category,
+          (e.symbols_affected || []).join(", ") || "n/a",
+        ])
+      )
+    );
+  } else {
+    nodes.push(el("p", { class: "error" }, "No historical events seeded yet."));
+  }
+
+  nodes.push(el("h2", {}, "Event Impact"));
+  const catInput = el("input", { type: "text", value: "cpi", placeholder: "Event category" });
+  const symInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const btn = el("button", {}, "Measure");
+  nodes.push(el("div", { class: "controls" }, [catInput, symInput, btn]));
+  const results = el("div");
+  nodes.push(results);
+  btn.addEventListener("click", async () => {
+    results.innerHTML = "";
+    try {
+      const r = await fetchJSON(
+        `/api/events/impact?category=${encodeURIComponent(catInput.value)}&symbol=${encodeURIComponent(symInput.value)}`
+      );
+      results.appendChild(
+        table(
+          ["Event date", "Immediate", "24h", "7d", "30d"],
+          r.events.map((ev) => [
+            ev.event_date.slice(0, 10),
+            fmtPct(ev.immediate_pct != null ? ev.immediate_pct * 100 : null),
+            fmtPct(ev.return_24h_pct != null ? ev.return_24h_pct * 100 : null),
+            fmtPct(ev.return_7d_pct != null ? ev.return_7d_pct * 100 : null),
+            fmtPct(ev.return_30d_pct != null ? ev.return_30d_pct * 100 : null),
+          ])
+        )
+      );
+    } catch (err) {
+      results.appendChild(errorBox(err));
+    }
+  });
+  return nodes;
+}
+
+async function renderPatterns() {
+  const nodes = [el("h2", {}, "Patterns")];
+  const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const tfSelect = el("select", {}, ["1d", "4h", "1h"].map((t) => el("option", { value: t }, t)));
+  const btn = el("button", {}, "Load");
+  nodes.push(el("div", { class: "controls" }, [symbolInput, tfSelect, btn]));
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    results.innerHTML = "";
+    try {
+      const data = await fetchJSON(
+        `/api/patterns/${encodeURIComponent(symbolInput.value)}?timeframe=${tfSelect.value}&limit=20`
+      );
+      results.innerHTML = "";
+      if (!data.patterns.length) {
+        results.appendChild(el("p", { class: "error" }, `No patterns detected yet for ${data.symbol}.`));
+        return;
+      }
+      results.appendChild(
+        table(
+          ["Date", "Pattern", "Direction"],
+          data.patterns.map((p) => [
+            p.timestamp.slice(0, 10),
+            p.pattern_name.replace(/_/g, " "),
+            el(
+              "span",
+              { class: p.direction === "bullish" ? "up" : p.direction === "bearish" ? "down" : "neutral" },
+              p.direction
+            ),
+          ])
+        )
+      );
+    } catch (err) {
+      results.innerHTML = "";
+      results.appendChild(errorBox(err));
+    }
+  }
+  btn.addEventListener("click", load);
+  load();
+  return nodes;
+}
+
+async function renderLiquidity() {
+  const data = await safe("/api/liquidity");
+  const nodes = [el("h2", {}, "Liquidity")];
+  if (!data) {
+    nodes.push(
+      el("p", { class: "error" }, "Not enough data yet -- run regime detection and signal scoring first.")
+    );
+    return nodes;
+  }
+  nodes.push(
+    el("div", { class: "grid" }, [
+      scoreBar("Liquidity", data.liquidity_score),
+      scoreBar("Macro Pressure", data.macro_pressure_score),
+      scoreBar("Risk-On", data.risk_on_score),
+      scoreBar("Risk-Off", data.risk_off_score),
+    ])
+  );
+  nodes.push(el("h2", {}, "Inputs"));
+  nodes.push(
+    table(
+      ["Input", "Value"],
+      Object.entries(data.inputs).map(([k, v]) => [k.replace(/_/g, " "), v != null ? fmtNum(v, 4) : "n/a"])
+    )
+  );
+  return nodes;
+}
+
+async function renderSentiment() {
+  const data = await safe("/api/sentiment");
+  const nodes = [el("h2", {}, "Sentiment")];
+  if (!data) {
+    nodes.push(el("p", { class: "error" }, "Sentiment unavailable."));
+    return nodes;
+  }
+  nodes.push(
+    el("div", { class: "grid" }, [
+      card(
+        "Fear & Greed",
+        data.fear_greed_value != null ? `${data.fear_greed_value}/100` : "n/a",
+        data.fear_greed_classification
+      ),
+      card(
+        "News Sentiment",
+        data.news_sentiment_score != null ? `${data.news_sentiment_score}/100` : "n/a",
+        `${data.news_items_analyzed} items analyzed`
+      ),
+      card("Global Sentiment", data.global_sentiment_score != null ? `${data.global_sentiment_score}/100` : "n/a"),
+    ])
+  );
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      data.social_sentiment_available ? "Social sentiment available." : data.social_sentiment_reason
+    )
+  );
+  return nodes;
+}
+
+async function renderCalendar() {
+  const data = await safe("/api/calendar");
+  const nodes = [el("h2", {}, "Economic Calendar")];
+  if (!data) {
+    nodes.push(el("p", { class: "error" }, "Calendar unavailable."));
+    return nodes;
+  }
+  nodes.push(el("h2", {}, "Upcoming"));
+  nodes.push(
+    data.upcoming.length
+      ? table(
+          ["Date", "Country", "Title", "Importance", "Category"],
+          data.upcoming.map((e) => [e.event_date.slice(0, 10), e.country, e.title, e.importance, e.category])
+        )
+      : el("p", { class: "sub" }, "No upcoming events.")
+  );
+  nodes.push(el("h2", {}, "Recent"));
+  nodes.push(
+    data.recent.length
+      ? table(
+          ["Date", "Country", "Title", "Importance", "Category"],
+          data.recent.map((e) => [e.event_date.slice(0, 10), e.country, e.title, e.importance, e.category])
+        )
+      : el("p", { class: "sub" }, "No recent events.")
   );
   return nodes;
 }
@@ -706,7 +987,9 @@ async function renderSettings() {
 
 const PAGES = {
   overview: renderOverview, macro: renderMacro, crypto: renderCrypto, stocks: renderStocks,
-  correlations: renderCorrelations, similarity: renderSimilarity, brain: renderBrain,
+  correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
+  patterns: renderPatterns, liquidity: renderLiquidity, sentiment: renderSentiment,
+  calendar: renderCalendar, similarity: renderSimilarity, brain: renderBrain,
   research: renderResearch, strategies: renderStrategies,
   probability: renderProbability, scenarios: renderScenarios, whales: renderWhales, etf: renderEtf,
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, settings: renderSettings,

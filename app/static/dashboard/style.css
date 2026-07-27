@@ -144,3 +144,21 @@ pre.summary {
 
 .error { color: var(--red); font-size: 13px; }
 .loading { color: var(--muted); font-size: 13px; }
+
+a { color: var(--accent); }
+
+.chart {
+  width: 100%;
+  height: 160px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 16px;
+  display: block;
+}
+.chart polyline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
