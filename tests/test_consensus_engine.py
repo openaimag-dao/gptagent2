@@ -77,6 +77,33 @@ def test_compute_consensus_floors_zero_confidence_votes_so_they_still_count():
     assert result.neutral_agents == ["macro", "crypto"]
 
 
+def test_compute_consensus_scales_weight_by_reliability():
+    outputs = {
+        "news": _output("news", "bullish", 50.0),
+        "macro": _output("macro", "bearish", 50.0),
+    }
+
+    # news has a poor track record (20% correct), macro a perfect one (100%)
+    result = compute_consensus(outputs, reliability={"news": 20.0, "macro": 100.0})
+
+    # news weight = 50 * 0.2 = 10, macro weight = 50 * 1.0 = 50, total = 60
+    assert result.bearish_pct > result.bullish_pct
+    assert result.bearish_agents == ["macro"]
+
+
+def test_compute_consensus_keeps_raw_confidence_for_agents_without_reliability_history():
+    outputs = {
+        "news": _output("news", "bullish", 50.0),
+        "macro": _output("macro", "bearish", 50.0),
+    }
+
+    with_reliability = compute_consensus(outputs, reliability={"news": 100.0})
+    without_reliability = compute_consensus(outputs, reliability=None)
+
+    # macro isn't in the reliability map, so its weight is unaffected either way
+    assert with_reliability.bearish_pct == without_reliability.bearish_pct
+
+
 def test_compute_consensus_percentages_always_sum_to_100():
     outputs = {
         "a": _output("a", "bullish", 33.0),
@@ -110,3 +137,30 @@ async def test_consensus_engine_returns_none_when_nothing_to_tally():
     result = await ConsensusEngine(orchestrator).compute()
 
     assert result is None
+
+
+async def test_consensus_engine_uses_reliability_engine_when_given():
+    orchestrator = AsyncMock()
+    orchestrator.run_all.return_value = {
+        "news": _output("news", "bullish", 50.0),
+        "macro": _output("macro", "bearish", 50.0),
+    }
+    reliability_engine = AsyncMock()
+    reliability_engine.evaluate_reliability.return_value = {"news": 20.0, "macro": 100.0}
+
+    result = await ConsensusEngine(orchestrator, reliability_engine).compute()
+
+    reliability_engine.evaluate_reliability.assert_awaited_once()
+    reliability_engine.log.assert_awaited_once()
+    assert result.bearish_pct > result.bullish_pct
+
+
+async def test_consensus_engine_survives_reliability_engine_failure():
+    orchestrator = AsyncMock()
+    orchestrator.run_all.return_value = {"macro": _output("macro", "bullish", 50.0)}
+    reliability_engine = AsyncMock()
+    reliability_engine.evaluate_reliability.side_effect = RuntimeError("db down")
+
+    result = await ConsensusEngine(orchestrator, reliability_engine).compute()
+
+    assert result.bullish_pct == 100.0

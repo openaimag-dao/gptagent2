@@ -37,6 +37,7 @@ from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.ranking.engine import RankingEngine
+from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.research.engine import ResearchEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
@@ -635,7 +636,9 @@ async def cmd_agents(message: Message) -> None:
 
 @router.message(Command("consensus"))
 async def cmd_consensus(message: Message) -> None:
-    engine = ConsensusEngine(build_agent_orchestrator())
+    engine = ConsensusEngine(
+        build_agent_orchestrator(), AgentReliabilityEngine(get_session_factory())
+    )
     result = await engine.compute()
     await _answer(message, format_consensus(result))
 

@@ -1164,6 +1164,43 @@ container itself.
 445 tests pass (13 new), `ruff check` clean, migration SQL verified via
 `alembic upgrade head --sql` (chains cleanly onto 0016).
 
+### Increment 6: Agent Reliability -- Self-Learning feeds back into Consensus
+
+The audit's last finding: `LearningEngine` measured real, honest accuracy
+for probability predictions, but was never consulted anywhere agent
+weighting happens -- `ConsensusEngine` weighted every agent's vote purely
+by its own self-reported confidence, with no track record involved.
+
+New `AgentReliabilityEngine` (`app/services/reliability/engine.py`, table
+`agent_prediction_logs`, migration `0018`) closes this using the exact
+same pattern `LearningEngine` already established for probability
+snapshots -- log a call, wait for its horizon to elapse in real synced
+history, then check what actually happened:
+
+- Every time `ConsensusEngine.compute()` runs, each agent's direction call
+  is logged against BTC's latest synced daily close (the same macro-proxy
+  every agent's direction already speaks to -- documented in the module's
+  own docstring, not a new claim of per-symbol precision).
+- `evaluate_reliability()` checks every previously-logged call whose 1-day
+  horizon has now elapsed against the real realized return, reusing
+  `LearningEngine.realized_direction()` rather than reimplementing "what
+  actually happened" a second time -- returns `{agent_name: accuracy_pct}`,
+  with an agent simply absent (never a fabricated default) until it has at
+  least one evaluable call.
+- `compute_consensus()` gained an optional `reliability` parameter: when an
+  agent has a real track record, its vote weight is scaled by that
+  accuracy (a consistently-wrong agent counts for less over time); an
+  agent with no track record yet keeps its raw confidence-only weight --
+  fully backward compatible (default `None` preserves the exact prior
+  behavior).
+- Wired into both `ConsensusEngine` call sites (`GET /api/consensus`,
+  `/consensus`); a reliability-tracking failure degrades to the old
+  confidence-only weighting rather than breaking consensus entirely (same
+  try/except pattern as the Knowledge Engine lookup in `ReportGenerator`).
+
+456 tests pass (11 new), `ruff check` clean, migration SQL verified via
+`alembic upgrade head --sql` (chains cleanly onto 0017).
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

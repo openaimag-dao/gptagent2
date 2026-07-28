@@ -14,13 +14,24 @@ fabricating a 33/33/33 split from zero information.
 that did NOT go to the dominant bucket. It is not a new measurement --
 just the complement of a number already computed, made explicit so a
 caller doesn't have to derive it themselves.
+
+Optionally weighted by each agent's own historical reliability (see
+app/services/reliability/engine.py's AgentReliabilityEngine): an agent
+with a real track record of X% correct direction calls has its confidence
+scaled by that track record, so a consistently wrong agent's vote counts
+for less over time. An agent with no evaluable history yet keeps its raw
+confidence -- never penalized for lacking a track record.
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from app.services.agents.base import AgentOutput
 from app.services.agents.orchestrator import AgentOrchestrator
+from app.services.reliability.engine import AgentReliabilityEngine
+
+logger = logging.getLogger(__name__)
 
 # A reporting agent always counts for at least this much weight, even at
 # exactly 0 confidence -- so a unanimous-but-low-confidence set of agents
@@ -56,12 +67,18 @@ class ConsensusResult:
         }
 
 
-def compute_consensus(agent_outputs: dict[str, AgentOutput]) -> ConsensusResult | None:
+def compute_consensus(
+    agent_outputs: dict[str, AgentOutput], reliability: dict[str, float] | None = None
+) -> ConsensusResult | None:
     """Pure function: {agent_name: AgentOutput} -> ConsensusResult.
 
     Each reporting agent's confidence (floored at _MIN_VOTE_WEIGHT) is its
     weight toward its own direction bucket; buckets are normalized to
-    percentages of the total weight actually cast.
+    percentages of the total weight actually cast. When `reliability`
+    (an optional {agent_name: accuracy_pct} map from AgentReliabilityEngine)
+    includes an agent, that agent's weight is additionally scaled by its
+    own historical accuracy -- an agent absent from `reliability` (no
+    evaluable track record yet) keeps its raw confidence-only weight.
     """
     weights = {"bullish": 0.0, "bearish": 0.0, "neutral": 0.0}
     bullish_agents: list[str] = []
@@ -83,6 +100,8 @@ def compute_consensus(agent_outputs: dict[str, AgentOutput]) -> ConsensusResult 
             if output.confidence is not None
             else _MIN_VOTE_WEIGHT
         )
+        if reliability is not None and name in reliability:
+            weight *= reliability[name] / 100.0
         weights[output.direction] += weight
         agents_by_direction[output.direction].append(name)
 
@@ -116,9 +135,26 @@ class ConsensusEngine:
     orchestration wrapper around compute_consensus(), same shape as
     ScenarioEngine/ConvictionEngine wrapping their own pure functions."""
 
-    def __init__(self, agent_orchestrator: AgentOrchestrator) -> None:
+    def __init__(
+        self,
+        agent_orchestrator: AgentOrchestrator,
+        reliability_engine: AgentReliabilityEngine | None = None,
+    ) -> None:
         self._agent_orchestrator = agent_orchestrator
+        self._reliability_engine = reliability_engine
 
     async def compute(self) -> ConsensusResult | None:
         agent_outputs = await self._agent_orchestrator.run_all()
-        return compute_consensus(agent_outputs)
+
+        reliability: dict[str, float] | None = None
+        if self._reliability_engine is not None:
+            try:
+                reliability = await self._reliability_engine.evaluate_reliability()
+                await self._reliability_engine.log(agent_outputs)
+            except Exception:
+                logger.warning(
+                    "Agent reliability tracking failed; continuing without it", exc_info=True
+                )
+                reliability = None
+
+        return compute_consensus(agent_outputs, reliability)
