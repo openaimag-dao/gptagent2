@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database.models import (
     AlertLog,
     Correlation,
+    FeatureSnapshot,
     GlobalMarketScore,
     HistoricalEvent,
     HistoricalEventCategory,
@@ -26,7 +27,10 @@ from app.services.alerts.detectors import (
     detect_dxy_reversal,
     detect_etf_milestone,
     detect_fed_event_approaching,
+    detect_flash_move,
+    detect_funding_shift,
     detect_liquidity_change,
+    detect_oi_spike,
     detect_regime_change,
     detect_whale_accumulation,
 )
@@ -45,6 +49,7 @@ logger = logging.getLogger(__name__)
 _CORRELATION_PAIR = ("BTC", "NASDAQ")
 _CORRELATION_WINDOW_DAYS = 30
 _FED_EVENT_LOOKAHEAD_DAYS = 7
+_VOLATILITY_SYMBOL = "BTC"
 
 
 async def _last_two(
@@ -67,11 +72,13 @@ class AlertEngine:
         global_score_engine: GlobalScoreEngine,
         whale_engine: WhaleIntelligenceEngine,
         etf_engine: ETFIntelligenceEngine,
+        market_repository: MarketRepository | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._global_score_engine = global_score_engine
         self._whale_engine = whale_engine
         self._etf_engine = etf_engine
+        self._market_repository = market_repository
 
     async def _log(self, detection: dict) -> AlertLog:
         conviction = classify_conviction(detection["confidence_pct"])
@@ -133,9 +140,7 @@ class AlertEngine:
         )
         if curr is None:
             return None
-        return detect_liquidity_change(
-            prev.liquidity_score if prev else None, curr.liquidity_score
-        )
+        return detect_liquidity_change(prev.liquidity_score if prev else None, curr.liquidity_score)
 
     async def _detect_whale(self) -> dict | None:
         snapshot = await self._whale_engine.get_snapshot("BTC")
@@ -145,6 +150,42 @@ class AlertEngine:
         prev = await self._etf_engine.get_latest()
         curr = await self._etf_engine.get_flow_proxy()
         return detect_etf_milestone(prev.classification if prev else None, curr)
+
+    async def _detect_flash_move(self) -> dict | None:
+        if self._market_repository is None:
+            return None
+        assets = await self._market_repository.get_latest()
+        asset = next((a for a in assets if a.symbol == _VOLATILITY_SYMBOL), None)
+        if asset is None:
+            return None
+        change_pct = float(asset.change_pct_24h) if asset.change_pct_24h is not None else None
+        return detect_flash_move(_VOLATILITY_SYMBOL, change_pct)
+
+    async def _feature_snapshots(self) -> tuple[FeatureSnapshot | None, FeatureSnapshot | None]:
+        return await _last_two(
+            self._session_factory,
+            FeatureSnapshot,
+            FeatureSnapshot.computed_at,
+            symbol=_VOLATILITY_SYMBOL,
+        )
+
+    async def _detect_funding(self) -> dict | None:
+        curr, prev = await self._feature_snapshots()
+        if curr is None:
+            return None
+        return detect_funding_shift(
+            prev.features.get("funding_rate_momentum_pct") if prev else None,
+            curr.features.get("funding_rate_momentum_pct"),
+        )
+
+    async def _detect_oi(self) -> dict | None:
+        curr, prev = await self._feature_snapshots()
+        if curr is None:
+            return None
+        return detect_oi_spike(
+            prev.features.get("open_interest_change_pct") if prev else None,
+            curr.features.get("open_interest_change_pct"),
+        )
 
     async def _detect_fed_event(self) -> dict | None:
         now = datetime.now(UTC)
@@ -183,6 +224,9 @@ class AlertEngine:
                 await self._detect_whale(),
                 await self._detect_etf(),
                 await self._detect_fed_event(),
+                await self._detect_flash_move(),
+                await self._detect_funding(),
+                await self._detect_oi(),
             ]
             if d is not None
         ]
@@ -213,4 +257,5 @@ def build_alert_engine() -> AlertEngine:
         global_score_engine,
         WhaleIntelligenceEngine(session_factory),
         ETFIntelligenceEngine(news_repository, session_factory),
+        market_repository,
     )
