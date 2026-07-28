@@ -99,6 +99,18 @@ class Settings(BaseSettings):
     # configured. See app/services/whales/engine.py.
     coinglass_api_key: str | None = None
 
+    # ---- On-chain intelligence (optional, v4.0) ----
+    # No provider is wired in yet -- OnChainIntelligenceEngine honestly
+    # reports exchange netflow/reserves, SOPR, MVRV, NUPL, dormancy, coin
+    # days destroyed, active/new addresses, TVL, stablecoin supply and
+    # large transfers as unavailable regardless of these being set, until a
+    # client for one of these is implemented. Glassnode covers general
+    # on-chain metrics; Helius is a Solana-native indexer for
+    # Solana-specific whale wallet activity / DEX volume / bridge activity.
+    # See app/services/onchain/engine.py.
+    glassnode_api_key: str | None = None
+    helius_api_key: str | None = None
+
     # ---- Scheduling / networking ----
     market_data_interval_minutes: int = 5
     news_collection_interval_minutes: int = 10

@@ -30,6 +30,7 @@ from app.api.liquidity import router as liquidity_router
 from app.api.market import router as market_router
 from app.api.memory import router as memory_router
 from app.api.news import router as news_router
+from app.api.onchain import router as onchain_router
 from app.api.patterns import router as patterns_router
 from app.api.portfolio import router as portfolio_router
 from app.api.probability import router as probability_router
@@ -115,6 +116,7 @@ app.include_router(status_router)
 app.include_router(risk_router)
 app.include_router(replay_router)
 app.include_router(breakout_router)
+app.include_router(onchain_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

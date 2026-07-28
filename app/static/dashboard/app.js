@@ -1316,6 +1316,40 @@ async function renderBreakout() {
   return nodes;
 }
 
+async function renderOnchain() {
+  const nodes = [el("h2", {}, "On-Chain Intelligence")];
+  const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const btn = el("button", {}, "Load");
+  nodes.push(el("div", { class: "controls" }, [symbolInput, btn]));
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    results.innerHTML = "";
+    try {
+      const data = await fetchJSON(`/api/onchain/${encodeURIComponent(symbolInput.value)}`);
+      results.innerHTML = "";
+      results.appendChild(el("p", {}, [pill(data.available), " ", data.symbol]));
+      results.appendChild(el("p", { class: "sub" }, data.reason));
+      if (data.solana_note) {
+        results.appendChild(el("p", { class: "sub" }, data.solana_note));
+      }
+      results.appendChild(
+        table(
+          ["Metric", "Value"],
+          Object.entries(data.metrics).map(([k, v]) => [k.replace(/_/g, " "), v == null ? "unavailable" : String(v)])
+        )
+      );
+    } catch (err) {
+      results.innerHTML = "";
+      results.appendChild(errorBox(err));
+    }
+  }
+  btn.addEventListener("click", load);
+  load();
+  return nodes;
+}
+
 async function renderReplay() {
   const nodes = [el("h2", {}, "Market Replay")];
   const data = await safe("/api/replay?limit=20");
@@ -1501,7 +1535,7 @@ const PAGES = {
   calendar: renderCalendar, similarity: renderSimilarity, brain: renderBrain,
   research: renderResearch, strategies: renderStrategies,
   probability: renderProbability, learning: renderLearning, scenarios: renderScenarios,
-  whales: renderWhales, etf: renderEtf,
+  whales: renderWhales, etf: renderEtf, onchain: renderOnchain,
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, advice: renderAdvice,
   risk: renderRisk, why: renderExplanation, watchdog: renderWatchdog, status: renderStatus,
   replay: renderReplay,

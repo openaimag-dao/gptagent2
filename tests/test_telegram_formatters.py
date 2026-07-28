@@ -19,6 +19,7 @@ from app.telegram.formatters import (
     format_global_score,
     format_learning,
     format_market_summary,
+    format_onchain,
     format_regime,
     format_replay,
     format_risk,
@@ -388,6 +389,32 @@ def test_format_breakout_present():
     assert "Confidence: 83%" in text
     assert "Risk score: 65.0/100" in text
     assert "likely to continue" in text
+
+
+def test_format_onchain_reports_unavailable_metrics():
+    snapshot = {
+        "symbol": "BTC",
+        "available": False,
+        "reason": "No on-chain data provider configured.",
+        "metrics": {"sopr": None, "mvrv": None},
+    }
+    text = format_onchain(snapshot)
+    assert "BTC ON-CHAIN INTELLIGENCE" in text
+    assert "No on-chain data provider configured." in text
+    assert "sopr" in text
+    assert "mvrv" in text
+
+
+def test_format_onchain_includes_solana_note():
+    snapshot = {
+        "symbol": "SOL",
+        "available": False,
+        "reason": "No on-chain data provider configured.",
+        "metrics": {"dex_volume": None},
+        "solana_note": "Solana-specific coverage needs Helius.",
+    }
+    text = format_onchain(snapshot)
+    assert "Solana-specific coverage needs Helius." in text
 
 
 def test_format_replay_none():

@@ -34,6 +34,7 @@ from app.services.learning.engine import LearningEngine
 from app.services.market.repository import MarketRepository
 from app.services.memory.engine import CATEGORY_NAMES, MemoryEngine
 from app.services.news.repository import NewsRepository
+from app.services.onchain.engine import OnChainIntelligenceEngine
 from app.services.patterns.engine import PatternEngine
 from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
@@ -69,6 +70,7 @@ from app.telegram.formatters import (
     format_market_summary,
     format_monte_carlo,
     format_news,
+    format_onchain,
     format_patterns,
     format_portfolio,
     format_probability,
@@ -136,6 +138,8 @@ HELP_TEXT = (
     "(current vs historical edge, e.g. /ranking BTC)\n"
     "/whales -- whale/on-chain intelligence (requires a configured data source)\n"
     "/etf -- ETF flow proxy from ETF-category news sentiment\n"
+    "/onchain [SYMBOL] -- on-chain intelligence (netflow/SOPR/MVRV/NUPL/TVL/etc, "
+    "requires a configured data source)\n"
     "/score -- Global Market Score\n"
     "/agents -- Macro/Crypto/Equity/News/Sentiment agent read-outs\n"
     "/consensus -- bullish/bearish/neutral vote tally across all 5 agents\n"
@@ -189,6 +193,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("ranking", "Ranks signal factors by real predictive power"),
     ("whales", "Whale/derivatives positioning intelligence"),
     ("etf", "ETF flow proxy from ETF-category news sentiment"),
+    ("onchain", "On-chain intelligence (netflow/SOPR/MVRV/NUPL/TVL/etc)"),
     ("score", "Global Market Score"),
     ("agents", "Macro/Crypto/Equity/News/Sentiment agent read-outs"),
     ("consensus", "Bullish/bearish/neutral vote tally across all 5 agents"),
@@ -493,6 +498,14 @@ async def cmd_etf(message: Message) -> None:
     engine = ETFIntelligenceEngine(NewsRepository(get_session_factory()))
     data = await engine.get_flow_proxy()
     await _answer(message, format_etf_proxy(data))
+
+
+@router.message(Command("onchain"))
+async def cmd_onchain(message: Message, command: CommandObject) -> None:
+    symbol = (command.args or "BTC").strip().upper()
+    engine = OnChainIntelligenceEngine()
+    snapshot = await engine.get_snapshot(symbol)
+    await _answer(message, format_onchain(snapshot))
 
 
 def _parse_condition(token: str) -> Condition | None:
