@@ -79,6 +79,7 @@ from app.telegram.formatters import (
     format_status,
     format_strategy_result,
     format_walk_forward,
+    format_watchdog,
     format_whale_snapshot,
 )
 
@@ -142,7 +143,9 @@ HELP_TEXT = (
     "macro drivers, supporting news, historical examples, risk factors, alternative view\n"
     "/risk -- risk-on/off, fear, macro pressure and signal conviction\n"
     "/status -- last-computed timestamps for Signal/Regime/Global Score\n"
-    "/health -- bot liveness check"
+    "/health -- bot liveness check\n"
+    "/watchdog -- recent alert detections and whether each was sent or "
+    "suppressed (conviction gate or cooldown)"
 )
 
 # Registered with Telegram via Bot.set_my_commands() so the client's "/" menu
@@ -190,6 +193,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("risk", "Risk-on/off, fear, macro pressure and signal conviction"),
     ("status", "Last-computed timestamps for core engines"),
     ("health", "Bot liveness check"),
+    ("watchdog", "Recent alert detections, sent vs suppressed"),
 ]
 
 
@@ -789,6 +793,13 @@ async def cmd_advice(message: Message, command: CommandObject) -> None:
 @router.message(Command("health"))
 async def cmd_health(message: Message) -> None:
     await _answer(message, f"Bot is running. {datetime.now(UTC).isoformat()}")
+
+
+@router.message(Command("watchdog"))
+async def cmd_watchdog(message: Message) -> None:
+    engine = MemoryEngine(get_session_factory())
+    entries = await engine.get_category("alerts", limit=10)
+    await _answer(message, format_watchdog(entries))
 
 
 @router.message(Command("status"))

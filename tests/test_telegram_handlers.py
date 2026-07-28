@@ -12,6 +12,7 @@ from app.telegram.handlers import (
     cmd_health,
     cmd_memory,
     cmd_portfolio,
+    cmd_watchdog,
     handle_errors,
 )
 
@@ -111,6 +112,23 @@ async def test_cmd_health_replies_without_touching_db():
     message.answer.assert_awaited_once()
     (text,), kwargs = message.answer.call_args
     assert "Bot is running" in text
+
+
+async def test_cmd_watchdog_reports_no_detections_when_empty():
+    message = AsyncMock()
+    memory_engine = AsyncMock()
+    memory_engine.get_category.return_value = []
+
+    with (
+        patch("app.telegram.handlers.MemoryEngine", return_value=memory_engine),
+        patch("app.telegram.handlers.get_session_factory"),
+    ):
+        await cmd_watchdog(message)
+
+    memory_engine.get_category.assert_awaited_once_with("alerts", limit=10)
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "No detections logged yet" in text
 
 
 async def test_handle_errors_notifies_user_instead_of_staying_silent():

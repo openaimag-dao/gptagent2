@@ -539,6 +539,21 @@ def format_risk(data: dict) -> str:
     return "\n".join(lines)
 
 
+def format_watchdog(entries: list[dict]) -> str:
+    if not entries:
+        return "*MARKET WATCHDOG*\n\nNo detections logged yet."
+    lines = ["*MARKET WATCHDOG*", ""]
+    for entry in entries:
+        s = entry["summary"]
+        state = "sent" if s["broadcast"] else "suppressed (gated/cooldown)"
+        lines.append(
+            f"{entry['timestamp'][:16]} [{s['alert_type']}] {s['conviction_tier']} -- {state}"
+        )
+        lines.append(s["message"])
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
 def format_advice(advice: dict | None, symbol: str, timeframe_arg: str) -> str:
     if advice is None:
         return (

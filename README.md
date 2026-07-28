@@ -1059,6 +1059,28 @@ event data this project has no configured source for (never faked).
 
 426 tests pass (10 new), `ruff check` clean.
 
+### Increment 3: cooldown gating + `/watchdog`
+
+The audit found the Smart Alert Engine already gated broadcasts by
+conviction tier but had no time-based cooldown -- a metric oscillating
+right around its threshold could re-fire the same alert every cycle.
+Fixed with a second gate: an `alert_type` that already broadcast within
+60 minutes is still logged (Market Memory's audit trail stays complete)
+but not re-sent to Telegram (`_is_on_cooldown()` in
+`app/services/alerts/engine.py`). `AlertEngine.check_and_broadcast()`'s
+own contract is unchanged -- every detection is still logged, only the
+already-optional `broadcast` flag is affected.
+
+`/watchdog` surfaces the last 10 detections (sent or suppressed) by
+reusing the existing `MemoryEngine`'s `alerts` category -- no new query,
+no new table.
+
+```
+/watchdog
+```
+
+432 tests pass (6 new), `ruff check` clean.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is
