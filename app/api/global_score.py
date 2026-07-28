@@ -43,5 +43,8 @@ async def get_global_score() -> dict:
         "crypto_strength_score": row.crypto_strength_score,
         "stock_strength_score": row.stock_strength_score,
         "global_score": row.global_score,
+        "trend_strength_score": row.trend_strength_score,
+        "risk_score": row.risk_score,
+        "confidence_score": row.confidence_score,
         "computed_at": row.computed_at.isoformat(),
     }
