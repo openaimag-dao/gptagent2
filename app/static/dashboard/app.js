@@ -1734,6 +1734,126 @@ async function renderPortfolio() {
   return nodes;
 }
 
+async function renderAlerts() {
+  const nodes = [el("h2", {}, "Configurable Alerts")];
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      "Custom threshold rules, scoped by Telegram chat ID -- there is no login on this " +
+        "platform yet, so use the chat ID you created rules from (e.g. via /setalert)."
+    )
+  );
+
+  const chatIdInput = el("input", { type: "text", placeholder: "Chat ID" });
+  const loadBtn = el("button", {}, "Load");
+  const results = el("div");
+  nodes.push(el("div", { class: "controls" }, [chatIdInput, loadBtn]), results);
+
+  async function draw() {
+    const chatId = chatIdInput.value.trim();
+    if (!chatId) return;
+    results.innerHTML = "";
+    try {
+      const rulesData = await fetchJSON(`/api/alerts/rules?chat_id=${encodeURIComponent(chatId)}`);
+      if (!rulesData.rules.length) {
+        results.appendChild(el("p", { class: "error" }, "No rules for this chat ID yet."));
+      } else {
+        results.appendChild(
+          table(
+            ["ID", "Symbol", "Metric", "Operator", "Threshold", "Enabled", "Last triggered", ""],
+            rulesData.rules.map((r) => {
+              const delBtn = el("button", {}, "Delete");
+              delBtn.addEventListener("click", async () => {
+                try {
+                  await fetchJSON(
+                    `/api/alerts/rules/${r.id}?chat_id=${encodeURIComponent(chatId)}`,
+                    { method: "DELETE" }
+                  );
+                  draw();
+                } catch (err) {
+                  results.prepend(errorBox(err));
+                }
+              });
+              return [
+                String(r.id), r.symbol, r.metric, r.operator, String(r.threshold),
+                r.enabled ? "yes" : "no", r.last_triggered_at || "never", delBtn,
+              ];
+            })
+          )
+        );
+      }
+
+      const historyData = await fetchJSON(
+        `/api/alerts/history?chat_id=${encodeURIComponent(chatId)}&limit=20`
+      );
+      results.appendChild(el("h2", {}, "Recent Firings"));
+      if (!historyData.history.length) {
+        results.appendChild(el("p", { class: "sub" }, "No custom alerts have fired yet."));
+      } else {
+        results.appendChild(
+          table(
+            ["Symbol", "Metric", "Value", "Operator", "Threshold"],
+            historyData.history.map((h) => [
+              h.symbol, h.metric, String(h.value), h.operator, String(h.threshold),
+            ])
+          )
+        );
+      }
+    } catch (err) {
+      results.appendChild(errorBox(err));
+    }
+  }
+  loadBtn.addEventListener("click", draw);
+
+  nodes.push(el("h2", {}, "Create Rule"));
+  const symbolInput = el("input", { type: "text", placeholder: "Symbol (e.g. BTC)" });
+  const metricSelect = el(
+    "select", {},
+    ["price", "probability_edge", "breakout_probability", "risk_off_score", "liquidity_score"].map(
+      (m) => el("option", { value: m }, m)
+    )
+  );
+  const operatorSelect = el("select", {}, ["above", "below"].map((o) => el("option", { value: o }, o)));
+  const thresholdInput = el("input", { type: "text", placeholder: "Threshold" });
+  const cooldownInput = el("input", { type: "text", placeholder: "Cooldown minutes (60)" });
+  const createBtn = el("button", {}, "Create rule");
+  const createStatus = el("p", { class: "sub" });
+  createBtn.addEventListener("click", async () => {
+    const chatId = chatIdInput.value.trim();
+    if (!chatId) {
+      createStatus.textContent = "Enter a chat ID above first.";
+      return;
+    }
+    try {
+      await fetchJSON("/api/alerts/rules", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          symbol: symbolInput.value,
+          metric: metricSelect.value,
+          operator: operatorSelect.value,
+          threshold: parseFloat(thresholdInput.value),
+          cooldown_minutes: cooldownInput.value ? parseInt(cooldownInput.value, 10) : 60,
+        }),
+      });
+      createStatus.textContent = "Rule created.";
+      draw();
+    } catch (err) {
+      createStatus.textContent = `Error: ${err.message}`;
+    }
+  });
+  nodes.push(
+    el("div", { class: "controls" }, [
+      symbolInput, metricSelect, operatorSelect, thresholdInput, cooldownInput, createBtn,
+    ]),
+    createStatus
+  );
+
+  return nodes;
+}
+
 async function renderSettings() {
   const nodes = [el("h2", {}, "Settings")];
   nodes.push(
@@ -1795,6 +1915,7 @@ const PAGES = {
   whatif: renderWhatif,
   whales: renderWhales, etf: renderEtf, onchain: renderOnchain,
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, advice: renderAdvice,
+  alerts: renderAlerts,
   risk: renderRisk, why: renderExplanation, watchdog: renderWatchdog, status: renderStatus,
   replay: renderReplay,
   settings: renderSettings,

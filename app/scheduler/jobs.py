@@ -11,6 +11,7 @@ from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.agents.orchestrator import build_agent_orchestrator
 from app.services.alerts.engine import build_alert_engine
+from app.services.alerts.rules import build_alert_rule_engine
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
 from app.services.breakout.engine import BreakoutEngine
@@ -55,6 +56,7 @@ SENTIMENT_JOB_ID = "compute_sentiment"
 SCENARIO_JOB_ID = "compute_scenarios"
 WHALE_ETF_SNAPSHOT_JOB_ID = "snapshot_whale_etf"
 ALERT_CHECK_JOB_ID = "check_alerts"
+ALERT_RULE_CHECK_JOB_ID = "check_alert_rules"
 REPORT_JOB_ID = "generate_scheduled_report"
 ECONOMIC_CALENDAR_JOB_ID = "sync_economic_calendar"
 FEATURE_JOB_ID = "compute_features"
@@ -410,6 +412,15 @@ async def check_alerts_job() -> None:
         logger.exception("Alert check job failed")
 
 
+async def check_alert_rules_job() -> None:
+    engine = build_alert_rule_engine()
+    try:
+        fired = await engine.evaluate_all()
+        logger.info("Custom alert rules checked: %d fired", len(fired))
+    except Exception:
+        logger.exception("Custom alert rules job failed")
+
+
 async def compute_market_replay_job() -> None:
     engine = build_replay_engine()
     try:
@@ -558,6 +569,14 @@ def start_scheduler() -> AsyncIOScheduler:
         check_alerts_job,
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
         id=ALERT_CHECK_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        check_alert_rules_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=ALERT_RULE_CHECK_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,

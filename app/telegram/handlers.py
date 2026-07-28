@@ -12,6 +12,7 @@ from app.database.models import AssetClass, HistoricalEvent
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.agents.orchestrator import build_agent_orchestrator
+from app.services.alerts.rules import VALID_METRICS, VALID_OPERATORS, build_alert_rule_engine
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
 from app.services.backtest.conditions import Condition
@@ -56,6 +57,9 @@ from app.services.whatif.engine import WhatIfSimulator
 from app.telegram.formatters import (
     format_advice,
     format_agent_outputs,
+    format_alert_history,
+    format_alert_rule_created,
+    format_alert_rules,
     format_asset_class,
     format_backtest_result,
     format_breakout,
@@ -165,6 +169,12 @@ HELP_TEXT = (
     "/compare [days] -- historical comparison vs N days ago (default 7)\n"
     "/weekly -- Weekly Review: accuracy, alerts, historical comparison\n"
     "/monthly -- Monthly Performance: accuracy, alerts, historical comparison\n"
+    "/setalert SYMBOL METRIC OPERATOR THRESHOLD [COOLDOWN_MINUTES] -- create a custom "
+    "alert rule (metrics: price, probability_edge, breakout_probability, risk_off_score, "
+    "liquidity_score; operators: above, below), e.g. /setalert BTC price above 70000\n"
+    "/myrules -- your active custom alert rules\n"
+    "/delalert RULE_ID -- delete one of your custom alert rules\n"
+    "/alerthistory -- your recently fired custom alerts\n"
     "/scenarios -- probability-weighted forward scenarios\n"
     "/whatif [KEY] -- what-if impact simulator (Fed cuts, DXY drops, Nasdaq crashes, "
     "etc); no args lists scenario keys\n"
@@ -228,6 +238,10 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("compare", "Historical comparison vs N days ago"),
     ("weekly", "Weekly Review: accuracy, alerts, historical comparison"),
     ("monthly", "Monthly Performance: accuracy, alerts, historical comparison"),
+    ("setalert", "Create a custom alert rule, e.g. /setalert BTC price above 70000"),
+    ("myrules", "Your active custom alert rules"),
+    ("delalert", "Delete one of your custom alert rules"),
+    ("alerthistory", "Your recently fired custom alerts"),
     ("scenarios", "Probability-weighted forward scenarios"),
     ("scenario", "Probability-weighted forward scenarios (alias of /scenarios)"),
     ("whatif", "What-if impact simulator (Fed cuts, DXY drops, Nasdaq crashes, etc)"),
@@ -821,6 +835,63 @@ async def cmd_monthly(message: Message) -> None:
     engine = _build_terminal_engine()
     result = await engine.compute_period_performance(days=30)
     await _answer(message, format_monthly_performance(result))
+
+
+@router.message(Command("setalert"))
+async def cmd_set_alert(message: Message, command: CommandObject) -> None:
+    parts = (command.args or "").split()
+    if len(parts) < 4:
+        await _answer(
+            message,
+            "Usage: /setalert SYMBOL METRIC OPERATOR THRESHOLD [COOLDOWN_MINUTES]\n"
+            f"Metrics: {', '.join(VALID_METRICS)}\n"
+            f"Operators: {', '.join(VALID_OPERATORS)}",
+        )
+        return
+    symbol, metric, operator, threshold_arg, *rest = parts
+    try:
+        threshold = float(threshold_arg)
+        cooldown_minutes = int(rest[0]) if rest else 60
+    except ValueError:
+        await _answer(message, "Threshold and cooldown minutes must be numbers.")
+        return
+
+    engine = build_alert_rule_engine()
+    try:
+        rule = await engine.create_rule(
+            str(message.chat.id), symbol, metric, operator, threshold, cooldown_minutes
+        )
+    except ValueError as exc:
+        await _answer(message, str(exc))
+        return
+    await _answer(message, format_alert_rule_created(rule))
+
+
+@router.message(Command("myrules"))
+async def cmd_my_rules(message: Message) -> None:
+    engine = build_alert_rule_engine()
+    rules = await engine.list_rules(str(message.chat.id))
+    await _answer(message, format_alert_rules(rules))
+
+
+@router.message(Command("delalert"))
+async def cmd_delete_alert(message: Message, command: CommandObject) -> None:
+    arg = (command.args or "").strip()
+    try:
+        rule_id = int(arg)
+    except ValueError:
+        await _answer(message, "Usage: /delalert RULE_ID (see /myrules for ids)")
+        return
+    engine = build_alert_rule_engine()
+    removed = await engine.delete_rule(rule_id, str(message.chat.id))
+    await _answer(message, "Rule deleted." if removed else "No rule with that id owned by you.")
+
+
+@router.message(Command("alerthistory"))
+async def cmd_alert_history(message: Message) -> None:
+    engine = build_alert_rule_engine()
+    history = await engine.recent_history(str(message.chat.id), limit=10)
+    await _answer(message, format_alert_history(history))
 
 
 @router.message(Command("scenarios"))

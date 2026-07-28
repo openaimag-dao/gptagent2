@@ -986,6 +986,39 @@ def format_weekly_review(result: dict) -> str:
     return "\n".join(lines)
 
 
+def format_alert_rule_created(rule) -> str:
+    return (
+        f"*Alert rule #{rule.id} created*\n"
+        f"{rule.symbol} {rule.metric.replace('_', ' ')} {rule.operator} "
+        f"{float(rule.threshold):.2f} (cooldown {rule.cooldown_minutes}m)"
+    )
+
+
+def format_alert_rules(rules: list) -> str:
+    if not rules:
+        return "You have no alert rules yet. Create one with /setalert."
+    lines = ["*YOUR ALERT RULES*", ""]
+    for rule in rules:
+        status = "" if rule.enabled else " (disabled)"
+        lines.append(
+            f"#{rule.id}: {rule.symbol} {rule.metric.replace('_', ' ')} {rule.operator} "
+            f"{float(rule.threshold):.2f}{status}"
+        )
+    return "\n".join(lines)
+
+
+def format_alert_history(history: list[dict]) -> str:
+    if not history:
+        return "No custom alerts have fired for you yet."
+    lines = ["*YOUR RECENT ALERTS*", ""]
+    for entry in history:
+        lines.append(
+            f"{entry['symbol']} {entry['metric'].replace('_', ' ')}: {entry['value']:.2f} "
+            f"{entry['operator']} {entry['threshold']:.2f}"
+        )
+    return "\n".join(lines)
+
+
 def format_monthly_performance(result: dict) -> str:
     lines = [
         "*MONTHLY PERFORMANCE*",

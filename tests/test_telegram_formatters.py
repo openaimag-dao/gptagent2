@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from app.database.models import (
     AssetClass,
@@ -12,6 +13,9 @@ from app.services.analysis.regime import MarketRegime
 from app.services.consensus.engine import ConsensusResult
 from app.telegram.formatters import (
     format_advice,
+    format_alert_history,
+    format_alert_rule_created,
+    format_alert_rules,
     format_asset_class,
     format_breakout,
     format_brief,
@@ -672,3 +676,53 @@ def test_format_monthly_performance():
     assert "MONTHLY PERFORMANCE" in text
     assert "Accuracy: 55.0%" in text
     assert "Alerts logged: 12" in text
+
+
+def _alert_rule(**overrides):
+    defaults = dict(
+        id=1,
+        symbol="BTC",
+        metric="price",
+        operator="above",
+        threshold=70000.0,
+        cooldown_minutes=60,
+        enabled=True,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+def test_format_alert_rule_created():
+    text = format_alert_rule_created(_alert_rule())
+    assert "Alert rule #1 created" in text
+    assert "BTC price above 70000.00" in text
+
+
+def test_format_alert_rules_empty():
+    text = format_alert_rules([])
+    assert "no alert rules yet" in text
+
+
+def test_format_alert_rules_present():
+    text = format_alert_rules([_alert_rule(), _alert_rule(id=2, enabled=False)])
+    assert "#1: BTC price above 70000.00" in text
+    assert "#2: BTC price above 70000.00 (disabled)" in text
+
+
+def test_format_alert_history_empty():
+    text = format_alert_history([])
+    assert "No custom alerts" in text
+
+
+def test_format_alert_history_present():
+    history = [
+        {
+            "symbol": "BTC",
+            "metric": "price",
+            "value": 71000.0,
+            "operator": "above",
+            "threshold": 70000.0,
+        }
+    ]
+    text = format_alert_history(history)
+    assert "BTC price: 71000.00 above 70000.00" in text
