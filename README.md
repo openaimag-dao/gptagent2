@@ -997,6 +997,44 @@ verification gap for a future session with a live stack.
   `OPENAI_API_KEY`, `COINGLASS_API_KEY`) and every
   existing process type (`app`, `bot`, scheduler jobs in-process).
 
+## V4: Institutional AI Market Intelligence Platform (in progress)
+
+A full architecture gap analysis was run against a 14-phase "institutional
+platform" brief before writing any code (Brain Orchestrator, Market
+Watchdog, Market State Engine, Volatility Detection, Consensus completeness,
+multi-horizon Self-Learning, richer Historical Intelligence similarity,
+Portfolio allocation, Explainable AI, Telegram terminal commands,
+performance/observability). Verdict: 1 capability already fully built but
+never wired up, 9 partially built, 1 genuinely missing. Full evidence trail
+(file:line citations) published as an artifact; implementation proceeds
+increment by increment, reusing every engine found rather than rebuilding it.
+
+### Increment 1: wire up the orphaned Explanation Engine + fill Telegram/API gaps
+
+`ExplanationEngine` (`app/services/explanation/engine.py`) was fully built
+in an earlier sprint but never reachable from anywhere -- zero references
+outside its own file, no API route, no Telegram command. Fixed:
+
+```
+GET /api/explanation/{symbol}
+/why [symbol]
+```
+
+Also closed from the Telegram-command gap list: `/status` (last-computed
+timestamps for Signal/Regime/Global Score, so staleness is visible rather
+than guessed), `/health` (liveness check), `/risk` (composes the Global
+Score's already-computed risk-on/off, fear and macro-pressure sub-scores
+with the Signal Engine's conviction tier -- no new number, just an honest
+view already-computed data), and `/scenario` (singular alias of the
+existing `/scenarios`).
+
+`ConsensusResult` (`app/services/consensus/engine.py`) gained
+`conflict_pct` -- simply `100 - agreement_score` made explicit, not a new
+measurement, so a caller doesn't have to derive "how split are the agents"
+themselves.
+
+416 tests pass (16 new), `ruff check` clean.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

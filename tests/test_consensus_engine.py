@@ -29,6 +29,7 @@ def test_compute_consensus_unanimous_bullish_is_100_percent():
     assert result.bearish_pct == 0.0
     assert result.neutral_pct == 0.0
     assert result.agreement_score == 100.0
+    assert result.conflict_pct == 0.0
     assert result.bullish_agents == ["macro", "crypto"]
 
 
@@ -45,6 +46,8 @@ def test_compute_consensus_splits_by_confidence_weighted_vote():
     assert result.bullish_pct == 70.0
     assert result.bearish_pct == 30.0
     assert result.neutral_pct == 0.0
+    assert result.agreement_score == 70.0
+    assert result.conflict_pct == 30.0
     assert set(result.bullish_agents) == {"news", "equity"}
     assert result.bearish_agents == ["macro"]
 

@@ -9,6 +9,7 @@ from app.telegram.handlers import (
     BOT_COMMANDS,
     _answer,
     cmd_advice,
+    cmd_health,
     cmd_memory,
     cmd_portfolio,
     handle_errors,
@@ -100,6 +101,16 @@ async def test_cmd_advice_reports_unavailable_without_crashing():
     (text,), kwargs = message.answer.call_args
     assert "Not enough data yet" in text
     assert "BTC/1d" in text
+
+
+async def test_cmd_health_replies_without_touching_db():
+    message = AsyncMock()
+
+    await cmd_health(message)
+
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "Bot is running" in text
 
 
 async def test_handle_errors_notifies_user_instead_of_staying_silent():

@@ -1,4 +1,5 @@
 import logging
+from datetime import UTC, datetime
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
@@ -19,6 +20,7 @@ from app.services.backtest.strategy_engine import StrategyLabEngine
 from app.services.consensus.engine import ConsensusEngine
 from app.services.conviction.engine import ConvictionEngine
 from app.services.etf.engine import ETFIntelligenceEngine
+from app.services.explanation.engine import ExplanationEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
@@ -51,6 +53,7 @@ from app.telegram.formatters import (
     format_correlations,
     format_etf_proxy,
     format_events,
+    format_explanation,
     format_global_score,
     format_history,
     format_hypothesis,
@@ -67,11 +70,13 @@ from app.telegram.formatters import (
     format_ranking,
     format_report,
     format_research_result,
+    format_risk,
     format_scenarios,
     format_sentiment,
     format_signal,
     format_similar_periods,
     format_single_asset,
+    format_status,
     format_strategy_result,
     format_walk_forward,
     format_whale_snapshot,
@@ -132,7 +137,12 @@ HELP_TEXT = (
     "/memory [category] -- recent entries from any stored history category\n"
     "/portfolio [add SYMBOL QTY [entry_price]] -- virtual portfolio health\n"
     "/advice SYMBOL [timeframe] -- BUY/SELL/HOLD recommendation with ATR-based "
-    "stop-loss/take-profit/position-size (e.g. /advice BTC 1d)"
+    "stop-loss/take-profit/position-size (e.g. /advice BTC 1d)\n"
+    "/why [symbol] -- evidence pack behind the current read: triggered indicators, "
+    "macro drivers, supporting news, historical examples, risk factors, alternative view\n"
+    "/risk -- risk-on/off, fear, macro pressure and signal conviction\n"
+    "/status -- last-computed timestamps for Signal/Regime/Global Score\n"
+    "/health -- bot liveness check"
 )
 
 # Registered with Telegram via Bot.set_my_commands() so the client's "/" menu
@@ -169,12 +179,17 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("agents", "Macro/Crypto/Equity/News/Sentiment agent read-outs"),
     ("consensus", "Bullish/bearish/neutral vote tally across all 5 agents"),
     ("scenarios", "Probability-weighted forward scenarios"),
+    ("scenario", "Probability-weighted forward scenarios (alias of /scenarios)"),
     ("sentiment", "Fear & Greed + news sentiment"),
     ("liquidity", "Liquidity + macro pressure sub-scores"),
     ("conviction", "Confidence tier for the latest signal/probability"),
     ("memory", "Recent entries from any stored history category"),
     ("portfolio", "Virtual portfolio health"),
     ("advice", "BUY/SELL/HOLD recommendation with stop-loss/take-profit/size"),
+    ("why", "Evidence pack behind the current read"),
+    ("risk", "Risk-on/off, fear, macro pressure and signal conviction"),
+    ("status", "Last-computed timestamps for core engines"),
+    ("health", "Bot liveness check"),
 ]
 
 
@@ -636,6 +651,12 @@ async def cmd_scenarios(message: Message) -> None:
     await _answer(message, format_scenarios(row))
 
 
+@router.message(Command("scenario"))
+async def cmd_scenario(message: Message) -> None:
+    """Singular alias of /scenarios."""
+    await cmd_scenarios(message)
+
+
 @router.message(Command("sentiment"))
 async def cmd_sentiment(message: Message) -> None:
     session_factory = get_session_factory()
@@ -763,3 +784,94 @@ async def cmd_advice(message: Message, command: CommandObject) -> None:
         message,
         format_advice(advice.to_dict() if advice is not None else None, symbol, timeframe_arg),
     )
+
+
+@router.message(Command("health"))
+async def cmd_health(message: Message) -> None:
+    await _answer(message, f"Bot is running. {datetime.now(UTC).isoformat()}")
+
+
+@router.message(Command("status"))
+async def cmd_status(message: Message) -> None:
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    news_repository = NewsRepository(session_factory)
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    global_score_engine = GlobalScoreEngine(
+        session_factory, market_repository, regime_detector, signal_engine
+    )
+
+    signal_snapshot = await signal_engine.get_latest()
+    regime_snapshot = await regime_detector.get_latest()
+    global_score = await global_score_engine.get_latest()
+
+    await _answer(
+        message,
+        format_status(
+            {
+                "Signal": signal_snapshot.computed_at if signal_snapshot is not None else None,
+                "Regime": regime_snapshot.computed_at if regime_snapshot is not None else None,
+                "Global Score": global_score.computed_at if global_score is not None else None,
+            }
+        ),
+    )
+
+
+@router.message(Command("risk"))
+async def cmd_risk(message: Message) -> None:
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    news_repository = NewsRepository(session_factory)
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    global_score_engine = GlobalScoreEngine(
+        session_factory, market_repository, regime_detector, signal_engine
+    )
+    conviction_engine = ConvictionEngine(signal_engine, ProbabilityEngine(session_factory))
+
+    global_score = await global_score_engine.get_latest()
+    signal_conviction = await conviction_engine.evaluate_signal()
+
+    await _answer(
+        message,
+        format_risk(
+            {
+                "global_score": (
+                    {
+                        "risk_off_score": global_score.risk_off_score,
+                        "risk_on_score": global_score.risk_on_score,
+                        "fear_score": global_score.fear_score,
+                        "macro_pressure_score": global_score.macro_pressure_score,
+                    }
+                    if global_score is not None
+                    else None
+                ),
+                "signal_conviction": signal_conviction,
+            }
+        ),
+    )
+
+
+@router.message(Command("why"))
+async def cmd_why(message: Message, command: CommandObject) -> None:
+    symbol = (command.args or "BTC").strip().upper()
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    news_repository = NewsRepository(session_factory)
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    global_score_engine = GlobalScoreEngine(
+        session_factory, market_repository, regime_detector, signal_engine
+    )
+    scenario_engine = ScenarioEngine(session_factory, global_score_engine)
+    engine = ExplanationEngine(
+        session_factory,
+        signal_engine,
+        regime_detector,
+        news_repository,
+        global_score_engine,
+        scenario_engine,
+    )
+    data = await engine.build(symbol)
+    await _answer(message, format_explanation(data))
