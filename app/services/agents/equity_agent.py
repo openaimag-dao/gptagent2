@@ -9,6 +9,7 @@ rather than inferred from index moves alone.
 
 from app.services.agents.base import AgentOutput
 from app.services.common.formatting import asset_change_dict, format_asset_lines
+from app.services.common.scoring import direction_from_score
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.market.repository import MarketRepository
 
@@ -62,6 +63,10 @@ class EquityAgent:
             else "Not yet computed -- run /score or GET /api/global-score first."
         )
 
+        direction, confidence = direction_from_score(
+            global_score.stock_strength_score if global_score is not None else None
+        )
+
         return AgentOutput(
             agent="equity",
             summary="\n".join(lines),
@@ -74,4 +79,6 @@ class EquityAgent:
                 "market_breadth": None,
                 "unavailable_reason": _SECTOR_UNAVAILABLE_REASON,
             },
+            direction=direction,
+            confidence=confidence,
         )

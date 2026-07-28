@@ -16,8 +16,8 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database.models import EtfFlowSnapshot, NewsCategory, NewsSentiment
-from app.services.news.repository import NewsRepository
+from app.database.models import EtfFlowSnapshot, NewsCategory
+from app.services.news.repository import NewsRepository, count_by_sentiment
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +49,7 @@ class ETFIntelligenceEngine:
                 "items_analyzed": 0,
             }
 
-        bullish = sum(1 for i in items if i.sentiment == NewsSentiment.BULLISH)
-        bearish = sum(1 for i in items if i.sentiment == NewsSentiment.BEARISH)
-        neutral = len(items) - bullish - bearish
+        bullish, bearish, neutral = count_by_sentiment(items)
         net = bullish - bearish
 
         if net > 0:

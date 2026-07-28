@@ -3,6 +3,7 @@ real Fear & Greed + news-sentiment aggregator). No logic lives here beyond
 formatting; the computation is SentimentEngine's alone."""
 
 from app.services.agents.base import AgentOutput
+from app.services.common.scoring import direction_from_score
 from app.services.sentiment.engine import SentimentEngine
 
 
@@ -28,6 +29,8 @@ class SentimentAgent:
             lines.append("")
             lines.append(f"Global Sentiment Score: {snapshot.global_sentiment_score}/100")
 
+        direction, confidence = direction_from_score(snapshot.global_sentiment_score)
+
         return AgentOutput(
             agent="sentiment",
             summary="\n".join(lines),
@@ -39,4 +42,6 @@ class SentimentAgent:
                 "social_sentiment_reason": snapshot.social_sentiment_reason,
                 "global_sentiment_score": snapshot.global_sentiment_score,
             },
+            direction=direction,
+            confidence=confidence,
         )

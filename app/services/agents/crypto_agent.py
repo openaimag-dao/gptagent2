@@ -5,6 +5,7 @@ reimplementing on-chain analysis."""
 
 from app.services.agents.base import AgentOutput
 from app.services.common.formatting import asset_change_dict, format_asset_lines
+from app.services.common.scoring import direction_from_score
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.market.repository import MarketRepository
@@ -50,6 +51,10 @@ class CryptoAgent:
             market_structure = f"ETF proxy: {etf_proxy.get('reason', 'no data')}"
         lines.append(market_structure)
 
+        direction, confidence = direction_from_score(
+            global_score.crypto_strength_score if global_score is not None else None
+        )
+
         return AgentOutput(
             agent="crypto",
             summary="\n".join(lines),
@@ -60,4 +65,6 @@ class CryptoAgent:
                 "whale_snapshot": whale_snapshot,
                 "etf_flow_proxy": etf_proxy,
             },
+            direction=direction,
+            confidence=confidence,
         )

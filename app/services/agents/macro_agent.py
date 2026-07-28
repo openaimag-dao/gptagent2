@@ -44,6 +44,8 @@ class MacroAgent:
         lines = ["*MACRO SUMMARY*", ""]
         lines.extend(format_asset_lines(assets, MACRO_SYMBOLS))
 
+        direction: str | None = None
+        confidence: float | None = None
         if global_score is not None:
             lines.append("")
             lines.append(
@@ -58,6 +60,12 @@ class MacroAgent:
                 f"Macro pressure {global_score.macro_pressure_score}/100 "
                 f"(derived from DXY + US10Y moves); Fear {global_score.fear_score}/100."
             )
+            # Risk-on/risk-off are already the Global Score's own read of
+            # macro conditions for risk assets -- reused here rather than
+            # deriving a second, competing directional signal.
+            diff = global_score.risk_on_score - global_score.risk_off_score
+            direction = "bullish" if diff > 0 else "bearish" if diff < 0 else "neutral"
+            confidence = min(abs(diff), 100.0)
         else:
             liquidity_analysis = "Not yet computed -- run /score or GET /api/global-score first."
             risk_assessment = "Not yet computed."
@@ -76,4 +84,6 @@ class MacroAgent:
                     "Historical Intelligence Engine where synced, see /api/history)."
                 ),
             },
+            direction=direction,
+            confidence=confidence,
         )

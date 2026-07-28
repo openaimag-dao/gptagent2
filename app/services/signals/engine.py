@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import AssetPrice, NewsCategory, NewsItem, SignalSnapshot
+from app.services.common.scoring import clamp
 from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
 
@@ -89,7 +90,7 @@ def compute_signal(assets: list[AssetPrice], etf_sentiment: float | None) -> dic
 
     net_score = bull_score - bear_score
     confidence_pct = (
-        min(round(100 * abs(net_score) / available_weight), 100) if available_weight else 0
+        round(clamp(100 * abs(net_score) / available_weight)) if available_weight else 0
     )
 
     return {

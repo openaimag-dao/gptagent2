@@ -18,6 +18,28 @@ def center_scaled(value: float | None, scale: float, center: float = 50.0) -> fl
     return clamp(center + value * scale)
 
 
+def direction_from_score(
+    score: float | None, center: float = 50.0
+) -> tuple[str | None, float | None]:
+    """Maps a 0-100 composite score (already centered at `center`, e.g. any
+    score built with center_scaled()) onto a (direction, confidence) pair:
+    "bullish"/"bearish"/"neutral" and a 0-100 confidence proportional to how
+    far the score sits from center. None in, None out -- an agent with no
+    underlying data reports no direction rather than a guessed "neutral".
+    """
+    if score is None:
+        return None, None
+    delta = score - center
+    if delta > 0:
+        direction = "bullish"
+    elif delta < 0:
+        direction = "bearish"
+    else:
+        direction = "neutral"
+    confidence = clamp(abs(delta) * (100.0 / max(center, 100.0 - center)))
+    return direction, confidence
+
+
 def weighted_average(
     components: dict[str, float | None], weights: dict[str, float]
 ) -> float | None:
