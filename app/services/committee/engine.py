@@ -29,7 +29,15 @@ _DECISION_BY_DIRECTION: dict[str, str] = {"bullish": "BUY", "bearish": "SELL", "
 
 
 def _excerpt(summary: str) -> str:
-    text = summary.strip().split("\n")[0]
+    """First substantive line of an agent's summary -- skips the leading
+    "*AGENT SUMMARY*" markdown header every agent starts with (see
+    app/services/agents/*.py), so evidence quotes the agent's actual
+    reasoning rather than its section title."""
+    lines = [line.strip() for line in summary.strip().split("\n")]
+    content_lines = [
+        line for line in lines if line and not (line.startswith("*") and line.endswith("*"))
+    ]
+    text = content_lines[0] if content_lines else (lines[0] if lines else "")
     if len(text) <= _EVIDENCE_EXCERPT_LENGTH:
         return text
     return text[:_EVIDENCE_EXCERPT_LENGTH].rstrip() + "..."
