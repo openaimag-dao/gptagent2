@@ -24,12 +24,17 @@ from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import MarketRegime, RegimeDetector
 from app.services.analysis.schemas import AIAnalysisContent
 from app.services.common.formatting import format_asset_lines
+from app.services.consensus.engine import compute_consensus
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.schemas import Timeframe
 from app.services.knowledge.engine import KnowledgeEngine, build_grounding_text
 from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
+from app.services.portfolio.advisor import PortfolioAdvisorEngine
+from app.services.portfolio.engine import PortfolioEngine
+from app.services.probability.engine import ProbabilityEngine
+from app.services.scenarios.engine import compute_scenarios
 from app.services.signals.engine import SignalEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
 
@@ -303,6 +308,7 @@ class ReportGenerator:
         etf_engine: ETFIntelligenceEngine | None = None,
         whale_engine: WhaleIntelligenceEngine | None = None,
         agent_orchestrator: AgentOrchestrator | None = None,
+        portfolio_advisor: PortfolioAdvisorEngine | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._market_repository = market_repository
@@ -317,6 +323,12 @@ class ReportGenerator:
         self._etf_engine = etf_engine or ETFIntelligenceEngine(news_repository)
         self._whale_engine = whale_engine or WhaleIntelligenceEngine()
         self._agent_orchestrator = agent_orchestrator or build_agent_orchestrator()
+        self._portfolio_advisor = portfolio_advisor or PortfolioAdvisorEngine(
+            session_factory,
+            signal_engine,
+            ProbabilityEngine(session_factory),
+            PortfolioEngine(session_factory, market_repository),
+        )
 
     async def generate_and_store(self, report_type: str = "scheduled") -> Report:
         assets = await self._market_repository.get_latest()
@@ -350,6 +362,18 @@ class ReportGenerator:
         except Exception:
             logger.warning("Agent orchestrator failed; continuing without it", exc_info=True)
             agent_outputs = None
+
+        # Consensus and Scenarios are pure functions over data already fetched
+        # this cycle (agent_outputs, global_score_row) -- no second agent run,
+        # no second Global Score computation.
+        consensus_result = compute_consensus(agent_outputs) if agent_outputs else None
+        scenarios = compute_scenarios(global_score_row) if global_score_row is not None else None
+
+        try:
+            portfolio_advice = await self._portfolio_advisor.advise("BTC", Timeframe.DAILY)
+        except Exception:
+            logger.warning("Portfolio advisor failed; continuing without it", exc_info=True)
+            portfolio_advice = None
 
         user_prompt = build_user_prompt(
             assets,
@@ -407,6 +431,9 @@ class ReportGenerator:
                     if agent_outputs
                     else None
                 ),
+                "consensus": consensus_result.to_dict() if consensus_result else None,
+                "scenarios": scenarios,
+                "portfolio_advice": portfolio_advice.to_dict() if portfolio_advice else None,
             },
             analysis=analysis.model_dump(),
         )

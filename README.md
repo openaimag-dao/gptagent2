@@ -1081,6 +1081,42 @@ no new table.
 
 432 tests pass (6 new), `ruff check` clean.
 
+### Increment 4: AI Brain Orchestrator -- one pipeline instead of five islands
+
+The audit found every piece of the requested "collect -> agents -> consensus
+-> scenarios -> portfolio -> report -> memory" pipeline already existed, but
+`ReportGenerator.generate_and_store()` (the closest thing to a Brain) never
+called Consensus, Scenarios, or Portfolio Advice -- they were each only
+reachable through their own isolated API route or Telegram command. Wired
+together, reusing already-computed data rather than re-running anything:
+
+- **Consensus**: `compute_consensus()` runs over the exact `AgentOutput`s
+  already fetched this cycle -- no second agent run.
+- **Scenarios**: `compute_scenarios()` runs over the exact `GlobalMarketScore`
+  row already computed this cycle -- no second Global Score computation.
+- **Portfolio Advice**: a best-effort BTC/daily read via the existing
+  `PortfolioAdvisorEngine` (wrapped in the same try/except pattern already
+  used for the Knowledge Engine and Agent Orchestrator -- an optional
+  enrichment failing never fails the whole report).
+
+All three are additive keys on the existing `institutional_summary` JSON
+field (`consensus`, `scenarios`, `portfolio_advice`) -- the API/Telegram
+contract for `/report` is unchanged, existing consumers of the other keys
+are unaffected.
+
+**Store Memory**: `MemoryEngine` already aggregated 14 tables read-only but
+never included the `Report` table itself -- the actual "final intelligence"
+artifact from each cycle was invisible to `/memory`. Added as a 15th
+category (`reports`), closing the last step of the pipeline the brief asked
+for without inventing a new write path (the Report row already existed;
+this just makes it discoverable alongside everything else).
+
+432 tests pass (0 new -- `compute_consensus`/`compute_scenarios` already had
+unit coverage; `ReportGenerator.generate_and_store()` itself is verified
+live against real Postgres + a real LLM call, matching this project's
+established test convention for DB-and-LLM-heavy orchestration methods),
+`ruff check` clean.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

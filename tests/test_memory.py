@@ -19,6 +19,7 @@ def test_category_names_cover_every_persisted_history_table():
         "news",
         "macro_events",
         "alerts",
+        "reports",
     }
     assert set(CATEGORY_NAMES) == expected
 
