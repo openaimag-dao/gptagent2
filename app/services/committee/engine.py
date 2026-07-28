@@ -15,6 +15,7 @@ than persisted -- there is nothing here that isn't already derivable from
 data another engine already computed.
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -177,15 +178,22 @@ class CommitteeEngine:
         self._agent_orchestrator = agent_orchestrator
         self._reliability_engine = reliability_engine
 
-    async def convene(self) -> CommitteeVerdict | None:
-        agent_outputs = await self._agent_orchestrator.run_all()
+    async def _safe_reliability(self) -> dict[str, float] | None:
+        if self._reliability_engine is None:
+            return None
+        try:
+            return await self._reliability_engine.evaluate_reliability()
+        except Exception:
+            return None
 
-        reliability: dict[str, float] | None = None
-        if self._reliability_engine is not None:
-            try:
-                reliability = await self._reliability_engine.evaluate_reliability()
-            except Exception:
-                reliability = None
+    async def convene(self) -> CommitteeVerdict | None:
+        # run_all() and evaluate_reliability() read different tables and
+        # neither depends on the other's result -- gathered rather than
+        # sequential.
+        agent_outputs, reliability = await asyncio.gather(
+            self._agent_orchestrator.run_all(),
+            self._safe_reliability(),
+        )
 
         consensus = compute_consensus(agent_outputs, reliability)
         if consensus is None:

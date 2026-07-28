@@ -10,6 +10,7 @@ comes from FeatureEngine.get_latest() -- the same sources
 PortfolioAdvisorEngine and MarketReplayEngine already read.
 """
 
+import asyncio
 import logging
 
 from sqlalchemy import select
@@ -160,14 +161,19 @@ class BreakoutEngine:
                 event["price"] > vwap if event["direction"] == "bullish" else event["price"] < vwap
             )
 
-        regime_confirmed = await self._confirm_regime(event["direction"])
-        oi_funding_confirmed = await self._confirm_oi_funding(symbol, event["direction"])
-
         config = find_symbol_config(symbol)
-        multi_timeframe_confirmed = (
-            await self._confirm_multi_timeframe(config, timeframe, event["direction"])
-            if config is not None
-            else None
+
+        async def _multi_timeframe() -> bool | None:
+            if config is None:
+                return None
+            return await self._confirm_multi_timeframe(config, timeframe, event["direction"])
+
+        # Three independent confirmations (regime detector, OI/funding feature
+        # snapshot, multi-timeframe history) -- gathered rather than sequential.
+        regime_confirmed, oi_funding_confirmed, multi_timeframe_confirmed = await asyncio.gather(
+            self._confirm_regime(event["direction"]),
+            self._confirm_oi_funding(symbol, event["direction"]),
+            _multi_timeframe(),
         )
 
         confirmations = {
