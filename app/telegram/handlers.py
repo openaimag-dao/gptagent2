@@ -17,10 +17,12 @@ from app.services.analysis.regime import RegimeDetector
 from app.services.backtest.conditions import Condition
 from app.services.backtest.engine import BacktestEngine
 from app.services.backtest.strategy_engine import StrategyLabEngine
+from app.services.breakout.engine import BreakoutEngine
 from app.services.consensus.engine import ConsensusEngine
 from app.services.conviction.engine import ConvictionEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.explanation.engine import ExplanationEngine
+from app.services.features.engine import FeatureEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
@@ -50,6 +52,7 @@ from app.telegram.formatters import (
     format_agent_outputs,
     format_asset_class,
     format_backtest_result,
+    format_breakout,
     format_consensus,
     format_conviction,
     format_correlations,
@@ -114,6 +117,8 @@ HELP_TEXT = (
     "/learning SYMBOL [timeframe] -- self-learning accuracy: graded past "
     "predictions vs what actually happened\n"
     "/patterns SYMBOL -- detected technical patterns\n"
+    "/breakout SYMBOL [timeframe] -- breakout/breakdown/false breakout/failed "
+    "breakdown/retest/liquidity sweep detection\n"
     "/knowledge SYMBOL -- similar historical episodes for current conditions\n"
     "/brain -- AI Brain: latest institutional-grade synthesis report (alias of /report)\n"
     "/similar SYMBOL [timeframe] -- 25 most similar historical periods\n"
@@ -173,6 +178,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("probability", "Empirical next-day up/down probability"),
     ("learning", "Self-learning accuracy: graded past predictions"),
     ("patterns", "Detected technical patterns"),
+    ("breakout", "Breakout/breakdown/retest/liquidity sweep detection"),
     ("knowledge", "Similar historical episodes for current conditions"),
     ("brain", "AI Brain synthesis report (alias of /report)"),
     ("similar", "Most similar historical periods"),
@@ -410,6 +416,24 @@ async def cmd_patterns(message: Message, command: CommandObject) -> None:
     await engine.compute_and_store(config.symbol, config.model, timeframe)
     patterns = await engine.get_latest(config.symbol, timeframe)
     await _answer(message, format_patterns(config.symbol, patterns))
+
+
+@router.message(Command("breakout"))
+async def cmd_breakout(message: Message, command: CommandObject) -> None:
+    symbol, timeframe, timeframe_arg = _parse_symbol_and_timeframe(command)
+    config = find_symbol_config(symbol)
+    if config is None or timeframe not in config.timeframes:
+        await _answer(message, f"No historical data available for {symbol}/{timeframe_arg}.")
+        return
+
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    feature_engine = FeatureEngine(session_factory, market_repository)
+    engine = BreakoutEngine(session_factory, regime_detector, feature_engine)
+    await engine.compute_and_store(config.symbol, config.model, timeframe)
+    event = await engine.get_latest(config.symbol, timeframe)
+    await _answer(message, format_breakout(config.symbol, event))
 
 
 @router.message(Command("knowledge"))

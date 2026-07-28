@@ -48,6 +48,7 @@ EXPECTED_PREFIXES = {
     "/api/status",
     "/api/risk",
     "/api/replay",
+    "/api/breakout",
 }
 
 
@@ -74,6 +75,7 @@ def test_history_and_probability_and_patterns_and_knowledge_take_a_symbol_path_p
         "/api/knowledge",
         "/api/learning",
         "/api/explanation",
+        "/api/breakout",
     ):
         assert f"{prefix}/{{symbol}}" in paths
 

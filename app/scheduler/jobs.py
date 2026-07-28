@@ -13,10 +13,13 @@ from app.services.agents.orchestrator import build_agent_orchestrator
 from app.services.alerts.engine import build_alert_engine
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
+from app.services.breakout.engine import BreakoutEngine
 from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.features.engine import FeatureEngine
 from app.services.global_score.engine import GlobalScoreEngine
+from app.services.history.registry import find_symbol_config
+from app.services.history.schemas import Timeframe
 from app.services.hypothesis.engine import HypothesisEngine
 from app.services.market.aggregator import MarketDataAggregator
 from app.services.market.repository import MarketRepository
@@ -56,6 +59,7 @@ AI_RESEARCHER_JOB_ID = "generate_research_note"
 HYPOTHESIS_JOB_ID = "test_hypotheses"
 RANKING_JOB_ID = "compute_ranking"
 REPLAY_JOB_ID = "compute_market_replay"
+BREAKOUT_JOB_ID = "compute_breakout_intelligence"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -125,6 +129,14 @@ def build_economic_calendar_engine() -> EconomicCalendarEngine:
 def build_feature_engine() -> FeatureEngine:
     market_repository = MarketRepository(get_session_factory(), get_redis())
     return FeatureEngine(get_session_factory(), market_repository)
+
+
+def build_breakout_engine() -> BreakoutEngine:
+    session_factory = get_session_factory()
+    market_repository = MarketRepository(session_factory, get_redis())
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    feature_engine = FeatureEngine(session_factory, market_repository)
+    return BreakoutEngine(session_factory, regime_detector, feature_engine)
 
 
 def build_replay_engine() -> MarketReplayEngine:
@@ -289,6 +301,24 @@ async def compute_features_job() -> None:
             await engine.compute_and_store(symbol)
         except Exception:
             logger.exception("Feature computation failed for %s", symbol)
+
+
+async def compute_breakout_job() -> None:
+    engine = build_breakout_engine()
+    detections = 0
+    for symbol in FEATURE_SYMBOLS:
+        config = find_symbol_config(symbol)
+        if config is None:
+            continue
+        try:
+            event = await engine.compute_and_store(config.symbol, config.model, Timeframe.DAILY)
+            if event is not None:
+                detections += 1
+        except Exception:
+            logger.exception("Breakout detection failed for %s", symbol)
+    logger.info(
+        "Breakout Intelligence: %d detections across %d symbols", detections, len(FEATURE_SYMBOLS)
+    )
 
 
 async def generate_research_note_job() -> None:
@@ -497,6 +527,14 @@ def start_scheduler() -> AsyncIOScheduler:
         compute_market_replay_job,
         trigger=IntervalTrigger(minutes=settings.replay_interval_minutes),
         id=REPLAY_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_breakout_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=BREAKOUT_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,
