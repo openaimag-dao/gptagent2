@@ -119,6 +119,28 @@ def test_unavailable_agents_noted_in_reasoning():
     assert "sentiment" in verdict.reasoning
 
 
+def test_evidence_excerpt_skips_leading_markdown_header():
+    summary = "*CRYPTO SUMMARY*\n\nBTC: 63,388.00 (-2.80% 24h)\n\nCrypto strength: 32/100"
+    agent_outputs = {"crypto": _output("crypto", "bearish", 40.0, summary)}
+    consensus = ConsensusResult(
+        bullish_pct=0.0,
+        bearish_pct=100.0,
+        neutral_pct=0.0,
+        agreement_score=100.0,
+        conflict_pct=0.0,
+        bullish_agents=[],
+        bearish_agents=["crypto"],
+        neutral_agents=[],
+        unavailable_agents=[],
+    )
+
+    verdict = convene_committee(agent_outputs, consensus)
+
+    evidence = verdict.supporting_evidence[0]["evidence"]
+    assert evidence == "BTC: 63,388.00 (-2.80% 24h)"
+    assert "SUMMARY" not in evidence
+
+
 def test_evidence_excerpt_truncates_long_summaries():
     long_summary = "x" * 300
     agent_outputs = {"macro": _output("macro", "bullish", 60.0, long_summary)}
