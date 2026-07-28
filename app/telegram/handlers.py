@@ -18,6 +18,7 @@ from app.services.backtest.conditions import Condition
 from app.services.backtest.engine import BacktestEngine
 from app.services.backtest.strategy_engine import StrategyLabEngine
 from app.services.breakout.engine import BreakoutEngine
+from app.services.committee.engine import CommitteeEngine
 from app.services.consensus.engine import ConsensusEngine
 from app.services.conviction.engine import ConvictionEngine
 from app.services.etf.engine import ETFIntelligenceEngine
@@ -54,6 +55,7 @@ from app.telegram.formatters import (
     format_asset_class,
     format_backtest_result,
     format_breakout,
+    format_committee,
     format_consensus,
     format_conviction,
     format_correlations,
@@ -143,6 +145,8 @@ HELP_TEXT = (
     "/score -- Global Market Score\n"
     "/agents -- Macro/Crypto/Equity/News/Sentiment agent read-outs\n"
     "/consensus -- bullish/bearish/neutral vote tally across all 5 agents\n"
+    "/committee -- AI Investment Committee: majority decision, dissent, "
+    "supporting/opposing evidence, final recommendation\n"
     "/scenarios -- probability-weighted forward scenarios\n"
     "/sentiment -- Fear & Greed + news sentiment\n"
     "/liquidity -- liquidity + macro pressure sub-scores\n"
@@ -197,6 +201,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("score", "Global Market Score"),
     ("agents", "Macro/Crypto/Equity/News/Sentiment agent read-outs"),
     ("consensus", "Bullish/bearish/neutral vote tally across all 5 agents"),
+    ("committee", "AI Investment Committee: majority/dissent/evidence/recommendation"),
     ("scenarios", "Probability-weighted forward scenarios"),
     ("scenario", "Probability-weighted forward scenarios (alias of /scenarios)"),
     ("sentiment", "Fear & Greed + news sentiment"),
@@ -683,6 +688,15 @@ async def cmd_consensus(message: Message) -> None:
     )
     result = await engine.compute()
     await _answer(message, format_consensus(result))
+
+
+@router.message(Command("committee"))
+async def cmd_committee(message: Message) -> None:
+    engine = CommitteeEngine(
+        build_agent_orchestrator(), AgentReliabilityEngine(get_session_factory())
+    )
+    verdict = await engine.convene()
+    await _answer(message, format_committee(verdict.to_dict() if verdict is not None else None))
 
 
 @router.message(Command("scenarios"))

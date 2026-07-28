@@ -412,6 +412,31 @@ def format_consensus(result: ConsensusResult | None) -> str:
     return "\n".join(lines)
 
 
+def format_committee(verdict: dict | None) -> str:
+    if verdict is None:
+        return "No agent reported a direction this cycle -- the committee has nothing to vote on."
+    lines = [
+        "*AI INVESTMENT COMMITTEE*",
+        "",
+        f"Final recommendation: {verdict['final_recommendation']}",
+        (
+            f"Majority: {verdict['majority_decision']} ({verdict['majority_pct']}%) | "
+            f"Dissent: {verdict['dissent_pct']}% | Confidence: {verdict['confidence_pct']}%"
+        ),
+        "",
+        verdict["reasoning"],
+    ]
+    if verdict["supporting_evidence"]:
+        lines.append("")
+        lines.append("Supporting evidence:")
+        lines.extend(f"- {e['agent']}: {e['evidence']}" for e in verdict["supporting_evidence"])
+    if verdict["opposing_evidence"]:
+        lines.append("")
+        lines.append("Opposing evidence (minority):")
+        lines.extend(f"- {e['agent']}: {e['evidence']}" for e in verdict["opposing_evidence"])
+    return "\n".join(lines)
+
+
 def format_scenarios(row: ScenarioSnapshot | None) -> str:
     if row is None:
         return "Not enough data yet -- regime detection and signal scoring need to run first."

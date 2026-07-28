@@ -242,6 +242,45 @@ async function renderConsensus() {
   return nodes;
 }
 
+async function renderCommittee() {
+  const data = await safe("/api/committee");
+  const nodes = [el("h2", {}, "AI Investment Committee")];
+  if (!data) {
+    nodes.push(
+      el("p", { class: "error" }, "No agent reported a direction this cycle -- the committee has nothing to vote on.")
+    );
+    return nodes;
+  }
+  nodes.push(
+    el("div", { class: "grid" }, [
+      card("Final Recommendation", data.final_recommendation),
+      card("Majority", `${data.majority_decision} (${data.majority_pct}%)`),
+      card("Dissent", `${data.dissent_pct}%`),
+      card("Confidence", `${data.confidence_pct}%`),
+    ])
+  );
+  nodes.push(el("p", {}, data.reasoning));
+  if (data.supporting_evidence.length) {
+    nodes.push(el("h2", {}, "Supporting Evidence"));
+    nodes.push(
+      table(
+        ["Agent", "Evidence"],
+        data.supporting_evidence.map((e) => [e.agent, e.evidence])
+      )
+    );
+  }
+  if (data.opposing_evidence.length) {
+    nodes.push(el("h2", {}, "Opposing Evidence (Minority)"));
+    nodes.push(
+      table(
+        ["Agent", "Evidence"],
+        data.opposing_evidence.map((e) => [e.agent, e.evidence])
+      )
+    );
+  }
+  return nodes;
+}
+
 async function renderMacro() {
   const agents = await safe("/api/agents");
   const nodes = [el("h2", {}, "Macro")];
@@ -1528,7 +1567,7 @@ async function renderSettings() {
 }
 
 const PAGES = {
-  overview: renderOverview, consensus: renderConsensus, macro: renderMacro, crypto: renderCrypto,
+  overview: renderOverview, consensus: renderConsensus, committee: renderCommittee, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
   patterns: renderPatterns, breakout: renderBreakout, liquidity: renderLiquidity, sentiment: renderSentiment,
