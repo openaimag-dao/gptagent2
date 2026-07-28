@@ -40,6 +40,7 @@ from app.services.patterns.engine import PatternEngine
 from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
+from app.services.quality.engine import PredictionQualityEngine
 from app.services.ranking.engine import RankingEngine
 from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import MarketReplayEngine
@@ -78,6 +79,7 @@ from app.telegram.formatters import (
     format_patterns,
     format_portfolio,
     format_probability,
+    format_quality,
     format_ranking,
     format_replay,
     format_report,
@@ -123,6 +125,8 @@ HELP_TEXT = (
     "/probability SYMBOL -- empirical next-day up/down probability\n"
     "/learning SYMBOL [timeframe] -- self-learning accuracy: graded past "
     "predictions vs what actually happened\n"
+    "/quality SYMBOL [timeframe] -- Prediction Quality Lab: Brier score, "
+    "precision/recall, calibration, time-horizon accuracy\n"
     "/patterns SYMBOL -- detected technical patterns\n"
     "/breakout SYMBOL [timeframe] -- breakout/breakdown/false breakout/failed "
     "breakdown/retest/liquidity sweep detection\n"
@@ -190,6 +194,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("events", "Curated historical market events"),
     ("probability", "Empirical next-day up/down probability"),
     ("learning", "Self-learning accuracy: graded past predictions"),
+    ("quality", "Prediction Quality Lab: Brier score, precision/recall, calibration"),
     ("patterns", "Detected technical patterns"),
     ("breakout", "Breakout/breakdown/retest/liquidity sweep detection"),
     ("knowledge", "Similar historical episodes for current conditions"),
@@ -417,6 +422,19 @@ async def cmd_learning(message: Message, command: CommandObject) -> None:
     engine = LearningEngine(get_session_factory())
     result = await engine.evaluate_accuracy(config.symbol, config.model, timeframe)
     await _answer(message, format_learning(result, config.symbol, timeframe_arg))
+
+
+@router.message(Command("quality"))
+async def cmd_quality(message: Message, command: CommandObject) -> None:
+    symbol, timeframe, timeframe_arg = _parse_symbol_and_timeframe(command)
+    config = find_symbol_config(symbol)
+    if config is None or timeframe not in config.timeframes:
+        await _answer(message, f"No historical data available for {symbol}/{timeframe_arg}.")
+        return
+
+    engine = PredictionQualityEngine(get_session_factory())
+    result = await engine.evaluate(config.symbol, config.model, timeframe)
+    await _answer(message, format_quality(result, config.symbol, timeframe_arg))
 
 
 @router.message(Command("patterns"))

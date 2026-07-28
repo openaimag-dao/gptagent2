@@ -30,6 +30,72 @@ def realized_direction(realized_return_pct: float) -> str:
     return "flat"
 
 
+async def evaluate_predictions(
+    session_factory: async_sessionmaker[AsyncSession],
+    symbol: str,
+    model: type,
+    timeframe: Timeframe = Timeframe.DAILY,
+) -> list[dict]:
+    """Every graded prediction for symbol/timeframe: each stored
+    ProbabilitySnapshot whose horizon has actually elapsed in stored
+    history, joined against what really happened. A prediction only
+    appears here once it's actually gradable -- never guessed. Shared by
+    LearningEngine (aggregate accuracy) and PredictionQualityEngine
+    (Brier score/precision/recall/calibration) so this join logic lives
+    in exactly one place."""
+    async with session_factory() as session:
+        snapshots = list(
+            await session.scalars(
+                select(ProbabilitySnapshot)
+                .where(
+                    ProbabilitySnapshot.symbol == symbol,
+                    ProbabilitySnapshot.timeframe == timeframe.value,
+                    ProbabilitySnapshot.reference_timestamp.is_not(None),
+                )
+                .order_by(ProbabilitySnapshot.reference_timestamp)
+            )
+        )
+    if not snapshots:
+        return []
+
+    rows = await get_series(session_factory, model, symbol, timeframe)
+    index_by_timestamp = {r.timestamp: i for i, r in enumerate(rows)}
+
+    evaluated = []
+    for snapshot in snapshots:
+        idx = index_by_timestamp.get(snapshot.reference_timestamp)
+        if idx is None:
+            continue
+        target_idx = idx + snapshot.horizon_periods
+        if target_idx >= len(rows):
+            continue  # horizon hasn't elapsed in stored history yet
+
+        reference_close = float(rows[idx].close)
+        target_close = float(rows[target_idx].close)
+        if reference_close == 0:
+            continue
+        realized_return_pct = 100 * (target_close - reference_close) / reference_close
+
+        predicted = predicted_direction(
+            snapshot.prob_up_pct, snapshot.prob_down_pct, snapshot.prob_flat_pct
+        )
+        realized = realized_direction(realized_return_pct)
+        evaluated.append(
+            {
+                "reference_timestamp": snapshot.reference_timestamp,
+                "horizon_periods": snapshot.horizon_periods,
+                "prob_up_pct": snapshot.prob_up_pct,
+                "prob_down_pct": snapshot.prob_down_pct,
+                "prob_flat_pct": snapshot.prob_flat_pct,
+                "predicted": predicted,
+                "realized": realized,
+                "correct": predicted == realized,
+                "realized_return_pct": round(realized_return_pct, 2),
+            }
+        )
+    return evaluated
+
+
 class LearningEngine:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -37,53 +103,7 @@ class LearningEngine:
     async def evaluate_accuracy(
         self, symbol: str, model: type, timeframe: Timeframe = Timeframe.DAILY
     ) -> dict | None:
-        async with self._session_factory() as session:
-            snapshots = list(
-                await session.scalars(
-                    select(ProbabilitySnapshot)
-                    .where(
-                        ProbabilitySnapshot.symbol == symbol,
-                        ProbabilitySnapshot.timeframe == timeframe.value,
-                        ProbabilitySnapshot.reference_timestamp.is_not(None),
-                    )
-                    .order_by(ProbabilitySnapshot.reference_timestamp)
-                )
-            )
-        if not snapshots:
-            return None
-
-        rows = await get_series(self._session_factory, model, symbol, timeframe)
-        index_by_timestamp = {r.timestamp: i for i, r in enumerate(rows)}
-
-        evaluated = []
-        for snapshot in snapshots:
-            idx = index_by_timestamp.get(snapshot.reference_timestamp)
-            if idx is None:
-                continue
-            target_idx = idx + snapshot.horizon_periods
-            if target_idx >= len(rows):
-                continue  # horizon hasn't elapsed in stored history yet
-
-            reference_close = float(rows[idx].close)
-            target_close = float(rows[target_idx].close)
-            if reference_close == 0:
-                continue
-            realized_return_pct = 100 * (target_close - reference_close) / reference_close
-
-            predicted = predicted_direction(
-                snapshot.prob_up_pct, snapshot.prob_down_pct, snapshot.prob_flat_pct
-            )
-            realized = realized_direction(realized_return_pct)
-            evaluated.append(
-                {
-                    "reference_timestamp": snapshot.reference_timestamp,
-                    "predicted": predicted,
-                    "realized": realized,
-                    "correct": predicted == realized,
-                    "realized_return_pct": round(realized_return_pct, 2),
-                }
-            )
-
+        evaluated = await evaluate_predictions(self._session_factory, symbol, model, timeframe)
         if not evaluated:
             return None
 

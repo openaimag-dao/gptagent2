@@ -1130,6 +1130,77 @@ async function renderLearning() {
   return nodes;
 }
 
+async function renderQuality() {
+  const nodes = [el("h2", {}, "Prediction Quality Lab")];
+  const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const tfSelect = el("select", {}, ["1d", "4h", "1h"].map((t) => el("option", { value: t }, t)));
+  const btn = el("button", {}, "Load");
+  nodes.push(el("div", { class: "controls" }, [symbolInput, tfSelect, btn]));
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    results.innerHTML = "";
+    try {
+      const r = await fetchJSON(
+        `/api/quality/${encodeURIComponent(symbolInput.value)}?timeframe=${tfSelect.value}`
+      );
+      results.appendChild(
+        el("div", { class: "grid" }, [
+          card("Evaluated predictions", r.evaluated_predictions),
+          card("Accuracy", `${r.accuracy_pct}%`),
+          card("Brier score", r.brier_score),
+          card("Avg calibration error", `${r.average_error_pct}%`),
+        ])
+      );
+      results.appendChild(el("h2", {}, "Precision / Recall"));
+      results.appendChild(
+        el("p", { class: "sub" }, `Macro precision ${r.precision_recall.macro_precision_pct}% | Macro recall ${r.precision_recall.macro_recall_pct}%`)
+      );
+      results.appendChild(
+        table(
+          ["Class", "Precision", "Recall", "Support"],
+          Object.entries(r.precision_recall.per_class).map(([cls, stats]) => [
+            cls,
+            stats.precision_pct !== null ? `${stats.precision_pct}%` : "n/a",
+            stats.recall_pct !== null ? `${stats.recall_pct}%` : "n/a",
+            stats.support,
+          ])
+        )
+      );
+      if (r.calibration.length) {
+        results.appendChild(el("h2", {}, "Calibration"));
+        results.appendChild(
+          table(
+            ["Confidence Bucket", "Count", "Predicted", "Observed", "Gap"],
+            r.calibration.map((b) => [
+              b.confidence_bucket,
+              b.count,
+              `${b.avg_predicted_confidence_pct}%`,
+              `${b.observed_accuracy_pct}%`,
+              `${b.calibration_gap_pct}%`,
+            ])
+          )
+        );
+      }
+      if (r.time_horizon_accuracy.length) {
+        results.appendChild(el("h2", {}, "Accuracy by Horizon"));
+        results.appendChild(
+          table(
+            ["Horizon (periods)", "Count", "Accuracy"],
+            r.time_horizon_accuracy.map((h) => [h.horizon_periods, h.count, `${h.accuracy_pct}%`])
+          )
+        );
+      }
+    } catch (err) {
+      results.appendChild(errorBox(err));
+    }
+  }
+  btn.addEventListener("click", load);
+  load();
+  return nodes;
+}
+
 async function renderAdvice() {
   const nodes = [el("h2", {}, "Portfolio Advice")];
   const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
@@ -1630,7 +1701,8 @@ const PAGES = {
   patterns: renderPatterns, breakout: renderBreakout, liquidity: renderLiquidity, sentiment: renderSentiment,
   calendar: renderCalendar, similarity: renderSimilarity, brain: renderBrain,
   research: renderResearch, strategies: renderStrategies,
-  probability: renderProbability, learning: renderLearning, scenarios: renderScenarios,
+  probability: renderProbability, learning: renderLearning, quality: renderQuality,
+  scenarios: renderScenarios,
   whatif: renderWhatif,
   whales: renderWhales, etf: renderEtf, onchain: renderOnchain,
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, advice: renderAdvice,
