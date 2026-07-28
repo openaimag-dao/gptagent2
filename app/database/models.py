@@ -555,6 +555,25 @@ class AlertLog(Base):
     )
 
 
+class AgentPredictionLog(Base):
+    """Every specialist agent's direction/confidence call, logged each time
+    the Consensus Engine runs, so those calls can later be checked against
+    what actually happened (see app/services/reliability/engine.py) --
+    the same append-only, evaluate-once-the-horizon-elapses pattern
+    LearningEngine already uses for ProbabilitySnapshot, applied to agents
+    instead of probability predictions."""
+
+    __tablename__ = "agent_prediction_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    agent: Mapped[str] = mapped_column(String(30), index=True)
+    direction: Mapped[str] = mapped_column(String(10))
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    reference_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    horizon_periods: Mapped[int] = mapped_column(default=1)
+    logged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
 class ScenarioSnapshot(Base):
     """A set of named, probability-weighted forward scenarios (Soft Landing /
     Risk Off / Liquidity Expansion / Black Swan), deterministically derived
