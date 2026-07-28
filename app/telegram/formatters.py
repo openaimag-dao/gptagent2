@@ -376,6 +376,16 @@ def format_whale_snapshot(data: dict) -> str:
     return "\n".join(lines)
 
 
+def format_onchain(snapshot: dict) -> str:
+    lines = [f"*{snapshot['symbol']} ON-CHAIN INTELLIGENCE*", "", snapshot["reason"]]
+    if snapshot.get("solana_note"):
+        lines.append("")
+        lines.append(snapshot["solana_note"])
+    lines.append("")
+    lines.append("Tracked metrics (all unavailable): " + ", ".join(snapshot["metrics"]))
+    return "\n".join(lines)
+
+
 def format_agent_outputs(outputs: dict) -> str:
     return "\n\n".join(output.summary for output in outputs.values())
 
