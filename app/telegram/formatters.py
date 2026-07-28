@@ -1,6 +1,7 @@
 from app.database.models import (
     AssetClass,
     AssetPrice,
+    BreakoutEvent,
     Correlation,
     GlobalMarketScore,
     HistoricalEvent,
@@ -259,6 +260,31 @@ def format_patterns(symbol: str, patterns: list[PatternSignal]) -> str:
     for pattern in patterns:
         date_str = pattern.timestamp.date().isoformat()
         lines.append(f"{date_str}: {pattern.pattern_name} ({pattern.direction.value})")
+    return "\n".join(lines)
+
+
+def format_breakout(symbol: str, event: BreakoutEvent | None) -> str:
+    if event is None:
+        return f"No breakout/breakdown detected yet for {symbol}."
+    lines = [
+        f"*{symbol} BREAKOUT INTELLIGENCE* ({event.timeframe})",
+        "",
+        (
+            f"{event.event_type.replace('_', ' ').title()} ({event.direction}) at level "
+            f"{float(event.level):.4f}, price {float(event.price):.4f}"
+        ),
+        (
+            f"Probability: {event.probability_pct}%"
+            if event.probability_pct is not None
+            else "Probability: unavailable"
+        )
+        + f" | Confidence: {event.confidence_pct}%",
+    ]
+    if event.risk_score is not None:
+        lines.append(f"Risk score: {event.risk_score}/100")
+    lines.append(f"Expected: {event.expected_continuation}")
+    lines.append("")
+    lines.append(event.reasoning)
     return "\n".join(lines)
 
 

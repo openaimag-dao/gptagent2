@@ -861,3 +861,40 @@ class MarketSnapshot(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class BreakoutEvent(Base):
+    """v4.0 Breakout Intelligence -- one row per detected breakout,
+    breakdown, false breakout, failed breakdown, retest or liquidity sweep
+    against the trailing swing high/low. Scored by how many of (volume,
+    ATR-relative move size, rolling VWAP, market regime, OI/funding
+    momentum, finer-timeframe confirmation) actually agree; any factor the
+    platform has no data for is honestly `None`, never defaulted to False,
+    and probability_pct/confidence_pct are computed only over the factors
+    actually available (see app.services.common.scoring.weighted_average).
+    Rows are only written when a detection actually fires -- there is no
+    row for "nothing happening"."""
+
+    __tablename__ = "breakout_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    timeframe: Mapped[str] = mapped_column(String(5), index=True)
+    event_type: Mapped[str] = mapped_column(String(30))
+    direction: Mapped[str] = mapped_column(String(10))
+    level: Mapped[float] = mapped_column(Numeric(24, 8))
+    price: Mapped[float] = mapped_column(Numeric(24, 8))
+    probability_pct: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    confidence_pct: Mapped[int] = mapped_column()
+    risk_score: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    expected_continuation: Mapped[str] = mapped_column(String(40))
+    reasoning: Mapped[str] = mapped_column(Text)
+    volume_confirmed: Mapped[bool | None] = mapped_column(nullable=True)
+    atr_confirmed: Mapped[bool | None] = mapped_column(nullable=True)
+    vwap_confirmed: Mapped[bool | None] = mapped_column(nullable=True)
+    regime_confirmed: Mapped[bool | None] = mapped_column(nullable=True)
+    oi_funding_confirmed: Mapped[bool | None] = mapped_column(nullable=True)
+    multi_timeframe_confirmed: Mapped[bool | None] = mapped_column(nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

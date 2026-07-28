@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from app.database.models import (
     AssetClass,
     AssetPrice,
+    BreakoutEvent,
     GlobalMarketScore,
     MarketRegimeSnapshot,
     SignalSnapshot,
@@ -12,6 +13,7 @@ from app.services.consensus.engine import ConsensusResult
 from app.telegram.formatters import (
     format_advice,
     format_asset_class,
+    format_breakout,
     format_consensus,
     format_explanation,
     format_global_score,
@@ -359,6 +361,33 @@ def test_format_global_score_shows_new_subscores_when_present():
     assert "Trend strength: 72" in text
     assert "Risk score: 60" in text
     assert "Confidence score: 85" in text
+
+
+def test_format_breakout_none():
+    assert "No breakout/breakdown detected" in format_breakout("BTC", None)
+
+
+def test_format_breakout_present():
+    event = BreakoutEvent(
+        symbol="BTC",
+        timeframe="1d",
+        event_type="breakout",
+        direction="bullish",
+        level=60000.0,
+        price=61500.0,
+        probability_pct=72.5,
+        confidence_pct=83,
+        risk_score=65.0,
+        expected_continuation="likely to continue",
+        reasoning="Breakout (bullish). Confirmed by: volume, market regime.",
+    )
+    text = format_breakout("BTC", event)
+    assert "BTC BREAKOUT INTELLIGENCE" in text
+    assert "Breakout (bullish)" in text
+    assert "Probability: 72.5%" in text
+    assert "Confidence: 83%" in text
+    assert "Risk score: 65.0/100" in text
+    assert "likely to continue" in text
 
 
 def test_format_replay_none():

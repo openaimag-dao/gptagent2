@@ -1255,6 +1255,67 @@ async function renderReports() {
   return nodes;
 }
 
+async function renderBreakout() {
+  const nodes = [el("h2", {}, "Breakout Intelligence")];
+  const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const tfSelect = el("select", {}, ["1d", "4h", "1h"].map((t) => el("option", { value: t }, t)));
+  const btn = el("button", {}, "Load");
+  nodes.push(el("div", { class: "controls" }, [symbolInput, tfSelect, btn]));
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    results.innerHTML = "";
+    try {
+      const data = await fetchJSON(
+        `/api/breakout/${encodeURIComponent(symbolInput.value)}?timeframe=${tfSelect.value}&limit=20`
+      );
+      results.innerHTML = "";
+      if (!data.events.length) {
+        results.appendChild(
+          el("p", { class: "error" }, `No breakout/breakdown detected yet for ${data.symbol}.`)
+        );
+        return;
+      }
+      const latest = data.events[0];
+      results.appendChild(
+        el("div", { class: "grid" }, [
+          card("Event", latest.event_type.replace(/_/g, " "), null, latest.direction === "bullish" ? "up" : "down"),
+          card("Level", latest.level.toFixed(4)),
+          card("Price", latest.price.toFixed(4)),
+          card(
+            "Probability",
+            latest.probability_pct !== null ? `${latest.probability_pct}%` : "unavailable"
+          ),
+          card("Confidence", `${latest.confidence_pct}%`),
+          card("Risk", latest.risk_score !== null ? `${latest.risk_score}/100` : "n/a"),
+        ])
+      );
+      results.appendChild(el("p", { class: "sub" }, latest.expected_continuation));
+      results.appendChild(el("p", {}, latest.reasoning));
+      results.appendChild(el("h2", {}, "History"));
+      results.appendChild(
+        table(
+          ["Time", "Event", "Direction", "Probability", "Confidence"],
+          data.events.map((e) => [
+            e.computed_at.slice(0, 16).replace("T", " "),
+            e.event_type.replace(/_/g, " "),
+            el("span", { class: e.direction === "bullish" ? "up" : "down" }, e.direction),
+            e.probability_pct !== null ? `${e.probability_pct}%` : "n/a",
+            `${e.confidence_pct}%`,
+          ])
+        )
+      );
+    } catch (err) {
+      results.innerHTML = "";
+      results.appendChild(errorBox(err));
+    }
+  }
+  btn.addEventListener("click", load);
+  load();
+  return nodes;
+}
+
 async function renderReplay() {
   const nodes = [el("h2", {}, "Market Replay")];
   const data = await safe("/api/replay?limit=20");
@@ -1436,7 +1497,7 @@ const PAGES = {
   overview: renderOverview, consensus: renderConsensus, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
-  patterns: renderPatterns, liquidity: renderLiquidity, sentiment: renderSentiment,
+  patterns: renderPatterns, breakout: renderBreakout, liquidity: renderLiquidity, sentiment: renderSentiment,
   calendar: renderCalendar, similarity: renderSimilarity, brain: renderBrain,
   research: renderResearch, strategies: renderStrategies,
   probability: renderProbability, learning: renderLearning, scenarios: renderScenarios,
