@@ -24,6 +24,7 @@ from app.database.models import (
     NewsItem,
     PatternSignal,
     ProbabilitySnapshot,
+    Report,
     SentimentSnapshot,
     SignalSnapshot,
     SimilarMarketMatch,
@@ -108,6 +109,16 @@ def _global_score_summary(row: GlobalMarketScore) -> dict:
     return {"global_score": row.global_score}
 
 
+def _reports_summary(row: Report) -> dict:
+    return {
+        "report_type": row.report_type,
+        "regime": row.regime,
+        "risk_level": row.risk_level,
+        "bull_score": row.bull_score,
+        "bear_score": row.bear_score,
+    }
+
+
 def _news_summary(row: NewsItem) -> dict:
     return {"title": row.title, "category": row.category.value, "sentiment": row.sentiment.value}
 
@@ -140,6 +151,7 @@ _CATEGORIES: dict[str, _CategorySpec] = {
     "news": _CategorySpec(NewsItem, "fetched_at", _news_summary),
     "macro_events": _CategorySpec(HistoricalEvent, "event_date", _macro_events_summary),
     "alerts": _CategorySpec(AlertLog, "triggered_at", _alerts_summary),
+    "reports": _CategorySpec(Report, "generated_at", _reports_summary),
 }
 
 CATEGORY_NAMES: tuple[str, ...] = tuple(_CATEGORIES)
