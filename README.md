@@ -758,13 +758,31 @@ DELETE /api/portfolio/positions/{id}
 /portfolio [add SYMBOL QTY [entry_price]]
 ```
 
+**Portfolio Advisor** (`app/services/portfolio/advisor.py`): turns
+already-computed data into an actionable BUY/SELL/HOLD recommendation --
+no new data source, no LLM. Combines the Signal Engine's macro-wide
+bull/bear `net_score` with the Probability Engine's empirical, symbol-specific
+up/down/flat split for agreement on a given symbol (an honestly-documented
+limitation: `net_score` is market-wide, not per-symbol -- this project has
+no per-asset technical signal engine, so the two are the closest independent
+reads available). Only recommends BUY/SELL when both agree; otherwise HOLD.
+Stop-loss/take-profit are volatility-scaled off the Historical Intelligence
+Engine's own ATR (2x ATR stop, fixed 2:1 reward:risk), and position size is
+risk-based (defaults to 1% of portfolio equity per trade) when a portfolio
+is present -- never fabricated when ATR or equity data is missing.
+
+```
+GET /api/portfolio/advice/{symbol}?timeframe=1d&risk_pct=0.01
+/advice SYMBOL [timeframe]
+```
+
 ### 8. Web Dashboard
 
 A dependency-free single-page dashboard (`app/static/dashboard/`, vanilla
 HTML/CSS/JS, no build step, no framework) served at `/dashboard` via
-FastAPI's `StaticFiles`. 15 pages (Overview, Macro, Crypto, Stocks,
+FastAPI's `StaticFiles`. 16 pages (Overview, Macro, Crypto, Stocks,
 Correlations, Historical Similarity, AI Brain, Probability, Scenarios,
-Whales, ETF, Signals, Reports, Portfolio, Settings), each backed entirely by
+Whales, ETF, Signals, Reports, Portfolio, Advice, Settings), each backed entirely by
 `fetch()` calls to the real JSON APIs above -- an endpoint that 404s or
 reports data unavailable renders that fact on the page, never a mock value.
 Verified in a real headless-Chromium session: every tab renders without a

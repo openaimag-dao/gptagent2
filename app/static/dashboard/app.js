@@ -926,6 +926,59 @@ async function renderLearning() {
   return nodes;
 }
 
+async function renderAdvice() {
+  const nodes = [el("h2", {}, "Portfolio Advice")];
+  const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const tfSelect = el("select", {}, ["1d", "4h", "1h"].map((t) => el("option", { value: t }, t)));
+  const btn = el("button", {}, "Load");
+  nodes.push(el("div", { class: "controls" }, [symbolInput, tfSelect, btn]));
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    results.innerHTML = "";
+    try {
+      const a = await fetchJSON(
+        `/api/portfolio/advice/${encodeURIComponent(symbolInput.value)}?timeframe=${tfSelect.value}`
+      );
+      results.appendChild(
+        el("div", { class: "grid" }, [
+          card("Recommendation", a.recommendation, null, a.recommendation === "BUY" ? "up" : a.recommendation === "SELL" ? "down" : "neutral"),
+          card("Reference price", fmtNum(a.entry_reference_price)),
+          card("ATR", a.atr != null ? fmtNum(a.atr, 4) : "unavailable"),
+        ])
+      );
+      results.appendChild(el("p", {}, a.reasoning));
+      results.appendChild(
+        el("div", { class: "grid" }, [
+          card("Up", `${a.probability.up}%`, null, "up"),
+          card("Down", `${a.probability.down}%`, null, "down"),
+          card("Flat", `${a.probability.flat}%`),
+        ])
+      );
+      if (a.stop_loss_price != null) {
+        results.appendChild(
+          el("div", { class: "grid" }, [
+            card("Stop-loss", fmtNum(a.stop_loss_price)),
+            card("Take-profit", fmtNum(a.take_profit_price)),
+            card("Risk:reward", `1:${a.risk_reward_ratio}`),
+          ])
+        );
+      }
+      if (a.position_size_note) {
+        results.appendChild(
+          el("p", { class: "sub" }, `Position size: ${a.position_size_quantity} -- ${a.position_size_note}`)
+        );
+      }
+    } catch (err) {
+      results.appendChild(errorBox(err));
+    }
+  }
+  btn.addEventListener("click", load);
+  load();
+  return nodes;
+}
+
 async function renderScenarios() {
   const data = await safe("/api/scenarios");
   const nodes = [el("h2", {}, "Scenarios")];
@@ -1153,7 +1206,8 @@ const PAGES = {
   research: renderResearch, strategies: renderStrategies,
   probability: renderProbability, learning: renderLearning, scenarios: renderScenarios,
   whales: renderWhales, etf: renderEtf,
-  signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, settings: renderSettings,
+  signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, advice: renderAdvice,
+  settings: renderSettings,
 };
 
 // Pages made of nothing but read-only scores/summaries (no forms, no

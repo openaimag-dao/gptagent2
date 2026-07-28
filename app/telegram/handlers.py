@@ -31,6 +31,7 @@ from app.services.market.repository import MarketRepository
 from app.services.memory.engine import CATEGORY_NAMES, MemoryEngine
 from app.services.news.repository import NewsRepository
 from app.services.patterns.engine import PatternEngine
+from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.ranking.engine import RankingEngine
@@ -41,6 +42,7 @@ from app.services.signals.engine import SignalEngine
 from app.services.similar_market.engine import SimilarMarketEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
 from app.telegram.formatters import (
+    format_advice,
     format_agent_outputs,
     format_asset_class,
     format_backtest_result,
@@ -128,7 +130,9 @@ HELP_TEXT = (
     "/liquidity -- liquidity + macro pressure sub-scores\n"
     "/conviction [symbol] -- confidence tier for the latest signal/probability\n"
     "/memory [category] -- recent entries from any stored history category\n"
-    "/portfolio [add SYMBOL QTY [entry_price]] -- virtual portfolio health"
+    "/portfolio [add SYMBOL QTY [entry_price]] -- virtual portfolio health\n"
+    "/advice SYMBOL [timeframe] -- BUY/SELL/HOLD recommendation with ATR-based "
+    "stop-loss/take-profit/position-size (e.g. /advice BTC 1d)"
 )
 
 # Registered with Telegram via Bot.set_my_commands() so the client's "/" menu
@@ -170,6 +174,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("conviction", "Confidence tier for the latest signal/probability"),
     ("memory", "Recent entries from any stored history category"),
     ("portfolio", "Virtual portfolio health"),
+    ("advice", "BUY/SELL/HOLD recommendation with stop-loss/take-profit/size"),
 ]
 
 
@@ -735,3 +740,26 @@ async def cmd_portfolio(message: Message, command: CommandObject) -> None:
 
     health = await engine.compute_health(portfolio.id)
     await _answer(message, format_portfolio(health))
+
+
+@router.message(Command("advice"))
+async def cmd_advice(message: Message, command: CommandObject) -> None:
+    symbol, timeframe, timeframe_arg = _parse_symbol_and_timeframe(command)
+
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    news_repository = NewsRepository(session_factory)
+    portfolio_engine = PortfolioEngine(session_factory, market_repository)
+    portfolio = await portfolio_engine.get_or_create("main")
+
+    advisor = PortfolioAdvisorEngine(
+        session_factory,
+        SignalEngine(session_factory, market_repository, news_repository),
+        ProbabilityEngine(session_factory),
+        portfolio_engine,
+    )
+    advice = await advisor.advise(symbol, timeframe, portfolio_id=portfolio.id)
+    await _answer(
+        message,
+        format_advice(advice.to_dict() if advice is not None else None, symbol, timeframe_arg),
+    )
