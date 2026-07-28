@@ -15,6 +15,7 @@ from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
 from app.services.breakout.engine import BreakoutEngine
 from app.services.calendar.engine import EconomicCalendarEngine
+from app.services.committee.engine import CommitteeEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.features.engine import FeatureEngine
 from app.services.global_score.engine import GlobalScoreEngine
@@ -35,8 +36,10 @@ from app.services.research.researcher import AIResearcherEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.signals.engine import SignalEngine
+from app.services.terminal.engine import TerminalEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
-from app.telegram.broadcast import broadcast_report
+from app.telegram.broadcast import broadcast_report, broadcast_text
+from app.telegram.formatters import format_monthly_performance, format_weekly_review
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,8 @@ HYPOTHESIS_JOB_ID = "test_hypotheses"
 RANKING_JOB_ID = "compute_ranking"
 REPLAY_JOB_ID = "compute_market_replay"
 BREAKOUT_JOB_ID = "compute_breakout_intelligence"
+WEEKLY_REVIEW_JOB_ID = "broadcast_weekly_review"
+MONTHLY_PERFORMANCE_JOB_ID = "broadcast_monthly_performance"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -164,6 +169,50 @@ def build_replay_engine() -> MarketReplayEngine:
         WhaleIntelligenceEngine(session_factory),
         ETFIntelligenceEngine(news_repository, session_factory),
         ProbabilityEngine(session_factory),
+    )
+
+
+def build_terminal_engine() -> TerminalEngine:
+    session_factory = get_session_factory()
+    market_repository = MarketRepository(session_factory, get_redis())
+    news_repository = NewsRepository(session_factory)
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    global_score_engine = GlobalScoreEngine(
+        session_factory, market_repository, regime_detector, signal_engine
+    )
+    portfolio_engine = PortfolioEngine(session_factory, market_repository)
+    probability_engine = ProbabilityEngine(session_factory)
+    portfolio_advisor = PortfolioAdvisorEngine(
+        session_factory, signal_engine, probability_engine, portfolio_engine
+    )
+    feature_engine = FeatureEngine(session_factory, market_repository)
+    breakout_engine = BreakoutEngine(session_factory, regime_detector, feature_engine)
+    committee_engine = CommitteeEngine(
+        build_agent_orchestrator(), AgentReliabilityEngine(session_factory)
+    )
+    replay_engine = MarketReplayEngine(
+        session_factory,
+        market_repository,
+        news_repository,
+        regime_detector,
+        global_score_engine,
+        build_agent_orchestrator(),
+        AgentReliabilityEngine(session_factory),
+        portfolio_advisor,
+        WhaleIntelligenceEngine(session_factory),
+        ETFIntelligenceEngine(news_repository, session_factory),
+        probability_engine,
+    )
+    return TerminalEngine(
+        session_factory,
+        probability_engine,
+        breakout_engine,
+        portfolio_advisor,
+        portfolio_engine,
+        committee_engine,
+        global_score_engine,
+        replay_engine,
     )
 
 
@@ -375,6 +424,26 @@ async def compute_market_replay_job() -> None:
         logger.exception("Market replay snapshot job failed")
 
 
+async def broadcast_weekly_review_job() -> None:
+    engine = build_terminal_engine()
+    try:
+        result = await engine.compute_period_performance(days=7)
+        await broadcast_text(format_weekly_review(result))
+        logger.info("Weekly review broadcast: accuracy=%s%%", result["accuracy_pct"])
+    except Exception:
+        logger.exception("Weekly review job failed")
+
+
+async def broadcast_monthly_performance_job() -> None:
+    engine = build_terminal_engine()
+    try:
+        result = await engine.compute_period_performance(days=30)
+        await broadcast_text(format_monthly_performance(result))
+        logger.info("Monthly performance broadcast: accuracy=%s%%", result["accuracy_pct"])
+    except Exception:
+        logger.exception("Monthly performance job failed")
+
+
 async def generate_report_job(report_type: str) -> None:
     generator = build_report_generator()
     try:
@@ -536,6 +605,20 @@ def start_scheduler() -> AsyncIOScheduler:
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
         id=BREAKOUT_JOB_ID,
         next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        broadcast_weekly_review_job,
+        trigger=CronTrigger(day_of_week="mon", hour=6, minute=0, timezone="UTC"),
+        id=WEEKLY_REVIEW_JOB_ID,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        broadcast_monthly_performance_job,
+        trigger=CronTrigger(day=1, hour=6, minute=30, timezone="UTC"),
+        id=MONTHLY_PERFORMANCE_JOB_ID,
         max_instances=1,
         coalesce=True,
     )

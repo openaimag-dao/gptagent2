@@ -14,13 +14,17 @@ from app.telegram.formatters import (
     format_advice,
     format_asset_class,
     format_breakout,
+    format_brief,
     format_committee,
     format_consensus,
     format_explanation,
     format_global_score,
+    format_historical_comparison,
     format_learning,
     format_market_summary,
+    format_monthly_performance,
     format_onchain,
+    format_opportunities,
     format_quality,
     format_regime,
     format_replay,
@@ -29,6 +33,7 @@ from app.telegram.formatters import (
     format_single_asset,
     format_status,
     format_watchdog,
+    format_weekly_review,
     format_whatif,
 )
 
@@ -558,3 +563,112 @@ def test_format_replay_present():
     assert "bullish 60.0%" in text
     assert "Portfolio advice (BTC): BUY" in text
     assert "Alerts since previous snapshot: 1" in text
+
+
+def test_format_opportunities_empty():
+    assert "No opportunities computed" in format_opportunities([])
+
+
+def test_format_opportunities_present():
+    opportunities = [
+        {
+            "symbol": "BTC",
+            "classification": "bullish",
+            "opportunity_score": 78.0,
+            "probability_edge_pct": 40.0,
+            "breakout": {"event_type": "breakout", "direction": "bullish", "probability_pct": 70.0},
+            "advisor_recommendation": "BUY",
+        }
+    ]
+    text = format_opportunities(opportunities)
+    assert "BTC" in text
+    assert "bullish (78.0/100)" in text
+    assert "probability edge +40.0%" in text
+    assert "advisor: BUY" in text
+
+
+def test_format_brief_no_committee_no_opportunities():
+    brief = {
+        "committee": None,
+        "risk": None,
+        "top_opportunities": [],
+        "portfolio": {"empty": True, "positions": []},
+        "regime": "bull",
+        "health_score": 60,
+    }
+    text = format_brief(brief)
+    assert "DAILY TERMINAL BRIEF" in text
+    assert "no agent reported a direction" in text
+    assert "none computed this cycle" in text
+    assert "no positions held" in text
+
+
+def test_format_brief_full():
+    brief = {
+        "committee": {
+            "final_recommendation": "BUY (high conviction)",
+            "majority_decision": "BUY",
+            "majority_pct": 80.0,
+            "dissent_pct": 20.0,
+        },
+        "risk": {"risk_off_score": 30, "liquidity_score": 65},
+        "top_opportunities": [
+            {"symbol": "BTC", "classification": "bullish", "opportunity_score": 78.0}
+        ],
+        "portfolio": {"empty": False, "health_score": 72, "total_value": 10000.0},
+        "regime": "bull",
+        "health_score": 65,
+    }
+    text = format_brief(brief)
+    assert "Committee*: BUY (high conviction)" in text
+    assert "Risk-off: 30/100" in text
+    assert "BTC: bullish (78.0/100)" in text
+    assert "health 72/100" in text
+
+
+def test_format_historical_comparison_none():
+    assert "Not enough Market Replay history" in format_historical_comparison(None)
+
+
+def test_format_historical_comparison_present():
+    result = {
+        "days_ago": 7,
+        "diff": {
+            "regime": {"from": "bull", "to": "bear", "changed": True},
+            "health_score": {"from": 60, "to": 40, "delta": -20},
+            "trend_strength_score": {"from": None, "to": None, "delta": None},
+            "risk_score": {"from": 30, "to": 50, "delta": 20},
+            "confidence_score": {"from": None, "to": None, "delta": None},
+        },
+    }
+    text = format_historical_comparison(result)
+    assert "7 days ago" in text
+    assert "bull -> bear (changed)" in text
+    assert "Health Score: 60 -> 40 (-20)" in text
+    assert "Risk Score: 30 -> 50 (+20)" in text
+
+
+def test_format_weekly_review():
+    result = {
+        "evaluated_predictions": 5,
+        "accuracy_pct": 60.0,
+        "alerts_count": 3,
+        "historical_comparison": None,
+    }
+    text = format_weekly_review(result)
+    assert "WEEKLY REVIEW" in text
+    assert "Accuracy: 60.0%" in text
+    assert "Alerts logged: 3" in text
+
+
+def test_format_monthly_performance():
+    result = {
+        "evaluated_predictions": 20,
+        "accuracy_pct": 55.0,
+        "alerts_count": 12,
+        "historical_comparison": None,
+    }
+    text = format_monthly_performance(result)
+    assert "MONTHLY PERFORMANCE" in text
+    assert "Accuracy: 55.0%" in text
+    assert "Alerts logged: 12" in text

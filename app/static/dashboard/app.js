@@ -281,6 +281,95 @@ async function renderCommittee() {
   return nodes;
 }
 
+async function renderTerminal() {
+  const nodes = [el("h2", {}, "Terminal Brief")];
+  const data = await safe("/api/terminal/brief");
+  if (!data) {
+    nodes.push(el("p", { class: "error" }, "Not enough data yet to assemble a brief."));
+  } else {
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Regime", (data.regime || "unknown").replace(/_/g, " ")),
+        card("Health", data.health_score ?? "n/a"),
+        data.risk ? card("Risk-off", `${data.risk.risk_off_score}/100`) : card("Risk-off", "n/a"),
+        data.risk ? card("Liquidity", `${data.risk.liquidity_score}/100`) : card("Liquidity", "n/a"),
+      ])
+    );
+    if (data.committee) {
+      nodes.push(el("h2", {}, "Committee"));
+      nodes.push(
+        card(
+          data.committee.final_recommendation,
+          `Majority ${data.committee.majority_decision} (${data.committee.majority_pct}%) | Dissent ${data.committee.dissent_pct}%`,
+          data.committee.reasoning
+        )
+      );
+    }
+    if (data.top_opportunities.length) {
+      nodes.push(el("h2", {}, "Top Opportunities"));
+      nodes.push(
+        table(
+          ["Symbol", "Classification", "Score"],
+          data.top_opportunities.map((o) => [
+            o.symbol,
+            el("span", { class: o.classification === "bullish" ? "up" : o.classification === "bearish" ? "down" : "neutral" }, o.classification),
+            `${o.opportunity_score}/100`,
+          ])
+        )
+      );
+    }
+    nodes.push(el("h2", {}, "Portfolio"));
+    nodes.push(
+      el("p", { class: "sub" }, data.portfolio.empty ? "No positions held." : `Health ${data.portfolio.health_score}/100, value ${Number(data.portfolio.total_value).toLocaleString()}`)
+    );
+  }
+
+  nodes.push(el("h2", {}, "Historical Comparison"));
+  const daysInput = el("input", { type: "number", value: "7", min: "1", style: "width:80px" });
+  const historyBtn = el("button", {}, "Compare");
+  nodes.push(el("div", { class: "controls" }, [daysInput, historyBtn]));
+  const historyResults = el("div");
+  nodes.push(historyResults);
+  historyBtn.addEventListener("click", async () => {
+    historyResults.innerHTML = "";
+    try {
+      const cmp = await fetchJSON(`/api/terminal/history?days=${encodeURIComponent(daysInput.value)}`);
+      historyResults.appendChild(renderStructured(cmp.diff));
+    } catch (err) {
+      historyResults.appendChild(errorBox(err));
+    }
+  });
+
+  nodes.push(el("h2", {}, "Weekly / Monthly Performance"));
+  const weeklyBtn = el("button", {}, "Weekly Review");
+  const monthlyBtn = el("button", {}, "Monthly Performance");
+  nodes.push(el("div", { class: "controls" }, [weeklyBtn, monthlyBtn]));
+  const periodResults = el("div");
+  nodes.push(periodResults);
+  async function loadPeriod(path) {
+    periodResults.innerHTML = "";
+    try {
+      const result = await fetchJSON(path);
+      periodResults.appendChild(
+        el("div", { class: "grid" }, [
+          card("Evaluated predictions", result.evaluated_predictions),
+          card("Accuracy", result.accuracy_pct !== null ? `${result.accuracy_pct}%` : "n/a"),
+          card("Alerts logged", result.alerts_count),
+        ])
+      );
+      if (result.historical_comparison) {
+        periodResults.appendChild(renderStructured(result.historical_comparison.diff));
+      }
+    } catch (err) {
+      periodResults.appendChild(errorBox(err));
+    }
+  }
+  weeklyBtn.addEventListener("click", () => loadPeriod("/api/terminal/weekly"));
+  monthlyBtn.addEventListener("click", () => loadPeriod("/api/terminal/monthly"));
+
+  return nodes;
+}
+
 async function renderMacro() {
   const agents = await safe("/api/agents");
   const nodes = [el("h2", {}, "Macro")];
@@ -1695,7 +1784,7 @@ async function renderSettings() {
 }
 
 const PAGES = {
-  overview: renderOverview, consensus: renderConsensus, committee: renderCommittee, macro: renderMacro, crypto: renderCrypto,
+  overview: renderOverview, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
   patterns: renderPatterns, breakout: renderBreakout, liquidity: renderLiquidity, sentiment: renderSentiment,

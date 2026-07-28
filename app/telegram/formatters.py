@@ -883,3 +883,118 @@ def format_backtest_result(result: dict | None) -> str:
             f"Sharpe ratio: {result['sharpe_ratio']}",
         ]
     )
+
+
+def format_opportunities(opportunities: list[dict]) -> str:
+    if not opportunities:
+        return (
+            "No opportunities computed this cycle -- no signal has reported for any "
+            "tracked symbol yet."
+        )
+    lines = ["*TOP OPPORTUNITIES*", ""]
+    for opp in opportunities:
+        lines.append(f"*{opp['symbol']}*: {opp['classification']} ({opp['opportunity_score']}/100)")
+        details = []
+        if opp["probability_edge_pct"] is not None:
+            details.append(f"probability edge {opp['probability_edge_pct']:+.1f}%")
+        if opp["breakout"] is not None:
+            details.append(
+                f"{opp['breakout']['event_type'].replace('_', ' ')} "
+                f"({opp['breakout']['direction']}, {opp['breakout']['probability_pct']}%)"
+            )
+        if opp["advisor_recommendation"] is not None:
+            details.append(f"advisor: {opp['advisor_recommendation']}")
+        if details:
+            lines.append("  " + " | ".join(details))
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def format_brief(brief: dict) -> str:
+    lines = ["*DAILY TERMINAL BRIEF*", ""]
+    lines.append(f"Regime: {(brief['regime'] or 'unknown').replace('_', ' ').title()}")
+    if brief["health_score"] is not None:
+        lines.append(f"Market health: {brief['health_score']}/100")
+    if brief["risk"] is not None:
+        lines.append(
+            f"Risk-off: {brief['risk']['risk_off_score']}/100 | "
+            f"Liquidity: {brief['risk']['liquidity_score']}/100"
+        )
+    lines.append("")
+
+    if brief["committee"] is not None:
+        c = brief["committee"]
+        lines.append(f"*Committee*: {c['final_recommendation']}")
+        lines.append(
+            f"Majority {c['majority_decision']} ({c['majority_pct']}%) | "
+            f"Dissent {c['dissent_pct']}%"
+        )
+    else:
+        lines.append("*Committee*: no agent reported a direction this cycle.")
+    lines.append("")
+
+    if brief["top_opportunities"]:
+        lines.append("*Top Opportunities*")
+        for opp in brief["top_opportunities"][:3]:
+            lines.append(
+                f"- {opp['symbol']}: {opp['classification']} ({opp['opportunity_score']}/100)"
+            )
+    else:
+        lines.append("*Top Opportunities*: none computed this cycle.")
+    lines.append("")
+
+    portfolio = brief["portfolio"]
+    if portfolio.get("empty"):
+        lines.append("*Portfolio*: no positions held.")
+    else:
+        lines.append(
+            f"*Portfolio*: health {portfolio['health_score']}/100, "
+            f"value {portfolio['total_value']:,.2f}"
+        )
+    return "\n".join(lines)
+
+
+def format_historical_comparison(result: dict | None) -> str:
+    if result is None:
+        return "Not enough Market Replay history yet to compare against that far back."
+    diff = result["diff"]
+    lines = [
+        f"*HISTORICAL COMPARISON* ({result['days_ago']} days ago vs now)",
+        "",
+        f"Regime: {diff['regime']['from']} -> {diff['regime']['to']}"
+        + (" (changed)" if diff["regime"]["changed"] else ""),
+    ]
+    for field in ("health_score", "trend_strength_score", "risk_score", "confidence_score"):
+        entry = diff[field]
+        if entry["delta"] is not None:
+            label = field.replace("_", " ").title()
+            lines.append(f"{label}: {entry['from']} -> {entry['to']} ({entry['delta']:+d})")
+    return "\n".join(lines)
+
+
+def format_weekly_review(result: dict) -> str:
+    lines = [
+        "*WEEKLY REVIEW*",
+        "",
+        f"Graded predictions this week: {result['evaluated_predictions']}",
+    ]
+    if result["accuracy_pct"] is not None:
+        lines.append(f"Accuracy: {result['accuracy_pct']}%")
+    lines.append(f"Alerts logged: {result['alerts_count']}")
+    lines.append("")
+    lines.append(format_historical_comparison(result["historical_comparison"]))
+    return "\n".join(lines)
+
+
+def format_monthly_performance(result: dict) -> str:
+    lines = [
+        "*MONTHLY PERFORMANCE*",
+        "",
+        f"Graded predictions this month: {result['evaluated_predictions']}",
+    ]
+    if result["accuracy_pct"] is not None:
+        lines.append(f"Accuracy: {result['accuracy_pct']}%")
+    lines.append(f"Alerts logged: {result['alerts_count']}")
+    lines.append("")
+    lines.append(format_historical_comparison(result["historical_comparison"]))
+    return "\n".join(lines)
