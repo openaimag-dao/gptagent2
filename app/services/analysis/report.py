@@ -78,6 +78,7 @@ _LOW_RISK_REGIMES = frozenset(
         MarketRegime.BULL,
         MarketRegime.RECOVERY,
         MarketRegime.ACCUMULATION,
+        MarketRegime.STRONG_BULL,
     }
 )
 
@@ -200,12 +201,18 @@ def _serialize_global_score(row: GlobalMarketScore | None) -> dict | None:
         "crypto_strength_score": row.crypto_strength_score,
         "stock_strength_score": row.stock_strength_score,
         "global_score": row.global_score,
+        "trend_strength_score": row.trend_strength_score,
+        "risk_score": row.risk_score,
+        "confidence_score": row.confidence_score,
     }
 
 
 def _format_global_score_lines(global_score: dict | None) -> list[str]:
     if global_score is None:
         return ["- Not yet computed."]
+    trend_strength = global_score.get("trend_strength_score")
+    risk_score = global_score.get("risk_score")
+    confidence_score = global_score.get("confidence_score")
     return [
         f"- Global score: {global_score['global_score']}/100",
         f"- Risk-On {global_score['risk_on_score']} / Risk-Off {global_score['risk_off_score']}",
@@ -215,6 +222,9 @@ def _format_global_score_lines(global_score: dict | None) -> list[str]:
         f"- Institutional activity {global_score['institutional_activity_score']}",
         f"- Crypto strength {global_score['crypto_strength_score']}",
         f"- Stock strength {global_score['stock_strength_score']}",
+        f"- Trend strength {trend_strength if trend_strength is not None else 'unavailable'}",
+        f"- Risk score {risk_score if risk_score is not None else 'unavailable'}",
+        f"- Confidence score {confidence_score if confidence_score is not None else 'unavailable'}",
     ]
 
 

@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.api import admin
 
@@ -94,3 +95,28 @@ async def test_run_history_sync_marks_failed_on_exception():
 
         assert admin._status["state"] == "failed"
         assert admin._status["error"] == "boom"
+
+
+async def test_trigger_migration_returns_ok_on_success():
+    proc = AsyncMock()
+    proc.communicate.return_value = (b"Running upgrade 0016 -> 0017\n", None)
+    proc.returncode = 0
+
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)):
+        result = await admin.trigger_migration()
+
+    assert result["status"] == "ok"
+    assert "0017" in result["output"]
+
+
+async def test_trigger_migration_raises_500_on_failure():
+    proc = AsyncMock()
+    proc.communicate.return_value = (b"FAILED: some migration error\n", None)
+    proc.returncode = 1
+
+    with patch("asyncio.create_subprocess_exec", new=AsyncMock(return_value=proc)):
+        with pytest.raises(HTTPException) as exc_info:
+            await admin.trigger_migration()
+
+    assert exc_info.value.status_code == 500
+    assert "FAILED" in exc_info.value.detail
