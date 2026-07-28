@@ -1255,6 +1255,76 @@ async function renderReports() {
   return nodes;
 }
 
+async function renderReplay() {
+  const nodes = [el("h2", {}, "Market Replay")];
+  const data = await safe("/api/replay?limit=20");
+  if (!data || !data.snapshots.length) {
+    nodes.push(el("p", { class: "error" }, "No market snapshot has been taken yet."));
+    return nodes;
+  }
+  const latest = data.snapshots[0];
+  nodes.push(
+    el("div", { class: "grid" }, [
+      card("Regime", (latest.regime || "unknown").replace(/_/g, " ")),
+      card("Health", latest.health_score ?? "n/a"),
+      card("Trend Strength", latest.trend_strength_score ?? "n/a"),
+      card("Risk", latest.risk_score ?? "n/a"),
+      card("Confidence", latest.confidence_score ?? "n/a"),
+    ])
+  );
+  if (latest.consensus) {
+    nodes.push(el("h2", {}, "Consensus"));
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Bullish", `${latest.consensus.bullish_pct}%`, null, "up"),
+        card("Bearish", `${latest.consensus.bearish_pct}%`, null, "down"),
+        card("Conflict", `${latest.consensus.conflict_pct}%`),
+      ])
+    );
+  }
+  if (latest.portfolio_advice) {
+    nodes.push(el("h2", {}, "Portfolio Advice"));
+    nodes.push(
+      card(latest.portfolio_advice.symbol, latest.portfolio_advice.recommendation, latest.portfolio_advice.reasoning)
+    );
+  }
+  nodes.push(el("h2", {}, "Alerts since previous snapshot"));
+  nodes.push(el("p", { class: "sub" }, `${latest.alerts.length} detection(s)`));
+
+  nodes.push(el("h2", {}, "Recent Snapshots"));
+  nodes.push(
+    table(
+      ["Time", "Regime", "Health", "Risk"],
+      data.snapshots.map((s) => [
+        s.computed_at.slice(0, 16).replace("T", " "),
+        (s.regime || "unknown").replace(/_/g, " "),
+        s.health_score ?? "n/a",
+        s.risk_score ?? "n/a",
+      ])
+    )
+  );
+
+  nodes.push(el("h2", {}, "Compare Two Snapshots"));
+  const t1 = el("input", { type: "text", placeholder: "t1 (ISO timestamp)" });
+  const t2 = el("input", { type: "text", placeholder: "t2 (ISO timestamp)" });
+  const btn = el("button", {}, "Compare");
+  nodes.push(el("div", { class: "controls" }, [t1, t2, btn]));
+  const results = el("div");
+  nodes.push(results);
+  btn.addEventListener("click", async () => {
+    results.innerHTML = "";
+    try {
+      const diff = await fetchJSON(
+        `/api/replay/compare?t1=${encodeURIComponent(t1.value)}&t2=${encodeURIComponent(t2.value)}`
+      );
+      results.appendChild(renderStructured(diff));
+    } catch (err) {
+      results.appendChild(errorBox(err));
+    }
+  });
+  return nodes;
+}
+
 async function renderPortfolio() {
   const nodes = [el("h2", {}, "Portfolio")];
   const health = await safe("/api/portfolio");
@@ -1373,6 +1443,7 @@ const PAGES = {
   whales: renderWhales, etf: renderEtf,
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, advice: renderAdvice,
   risk: renderRisk, why: renderExplanation, watchdog: renderWatchdog, status: renderStatus,
+  replay: renderReplay,
   settings: renderSettings,
 };
 

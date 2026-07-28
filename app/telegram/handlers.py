@@ -38,6 +38,7 @@ from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.ranking.engine import RankingEngine
 from app.services.reliability.engine import AgentReliabilityEngine
+from app.services.replay.engine import MarketReplayEngine
 from app.services.research.engine import ResearchEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
@@ -69,6 +70,7 @@ from app.telegram.formatters import (
     format_portfolio,
     format_probability,
     format_ranking,
+    format_replay,
     format_report,
     format_research_result,
     format_risk,
@@ -146,7 +148,9 @@ HELP_TEXT = (
     "/status -- last-computed timestamps for Signal/Regime/Global Score\n"
     "/health -- bot liveness check\n"
     "/watchdog -- recent alert detections and whether each was sent or "
-    "suppressed (conviction gate or cooldown)"
+    "suppressed (conviction gate or cooldown)\n"
+    "/replay -- latest consolidated market snapshot (regime, scores, consensus, "
+    "portfolio advice, alerts since the previous snapshot)"
 )
 
 # Registered with Telegram via Bot.set_my_commands() so the client's "/" menu
@@ -195,6 +199,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("status", "Last-computed timestamps for core engines"),
     ("health", "Bot liveness check"),
     ("watchdog", "Recent alert detections, sent vs suppressed"),
+    ("replay", "Latest consolidated market snapshot"),
 ]
 
 
@@ -889,3 +894,49 @@ async def cmd_why(message: Message, command: CommandObject) -> None:
     )
     data = await engine.build(symbol)
     await _answer(message, format_explanation(data))
+
+
+@router.message(Command("replay"))
+async def cmd_replay(message: Message) -> None:
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    news_repository = NewsRepository(session_factory)
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    global_score_engine = GlobalScoreEngine(
+        session_factory, market_repository, regime_detector, signal_engine
+    )
+    portfolio_engine = PortfolioEngine(session_factory, market_repository)
+    portfolio_advisor = PortfolioAdvisorEngine(
+        session_factory, signal_engine, ProbabilityEngine(session_factory), portfolio_engine
+    )
+    engine = MarketReplayEngine(
+        session_factory,
+        market_repository,
+        news_repository,
+        regime_detector,
+        global_score_engine,
+        build_agent_orchestrator(),
+        AgentReliabilityEngine(session_factory),
+        portfolio_advisor,
+        WhaleIntelligenceEngine(session_factory),
+        ETFIntelligenceEngine(news_repository, session_factory),
+        ProbabilityEngine(session_factory),
+    )
+    row = await engine.get_latest()
+    snapshot = (
+        {
+            "regime": row.regime,
+            "health_score": row.health_score,
+            "trend_strength_score": row.trend_strength_score,
+            "risk_score": row.risk_score,
+            "confidence_score": row.confidence_score,
+            "consensus": row.consensus,
+            "portfolio_advice": row.portfolio_advice,
+            "alerts": row.alerts,
+            "computed_at": row.computed_at.isoformat(),
+        }
+        if row is not None
+        else None
+    )
+    await _answer(message, format_replay(snapshot))

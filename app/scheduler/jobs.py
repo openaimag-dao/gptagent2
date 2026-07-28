@@ -9,6 +9,7 @@ from app.api.reports import build_report_generator
 from app.config import get_settings
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
+from app.services.agents.orchestrator import build_agent_orchestrator
 from app.services.alerts.engine import build_alert_engine
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
@@ -21,7 +22,12 @@ from app.services.market.aggregator import MarketDataAggregator
 from app.services.market.repository import MarketRepository
 from app.services.news.aggregator import NewsAggregator
 from app.services.news.repository import NewsRepository
+from app.services.portfolio.advisor import PortfolioAdvisorEngine
+from app.services.portfolio.engine import PortfolioEngine
+from app.services.probability.engine import ProbabilityEngine
 from app.services.ranking.engine import RankingEngine
+from app.services.reliability.engine import AgentReliabilityEngine
+from app.services.replay.engine import MarketReplayEngine
 from app.services.research.researcher import AIResearcherEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
@@ -49,6 +55,7 @@ FEATURE_JOB_ID = "compute_features"
 AI_RESEARCHER_JOB_ID = "generate_research_note"
 HYPOTHESIS_JOB_ID = "test_hypotheses"
 RANKING_JOB_ID = "compute_ranking"
+REPLAY_JOB_ID = "compute_market_replay"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -118,6 +125,34 @@ def build_economic_calendar_engine() -> EconomicCalendarEngine:
 def build_feature_engine() -> FeatureEngine:
     market_repository = MarketRepository(get_session_factory(), get_redis())
     return FeatureEngine(get_session_factory(), market_repository)
+
+
+def build_replay_engine() -> MarketReplayEngine:
+    session_factory = get_session_factory()
+    market_repository = MarketRepository(session_factory, get_redis())
+    news_repository = NewsRepository(session_factory)
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    global_score_engine = GlobalScoreEngine(
+        session_factory, market_repository, regime_detector, signal_engine
+    )
+    portfolio_engine = PortfolioEngine(session_factory, market_repository)
+    portfolio_advisor = PortfolioAdvisorEngine(
+        session_factory, signal_engine, ProbabilityEngine(session_factory), portfolio_engine
+    )
+    return MarketReplayEngine(
+        session_factory,
+        market_repository,
+        news_repository,
+        regime_detector,
+        global_score_engine,
+        build_agent_orchestrator(),
+        AgentReliabilityEngine(session_factory),
+        portfolio_advisor,
+        WhaleIntelligenceEngine(session_factory),
+        ETFIntelligenceEngine(news_repository, session_factory),
+        ProbabilityEngine(session_factory),
+    )
 
 
 # Symbols worth computing features for on every cycle -- crypto majors,
@@ -296,6 +331,20 @@ async def check_alerts_job() -> None:
         logger.exception("Alert check job failed")
 
 
+async def compute_market_replay_job() -> None:
+    engine = build_replay_engine()
+    try:
+        snapshot = await engine.compute_and_store()
+        logger.info(
+            "Market replay snapshot stored: regime=%s health=%s alerts=%d",
+            snapshot.regime,
+            snapshot.health_score,
+            len(snapshot.alerts),
+        )
+    except Exception:
+        logger.exception("Market replay snapshot job failed")
+
+
 async def generate_report_job(report_type: str) -> None:
     generator = build_report_generator()
     try:
@@ -441,6 +490,14 @@ def start_scheduler() -> AsyncIOScheduler:
         compute_ranking_job,
         trigger=CronTrigger(day_of_week="mon", hour=5, minute=0, timezone="UTC"),
         id=RANKING_JOB_ID,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_market_replay_job,
+        trigger=IntervalTrigger(minutes=settings.replay_interval_minutes),
+        id=REPLAY_JOB_ID,
+        next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,
     )
