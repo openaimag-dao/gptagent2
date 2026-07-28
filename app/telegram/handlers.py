@@ -44,11 +44,13 @@ from app.services.ranking.engine import RankingEngine
 from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import MarketReplayEngine
 from app.services.research.engine import ResearchEngine
+from app.services.research.impact import EventImpactEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.signals.engine import SignalEngine
 from app.services.similar_market.engine import SimilarMarketEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
+from app.services.whatif.engine import WhatIfSimulator
 from app.telegram.formatters import (
     format_advice,
     format_agent_outputs,
@@ -91,6 +93,7 @@ from app.telegram.formatters import (
     format_walk_forward,
     format_watchdog,
     format_whale_snapshot,
+    format_whatif,
 )
 
 logger = logging.getLogger(__name__)
@@ -148,6 +151,8 @@ HELP_TEXT = (
     "/committee -- AI Investment Committee: majority decision, dissent, "
     "supporting/opposing evidence, final recommendation\n"
     "/scenarios -- probability-weighted forward scenarios\n"
+    "/whatif [KEY] -- what-if impact simulator (Fed cuts, DXY drops, Nasdaq crashes, "
+    "etc); no args lists scenario keys\n"
     "/sentiment -- Fear & Greed + news sentiment\n"
     "/liquidity -- liquidity + macro pressure sub-scores\n"
     "/conviction [symbol] -- confidence tier for the latest signal/probability\n"
@@ -204,6 +209,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("committee", "AI Investment Committee: majority/dissent/evidence/recommendation"),
     ("scenarios", "Probability-weighted forward scenarios"),
     ("scenario", "Probability-weighted forward scenarios (alias of /scenarios)"),
+    ("whatif", "What-if impact simulator (Fed cuts, DXY drops, Nasdaq crashes, etc)"),
     ("sentiment", "Fear & Greed + news sentiment"),
     ("liquidity", "Liquidity + macro pressure sub-scores"),
     ("conviction", "Confidence tier for the latest signal/probability"),
@@ -718,6 +724,35 @@ async def cmd_scenarios(message: Message) -> None:
 async def cmd_scenario(message: Message) -> None:
     """Singular alias of /scenarios."""
     await cmd_scenarios(message)
+
+
+@router.message(Command("whatif"))
+async def cmd_whatif(message: Message, command: CommandObject) -> None:
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(
+        session_factory, market_repository, NewsRepository(session_factory)
+    )
+    global_score_engine = GlobalScoreEngine(
+        session_factory, market_repository, regime_detector, signal_engine
+    )
+    simulator = WhatIfSimulator(
+        EventImpactEngine(session_factory),
+        CorrelationEngine(session_factory),
+        regime_detector,
+        global_score_engine,
+        ProbabilityEngine(session_factory),
+    )
+    scenario_key = (command.args or "").strip()
+    if not scenario_key:
+        scenarios = simulator.list_scenarios()
+        lines = ["*WHAT-IF SCENARIOS*", "", "Use /whatif KEY. Available:"]
+        lines.extend(f"- {s['key']}: {s['label']}" for s in scenarios)
+        await _answer(message, "\n".join(lines))
+        return
+    result = await simulator.simulate(scenario_key)
+    await _answer(message, format_whatif(result))
 
 
 @router.message(Command("sentiment"))

@@ -28,6 +28,7 @@ from app.telegram.formatters import (
     format_single_asset,
     format_status,
     format_watchdog,
+    format_whatif,
 )
 
 
@@ -441,6 +442,51 @@ def test_format_committee_present():
     assert "Supporting evidence" in text
     assert "Opposing evidence (minority)" in text
     assert "Weak breadth." in text
+
+
+def test_format_whatif_none():
+    assert "Unknown scenario" in format_whatif(None)
+
+
+def test_format_whatif_historical_event_study():
+    result = {
+        "scenario_key": "fed_cuts_rates",
+        "scenario_label": "Fed Cuts Rates",
+        "description": "The Federal Reserve cuts its target rate.",
+        "data_source": "historical_event_study",
+        "impact": {
+            "BTC": {"expected_return_7d_pct": 5.0, "sample_size": 8},
+            "altcoins": {"expected_return_7d_pct": 8.0, "sample_size": None},
+        },
+        "current_regime": "accumulation",
+        "likely_regime_shift_toward": "liquidity_expansion",
+        "risk_direction": "down",
+        "liquidity_direction": "up",
+        "reasoning": "Rate cuts historically ease financial conditions.",
+    }
+    text = format_whatif(result)
+    assert "FED CUTS RATES" in text
+    assert "historical event study" in text
+    assert "BTC: +5.00% (7d) [8 historical occurrences]" in text
+    assert "accumulation -> likely shift toward liquidity expansion" in text
+    assert "Risk: down | Liquidity: up" in text
+
+
+def test_format_whatif_correlation_direction():
+    result = {
+        "scenario_key": "dxy_drops",
+        "scenario_label": "DXY Drops",
+        "description": "The US Dollar Index falls.",
+        "data_source": "correlation_direction",
+        "impact": {"BTC": {"direction": "bullish", "correlation_30d": -0.4}},
+        "current_regime": None,
+        "likely_regime_shift_toward": "risk_on",
+        "risk_direction": "down",
+        "liquidity_direction": "up",
+        "reasoning": "Direction derived from the real stored correlation.",
+    }
+    text = format_whatif(result)
+    assert "BTC: bullish (correlation -0.4)" in text
 
 
 def test_format_replay_none():

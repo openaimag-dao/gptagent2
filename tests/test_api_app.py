@@ -51,6 +51,7 @@ EXPECTED_PREFIXES = {
     "/api/breakout",
     "/api/onchain",
     "/api/committee",
+    "/api/whatif",
 }
 
 

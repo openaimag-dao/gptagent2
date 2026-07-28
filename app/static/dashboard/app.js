@@ -1198,6 +1198,63 @@ async function renderScenarios() {
   return nodes;
 }
 
+async function renderWhatif() {
+  const nodes = [el("h2", {}, "What-If Scenario Simulator")];
+  const list = await safe("/api/whatif");
+  const select = el(
+    "select",
+    {},
+    (list ? list.scenarios : []).map((s) => el("option", { value: s.key }, s.label))
+  );
+  const btn = el("button", {}, "Simulate");
+  nodes.push(el("div", { class: "controls" }, [select, btn]));
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    if (!select.value) return;
+    results.innerHTML = "";
+    try {
+      const data = await fetchJSON(`/api/whatif/${encodeURIComponent(select.value)}`);
+      results.innerHTML = "";
+      results.appendChild(el("p", {}, data.description));
+      results.appendChild(el("p", { class: "sub" }, `Data source: ${data.data_source.replace(/_/g, " ")}`));
+      const impactRows = Object.entries(data.impact).map(([symbol, info]) => {
+        if ("expected_return_7d_pct" in info) {
+          const value = info.expected_return_7d_pct;
+          return [
+            symbol,
+            value !== null ? `${value.toFixed(2)}% (7d)` : "no data",
+            info.sample_size ? `${info.sample_size} occurrences` : (info.note || ""),
+          ];
+        }
+        return [
+          symbol,
+          el("span", { class: info.direction === "bullish" ? "up" : info.direction === "bearish" ? "down" : "neutral" }, info.direction || "unclear"),
+          info.correlation_30d !== null && info.correlation_30d !== undefined ? `correlation ${info.correlation_30d}` : (info.note || ""),
+        ];
+      });
+      if (impactRows.length) {
+        results.appendChild(table(["Symbol", "Impact", "Detail"], impactRows));
+      }
+      results.appendChild(
+        el("div", { class: "grid" }, [
+          card("Regime", `${data.current_regime || "unknown"} -> ${data.likely_regime_shift_toward.replace(/_/g, " ")}`),
+          card("Risk", data.risk_direction),
+          card("Liquidity", data.liquidity_direction),
+        ])
+      );
+      results.appendChild(el("p", {}, data.reasoning));
+    } catch (err) {
+      results.innerHTML = "";
+      results.appendChild(errorBox(err));
+    }
+  }
+  btn.addEventListener("click", load);
+  if (list && list.scenarios.length) load();
+  return nodes;
+}
+
 async function renderWhales() {
   const data = await safe("/api/whales");
   const nodes = [el("h2", {}, "Whale Intelligence")];
@@ -1574,6 +1631,7 @@ const PAGES = {
   calendar: renderCalendar, similarity: renderSimilarity, brain: renderBrain,
   research: renderResearch, strategies: renderStrategies,
   probability: renderProbability, learning: renderLearning, scenarios: renderScenarios,
+  whatif: renderWhatif,
   whales: renderWhales, etf: renderEtf, onchain: renderOnchain,
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, advice: renderAdvice,
   risk: renderRisk, why: renderExplanation, watchdog: renderWatchdog, status: renderStatus,
