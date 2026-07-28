@@ -45,6 +45,8 @@ EXPECTED_PREFIXES = {
     "/api/consensus",
     "/api/learning",
     "/api/explanation",
+    "/api/status",
+    "/api/risk",
 }
 
 

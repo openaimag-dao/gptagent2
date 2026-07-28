@@ -220,7 +220,12 @@ async function renderConsensus() {
       card("Neutral", `${data.neutral_pct}%`),
     ])
   );
-  nodes.push(scoreBar("Agreement", data.agreement_score));
+  nodes.push(
+    el("div", { class: "grid" }, [
+      scoreBar("Agreement", data.agreement_score),
+      scoreBar("Conflict", data.conflict_pct),
+    ])
+  );
   nodes.push(
     table(
       ["Direction", "Agents"],
@@ -490,6 +495,165 @@ async function renderLiquidity() {
       Object.entries(data.inputs).map(([k, v]) => [k.replace(/_/g, " "), v != null ? fmtNum(v, 4) : "n/a"])
     )
   );
+  return nodes;
+}
+
+async function renderRisk() {
+  const data = await safe("/api/risk");
+  const nodes = [el("h2", {}, "Risk")];
+  if (!data) {
+    nodes.push(el("p", { class: "error" }, "Not enough data yet."));
+    return nodes;
+  }
+  if (data.global_score) {
+    nodes.push(
+      el("div", { class: "grid" }, [
+        scoreBar("Risk-Off", data.global_score.risk_off_score),
+        scoreBar("Risk-On", data.global_score.risk_on_score),
+        scoreBar("Fear", data.global_score.fear_score),
+        scoreBar("Macro Pressure", data.global_score.macro_pressure_score),
+      ])
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "Global Score not computed yet -- run /score first."));
+  }
+  nodes.push(el("h2", {}, "Signal Conviction"));
+  if (data.signal_conviction) {
+    const sc = data.signal_conviction;
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Tier", sc.tier),
+        card("Effective confidence", `${sc.effective_confidence_pct}%`),
+      ])
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "Unavailable -- no signal computed yet."));
+  }
+  return nodes;
+}
+
+async function renderStatus() {
+  const data = await safe("/api/status");
+  const nodes = [el("h2", {}, "System Status")];
+  if (!data) {
+    nodes.push(el("p", { class: "error" }, "Unable to load status."));
+    return nodes;
+  }
+  nodes.push(
+    table(
+      ["Engine", "Last computed"],
+      [
+        ["Signal", data.signal_computed_at || "never computed"],
+        ["Regime", data.regime_computed_at || "never computed"],
+        ["Global Score", data.global_score_computed_at || "never computed"],
+      ]
+    )
+  );
+  return nodes;
+}
+
+async function renderWatchdog() {
+  const data = await safe("/api/memory?category=alerts&limit=15");
+  const nodes = [el("h2", {}, "Market Watchdog")];
+  if (!data || !data.entries.length) {
+    nodes.push(el("p", { class: "sub" }, "No detections logged yet."));
+    return nodes;
+  }
+  nodes.push(
+    table(
+      ["Time", "Alert type", "Tier", "State", "Message"],
+      data.entries.map((e) => [
+        e.timestamp.slice(0, 16).replace("T", " "),
+        e.summary.alert_type,
+        e.summary.conviction_tier,
+        e.summary.broadcast
+          ? el("span", { class: "up" }, "sent")
+          : el("span", { class: "sub" }, "suppressed"),
+        e.summary.message,
+      ])
+    )
+  );
+  return nodes;
+}
+
+async function renderExplanation() {
+  const nodes = [el("h2", {}, "Why")];
+  const input = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const btn = el("button", {}, "Load");
+  nodes.push(el("div", { class: "controls" }, [input, btn]));
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    results.innerHTML = "";
+    try {
+      const d = await fetchJSON(`/api/explanation/${encodeURIComponent(input.value)}`);
+      if (d.indicators.length) {
+        results.appendChild(el("h2", {}, "Triggered indicators"));
+        results.appendChild(
+          table(
+            ["Indicator", "Points"],
+            d.indicators.map((i) => [i.name.replace(/_/g, " "), `${i.points > 0 ? "+" : ""}${i.points}`])
+          )
+        );
+      }
+      if (Object.keys(d.macro_drivers).length) {
+        results.appendChild(el("h2", {}, "Macro drivers"));
+        results.appendChild(
+          table(
+            ["Driver", "Value"],
+            Object.entries(d.macro_drivers).map(([k, v]) => [k.replace(/_/g, " "), v == null ? "n/a" : String(v)])
+          )
+        );
+      }
+      if (d.supporting_news.length) {
+        results.appendChild(el("h2", {}, "Supporting news"));
+        results.appendChild(
+          table(
+            ["Sentiment", "Title"],
+            d.supporting_news.map((n) => [n.sentiment, n.title])
+          )
+        );
+      }
+      if (d.historical_examples.length) {
+        results.appendChild(el("h2", {}, "Historical examples"));
+        results.appendChild(
+          table(
+            ["Date", "Similarity", "Regime", "7d forward"],
+            d.historical_examples.map((h) => [
+              h.match_timestamp.slice(0, 10),
+              `${h.similarity_score.toFixed(0)}%`,
+              h.regime || "unknown",
+              fmtPct(h.forward_return_7d_pct),
+            ])
+          )
+        );
+      }
+      if (d.risk_factors) {
+        results.appendChild(el("h2", {}, "Risk factors"));
+        results.appendChild(
+          el("div", { class: "grid" }, [
+            card("Fear", d.risk_factors.fear_score),
+            card("Macro Pressure", d.risk_factors.macro_pressure_score),
+            card("Risk-Off", d.risk_factors.risk_off_score),
+          ])
+        );
+      }
+      if (d.alternative_view) {
+        results.appendChild(el("h2", {}, "Alternative view"));
+        results.appendChild(
+          card(d.alternative_view.name, `${d.alternative_view.probability_pct}%`, d.alternative_view.rationale)
+        );
+      }
+      if (!results.children.length) {
+        results.appendChild(el("p", { class: "sub" }, "Not enough data computed yet to explain this read."));
+      }
+    } catch (err) {
+      results.appendChild(errorBox(err));
+    }
+  }
+  btn.addEventListener("click", load);
+  load();
   return nodes;
 }
 
@@ -1208,6 +1372,7 @@ const PAGES = {
   probability: renderProbability, learning: renderLearning, scenarios: renderScenarios,
   whales: renderWhales, etf: renderEtf,
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, advice: renderAdvice,
+  risk: renderRisk, why: renderExplanation, watchdog: renderWatchdog, status: renderStatus,
   settings: renderSettings,
 };
 
