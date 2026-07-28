@@ -986,6 +986,109 @@ def format_weekly_review(result: dict) -> str:
     return "\n".join(lines)
 
 
+_SHOCK_TIER_EMOJI = {"info": "i", "important": "⚠️", "high": "\U0001f6a8", "critical": "\U0001f198"}
+_SHOCK_CATEGORY_TITLE = {"price_shock": "MOMENTUM ALERT", "multi_asset_shock": "MARKET SHOCK"}
+_SHOCK_QUALITY_LABELS: dict[str, str] = {
+    "volume": "elevated volume",
+    "volatility": "elevated volatility",
+    "regime_alignment": "consistent with the current market regime",
+    "trend_strength": "strong prevailing trend",
+    "consensus_alignment": "agent consensus agrees",
+    "committee_alignment": "AI committee agrees",
+    "historical_similarity": "similar historical episodes moved the same way",
+    "risk_score": "elevated risk conditions",
+    "confidence_score": "high signal confidence",
+}
+
+
+def _shock_recommendation(direction: str, tier: str) -> str:
+    intensity = "Extreme" if tier == "critical" else "High" if tier == "high" else "Moderate"
+    if direction == "down":
+        return (
+            f"{intensity} downside volatility. Avoid aggressive entries until stabilization; "
+            "consider tightening stops on existing longs."
+        )
+    return (
+        f"{intensity} upside momentum. Confirm with volume/follow-through before chasing; "
+        "avoid FOMO entries at the extreme."
+    )
+
+
+def format_critical_alert(envelope: dict, tier: str, quality_score: float | None) -> str:
+    """Renders one Autonomous Critical Alert System detection (v5.1) --
+    a SECOND, independent alert layer from the Smart Alert Engine's
+    format_watchdog()/broadcast messages and Configurable Alerts'
+    format_alert_*() above."""
+    category = envelope["category"]
+    direction = envelope["direction"]
+    emoji = _SHOCK_TIER_EMOJI.get(tier, "")
+    title = _SHOCK_CATEGORY_TITLE.get(category, "ALERT")
+    lines = [f"{emoji} *{title}* ({tier.upper()})", ""]
+
+    for reading in envelope["readings"]:
+        current = reading["current_value"]
+        current_str = f"{current:,.2f}" if current is not None else "n/a"
+        lines.append(
+            f"*{reading['symbol']}*: {reading['pct_change']:+.2f}% ({reading['window']}) "
+            f"-- now {current_str}"
+        )
+    lines.append("")
+
+    ctx = envelope["context"]
+    if ctx["regime"] is not None:
+        lines.append(f"Market Regime: {ctx['regime'].replace('_', ' ').title()}")
+    if ctx["trend_strength_score"] is not None:
+        lines.append(f"Trend Strength: {ctx['trend_strength_score']}/100")
+    if ctx["risk_score"] is not None:
+        lines.append(f"Risk Score: {ctx['risk_score']}/100")
+    if quality_score is not None:
+        lines.append(f"AI Confidence: {round(quality_score)}%")
+    lines.append("")
+
+    if ctx["committee"] is not None:
+        lines.append(f"Committee Verdict: {ctx['committee']['final_recommendation']}")
+        lines.append("")
+
+    reasons = [
+        label
+        for key, label in _SHOCK_QUALITY_LABELS.items()
+        if (envelope["quality_components"].get(key) or 0) >= 60
+    ]
+    if reasons:
+        lines.append("Reasons: " + "; ".join(reasons))
+        lines.append("")
+
+    lines.append("Recommendation:")
+    lines.append(_shock_recommendation(direction, tier))
+
+    if ctx["scenarios"]:
+        lines.append("")
+        lines.append("Expected Scenarios:")
+        for scenario in ctx["scenarios"][:3]:
+            name = scenario.get("name", "Scenario")
+            probability = scenario.get("probability_pct")
+            prob_str = f" ({probability}%)" if probability is not None else ""
+            lines.append(f"- {name}{prob_str}")
+
+    if len(envelope["readings"]) > 1:
+        lines.append("")
+        lines.append("Related Markets: " + ", ".join(r["symbol"] for r in envelope["readings"]))
+
+    return "\n".join(lines)
+
+
+def format_active_shocks(rows: list) -> str:
+    if not rows:
+        return "No active critical alerts right now."
+    lines = ["*ACTIVE CRITICAL ALERTS*", ""]
+    for row in rows:
+        lines.append(
+            f"[{row.tier.upper()}] {', '.join(row.symbols)} -- "
+            f"since {row.first_triggered_at.strftime('%Y-%m-%d %H:%M UTC')}"
+        )
+    return "\n".join(lines)
+
+
 def format_alert_rule_created(rule) -> str:
     return (
         f"*Alert rule #{rule.id} created*\n"

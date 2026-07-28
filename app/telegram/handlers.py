@@ -49,12 +49,14 @@ from app.services.research.engine import ResearchEngine
 from app.services.research.impact import EventImpactEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
+from app.services.shocks.engine import build_critical_alert_engine
 from app.services.signals.engine import SignalEngine
 from app.services.similar_market.engine import SimilarMarketEngine
 from app.services.terminal.engine import TerminalEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
 from app.services.whatif.engine import WhatIfSimulator
 from app.telegram.formatters import (
+    format_active_shocks,
     format_advice,
     format_agent_outputs,
     format_alert_history,
@@ -193,7 +195,9 @@ HELP_TEXT = (
     "/watchdog -- recent alert detections and whether each was sent or "
     "suppressed (conviction gate or cooldown)\n"
     "/replay -- latest consolidated market snapshot (regime, scores, consensus, "
-    "portfolio advice, alerts since the previous snapshot)"
+    "portfolio advice, alerts since the previous snapshot)\n"
+    "/shocks -- v5.1 Autonomous Critical Alert System: currently active price-shock "
+    "and market-shock episodes (no configuration -- the AI decides what's significant)"
 )
 
 # Registered with Telegram via Bot.set_my_commands() so the client's "/" menu
@@ -257,6 +261,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("health", "Bot liveness check"),
     ("watchdog", "Recent alert detections, sent vs suppressed"),
     ("replay", "Latest consolidated market snapshot"),
+    ("shocks", "Active Autonomous Critical Alert System episodes"),
 ]
 
 
@@ -1083,6 +1088,13 @@ async def cmd_watchdog(message: Message) -> None:
     engine = MemoryEngine(get_session_factory())
     entries = await engine.get_category("alerts", limit=10)
     await _answer(message, format_watchdog(entries))
+
+
+@router.message(Command("shocks"))
+async def cmd_shocks(message: Message) -> None:
+    engine = build_critical_alert_engine()
+    rows = await engine.list_active()
+    await _answer(message, format_active_shocks(rows))
 
 
 @router.message(Command("status"))

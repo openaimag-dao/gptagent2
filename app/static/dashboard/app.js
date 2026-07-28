@@ -704,6 +704,58 @@ async function renderWatchdog() {
   return nodes;
 }
 
+async function renderShocks() {
+  const nodes = [el("h2", {}, "Critical Alerts (v5.1)")];
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      "Autonomous Critical Alert System -- a second, independent alert layer. No " +
+        "configuration: the AI decides what's significant enough to notify Telegram."
+    )
+  );
+
+  const active = await safe("/api/shocks/active");
+  nodes.push(el("h2", {}, "Active Episodes"));
+  if (!active || !active.active.length) {
+    nodes.push(el("p", { class: "sub" }, "No active critical alerts right now."));
+  } else {
+    nodes.push(
+      table(
+        ["Tier", "Category", "Symbols", "Since", "Last updated"],
+        active.active.map((a) => [
+          el("span", { class: a.tier === "critical" || a.tier === "high" ? "down" : "neutral" }, a.tier.toUpperCase()),
+          a.category.replace(/_/g, " "),
+          a.symbols.join(", "),
+          a.first_triggered_at.slice(0, 16).replace("T", " "),
+          a.last_updated_at.slice(0, 16).replace("T", " "),
+        ])
+      )
+    );
+  }
+
+  const history = await safe("/api/shocks/history?limit=20");
+  nodes.push(el("h2", {}, "Recent History"));
+  if (!history || !history.history.length) {
+    nodes.push(el("p", { class: "sub" }, "No critical alerts logged yet."));
+  } else {
+    nodes.push(
+      table(
+        ["Tier", "Category", "Symbols", "Active", "Last updated"],
+        history.history.map((h) => [
+          h.tier.toUpperCase(),
+          h.category.replace(/_/g, " "),
+          h.symbols.join(", "),
+          h.active ? "yes" : "no",
+          h.last_updated_at.slice(0, 16).replace("T", " "),
+        ])
+      )
+    );
+  }
+
+  return nodes;
+}
+
 async function renderExplanation() {
   const nodes = [el("h2", {}, "Why")];
   const input = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
@@ -1917,7 +1969,7 @@ const PAGES = {
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, advice: renderAdvice,
   alerts: renderAlerts,
   risk: renderRisk, why: renderExplanation, watchdog: renderWatchdog, status: renderStatus,
-  replay: renderReplay,
+  replay: renderReplay, shocks: renderShocks,
   settings: renderSettings,
 };
 

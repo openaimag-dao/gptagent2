@@ -12,6 +12,7 @@ from app.database.models import (
 from app.services.analysis.regime import MarketRegime
 from app.services.consensus.engine import ConsensusResult
 from app.telegram.formatters import (
+    format_active_shocks,
     format_advice,
     format_alert_history,
     format_alert_rule_created,
@@ -21,6 +22,7 @@ from app.telegram.formatters import (
     format_brief,
     format_committee,
     format_consensus,
+    format_critical_alert,
     format_explanation,
     format_global_score,
     format_historical_comparison,
@@ -726,3 +728,82 @@ def test_format_alert_history_present():
     ]
     text = format_alert_history(history)
     assert "BTC price: 71000.00 above 70000.00" in text
+
+
+def _shock_envelope(category="price_shock", readings=None, direction="down"):
+    return {
+        "category": category,
+        "direction": direction,
+        "readings": readings
+        or [{"symbol": "BTC", "window": "15m", "pct_change": -9.5, "current_value": 60000.0}],
+        "quality_components": {
+            "volume": 80.0,
+            "volatility": 70.0,
+            "regime_alignment": 100.0,
+            "trend_strength": 60.0,
+            "consensus_alignment": 70.0,
+            "committee_alignment": 70.0,
+            "historical_similarity": None,
+            "risk_score": 60.0,
+            "confidence_score": 60.0,
+        },
+        "context": {
+            "regime": "risk_off",
+            "trend_strength_score": 60,
+            "risk_score": 60,
+            "confidence_score": 60,
+            "committee": {"final_recommendation": "SELL (moderate conviction)"},
+            "scenarios": [{"name": "Risk Off", "probability_pct": 40}],
+        },
+    }
+
+
+def test_format_critical_alert_single_symbol():
+    text = format_critical_alert(_shock_envelope(), "high", 82.0)
+    assert "MOMENTUM ALERT" in text
+    assert "HIGH" in text
+    assert "BTC" in text
+    assert "-9.50%" in text
+    assert "Market Regime: Risk Off" in text
+    assert "AI Confidence: 82%" in text
+    assert "Committee Verdict: SELL (moderate conviction)" in text
+    assert "Recommendation:" in text
+    assert "Expected Scenarios:" in text
+    assert "Risk Off (40%)" in text
+
+
+def test_format_critical_alert_multi_asset_includes_related_markets():
+    readings = [
+        {"symbol": "BTC", "window": "15m", "pct_change": -6.0, "current_value": 60000.0},
+        {"symbol": "ETH", "window": "15m", "pct_change": -7.0, "current_value": 2500.0},
+        {"symbol": "SOL", "window": "15m", "pct_change": -9.0, "current_value": 100.0},
+    ]
+    text = format_critical_alert(
+        _shock_envelope(category="multi_asset_shock", readings=readings), "critical", 90.0
+    )
+    assert "MARKET SHOCK" in text
+    assert "Related Markets: BTC, ETH, SOL" in text
+
+
+def test_format_critical_alert_low_quality_omits_reasons():
+    envelope = _shock_envelope()
+    envelope["quality_components"] = {k: None for k in envelope["quality_components"]}
+    text = format_critical_alert(envelope, "important", None)
+    assert "Reasons:" not in text
+
+
+def test_format_active_shocks_empty():
+    text = format_active_shocks([])
+    assert "No active critical alerts" in text
+
+
+def test_format_active_shocks_present():
+    row = SimpleNamespace(
+        tier="critical",
+        category="multi_asset_shock",
+        symbols=["BTC", "ETH"],
+        first_triggered_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+    )
+    text = format_active_shocks([row])
+    assert "CRITICAL" in text
+    assert "BTC, ETH" in text
