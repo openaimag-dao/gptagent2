@@ -448,6 +448,39 @@ def format_scenarios(row: ScenarioSnapshot | None) -> str:
     return "\n".join(lines).strip()
 
 
+def format_whatif(result: dict | None) -> str:
+    if result is None:
+        return "Unknown scenario. Use /whatif with no arguments to list available scenarios."
+    lines = [
+        f"*WHAT IF: {result['scenario_label'].upper()}*",
+        "",
+        result["description"],
+        f"Data source: {result['data_source'].replace('_', ' ')}",
+        "",
+    ]
+    for symbol, data in result["impact"].items():
+        if "expected_return_7d_pct" in data:
+            value = data["expected_return_7d_pct"]
+            value_str = f"{value:+.2f}% (7d)" if value is not None else "no data"
+            sample = data.get("sample_size")
+            suffix = f" [{sample} historical occurrences]" if sample else ""
+            lines.append(f"{symbol}: {value_str}{suffix}")
+        elif "direction" in data:
+            direction = data["direction"] or "unclear"
+            corr = data.get("correlation_30d")
+            corr_str = f" (correlation {corr})" if corr is not None else ""
+            lines.append(f"{symbol}: {direction}{corr_str}")
+    lines.append("")
+    lines.append(
+        f"Regime: {result['current_regime'] or 'unknown'} -> likely shift toward "
+        f"{result['likely_regime_shift_toward'].replace('_', ' ')}"
+    )
+    lines.append(f"Risk: {result['risk_direction']} | Liquidity: {result['liquidity_direction']}")
+    lines.append("")
+    lines.append(result["reasoning"])
+    return "\n".join(lines)
+
+
 def format_sentiment(row: SentimentSnapshot) -> str:
     lines = ["*SENTIMENT*", ""]
     if row.fear_greed_value is not None:

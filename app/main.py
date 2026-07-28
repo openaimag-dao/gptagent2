@@ -48,6 +48,7 @@ from app.api.similar import router as similar_router
 from app.api.status import router as status_router
 from app.api.strategy import router as strategy_router
 from app.api.whales import router as whales_router
+from app.api.whatif import router as whatif_router
 from app.config import get_settings
 from app.scheduler.jobs import shutdown_scheduler, start_scheduler
 from app.utils.logging import configure_logging
@@ -106,6 +107,7 @@ app.include_router(sentiment_router)
 app.include_router(agents_router)
 app.include_router(memory_router)
 app.include_router(scenarios_router)
+app.include_router(whatif_router)
 app.include_router(conviction_router)
 app.include_router(portfolio_router)
 app.include_router(liquidity_router)
