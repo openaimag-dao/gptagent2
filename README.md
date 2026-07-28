@@ -1201,6 +1201,27 @@ history, then check what actually happened:
 456 tests pass (11 new), `ruff check` clean, migration SQL verified via
 `alembic upgrade head --sql` (chains cleanly onto 0017).
 
+### Follow-up: `/status` and `/risk` had no API route, so the dashboard had nothing to call
+
+Live-verifying the finished v3.0 effort surfaced a real gap: `/status` and
+`/risk` had been wired into Telegram only, breaking this project's own
+established pattern where every Telegram command has a matching API
+route (`/score` -- `/api/global-score`, `/consensus` -- `/api/consensus`,
+`/why` -- `/api/explanation/{symbol}`, etc.). Added `GET /api/status` and
+`GET /api/risk`, each independently building the same engines the
+Telegram handler already does (matching how every other paired
+API/Telegram capability in this project works).
+
+Also added 4 dashboard pages that existed as capabilities but never had
+anywhere to be seen: **Risk**, **Why** (calls `/api/explanation/{symbol}`
+with a symbol input, same pattern as Advice/Learning), **Watchdog**
+(reuses the existing `/api/memory?category=alerts` -- no new query), and
+**Status**. The Consensus page also gained a `conflict_pct` bar next to
+Agreement, matching what `/consensus` already prints in Telegram.
+
+456 tests pass (2 new router-registration checks), `ruff check` clean,
+`node --check app.js` clean.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

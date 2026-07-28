@@ -36,10 +36,12 @@ from app.api.ranking import router as ranking_router
 from app.api.regime import router as regime_router
 from app.api.reports import router as reports_router
 from app.api.research import router as research_router
+from app.api.risk import router as risk_router
 from app.api.scenarios import router as scenarios_router
 from app.api.sentiment import router as sentiment_router
 from app.api.signals import router as signals_router
 from app.api.similar import router as similar_router
+from app.api.status import router as status_router
 from app.api.strategy import router as strategy_router
 from app.api.whales import router as whales_router
 from app.config import get_settings
@@ -107,6 +109,8 @@ app.include_router(admin_router)
 app.include_router(consensus_router)
 app.include_router(learning_router)
 app.include_router(explanation_router)
+app.include_router(status_router)
+app.include_router(risk_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")
