@@ -11,6 +11,7 @@ honestly `None`/empty when the underlying engine hasn't produced a read
 yet -- never a fabricated placeholder.
 """
 
+import asyncio
 from datetime import datetime
 
 from sqlalchemy import select
@@ -123,12 +124,22 @@ class MarketReplayEngine:
         self._etf_engine = etf_engine
         self._probability_engine = probability_engine
 
-    async def compute_and_store(self) -> MarketSnapshot:
-        assets = await self._market_repository.get_latest()
-        by_symbol = {a.symbol: a for a in assets}
+    async def _safe_portfolio_advice(self):
+        try:
+            return await self._portfolio_advisor.advise("BTC", Timeframe.DAILY)
+        except Exception:
+            return None
 
-        regime_snapshot = await self._regime_detector.get_latest()
-        global_score = await self._global_score_engine.get_latest()
+    async def compute_and_store(self) -> MarketSnapshot:
+        # Each read below hits a different table/engine and none depends on
+        # another's result -- gathering them cuts this cycle's latency to
+        # one round-trip's worth instead of N sequential ones.
+        assets, regime_snapshot, global_score = await asyncio.gather(
+            self._market_repository.get_latest(),
+            self._regime_detector.get_latest(),
+            self._global_score_engine.get_latest(),
+        )
+        by_symbol = {a.symbol: a for a in assets}
 
         agent_outputs = await self._agent_orchestrator.run_all()
         reliability: dict[str, float] | None = None
@@ -139,17 +150,19 @@ class MarketReplayEngine:
             reliability = None
         consensus_result = compute_consensus(agent_outputs, reliability)
 
-        try:
-            portfolio_advice = await self._portfolio_advisor.advise("BTC", Timeframe.DAILY)
-        except Exception:
-            portfolio_advice = None
-
-        whale_snapshot = await self._whale_engine.get_snapshot("BTC")
-        etf_proxy = await self._etf_engine.get_flow_proxy()
-
-        news_items = await self._news_repository.get_recent(limit=_NEWS_LOOKBACK_LIMIT)
-
-        probability_snapshot = await self._probability_engine.get_latest("BTC", Timeframe.DAILY)
+        (
+            portfolio_advice,
+            whale_snapshot,
+            etf_proxy,
+            news_items,
+            probability_snapshot,
+        ) = await asyncio.gather(
+            self._safe_portfolio_advice(),
+            self._whale_engine.get_snapshot("BTC"),
+            self._etf_engine.get_flow_proxy(),
+            self._news_repository.get_recent(limit=_NEWS_LOOKBACK_LIMIT),
+            self._probability_engine.get_latest("BTC", Timeframe.DAILY),
+        )
 
         previous = await self.get_latest()
         since = previous.computed_at if previous is not None else None

@@ -15,6 +15,7 @@ and Weekly Review/Monthly Performance (no weekly/monthly schedule existed
 anywhere in this project before this phase).
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -57,58 +58,59 @@ class TerminalEngine:
         self._global_score_engine = global_score_engine
         self._replay_engine = replay_engine
 
+    async def _symbol_opportunity(self, symbol: str) -> dict | None:
+        # The three lookups below are independent reads (different engines,
+        # different tables) -- run concurrently rather than sequentially so
+        # one symbol's opportunity costs one round-trip's latency, not three.
+        probability_snapshot, breakout_event, advice = await asyncio.gather(
+            self._probability_engine.get_latest(symbol, Timeframe.DAILY),
+            self._breakout_engine.get_latest(symbol, Timeframe.DAILY),
+            self._portfolio_advisor.advise(symbol, Timeframe.DAILY),
+        )
+
+        probability_edge = (
+            probability_snapshot.prob_up_pct - probability_snapshot.prob_down_pct
+            if probability_snapshot is not None
+            else None
+        )
+        breakout_probability_pct = (
+            float(breakout_event.probability_pct)
+            if breakout_event is not None and breakout_event.probability_pct is not None
+            else None
+        )
+        breakout_direction = breakout_event.direction if breakout_event is not None else None
+        advisor_recommendation = advice.recommendation if advice is not None else None
+
+        score = score_opportunity(
+            probability_edge, breakout_probability_pct, breakout_direction, advisor_recommendation
+        )
+        if score is None:
+            return None
+
+        return {
+            "symbol": symbol,
+            "opportunity_score": round(score, 1),
+            "classification": classify_opportunity(score),
+            "probability_edge_pct": probability_edge,
+            "breakout": (
+                {
+                    "event_type": breakout_event.event_type,
+                    "direction": breakout_direction,
+                    "probability_pct": breakout_probability_pct,
+                }
+                if breakout_event is not None
+                else None
+            ),
+            "advisor_recommendation": advisor_recommendation,
+        }
+
     async def compute_top_opportunities(
         self, symbols: tuple[str, ...] = _OPPORTUNITY_SYMBOLS
     ) -> list[dict]:
-        results = []
-        for symbol in symbols:
-            probability_snapshot = await self._probability_engine.get_latest(
-                symbol, Timeframe.DAILY
-            )
-            probability_edge = (
-                probability_snapshot.prob_up_pct - probability_snapshot.prob_down_pct
-                if probability_snapshot is not None
-                else None
-            )
-
-            breakout_event = await self._breakout_engine.get_latest(symbol, Timeframe.DAILY)
-            breakout_probability_pct = (
-                float(breakout_event.probability_pct)
-                if breakout_event is not None and breakout_event.probability_pct is not None
-                else None
-            )
-            breakout_direction = breakout_event.direction if breakout_event is not None else None
-
-            advice = await self._portfolio_advisor.advise(symbol, Timeframe.DAILY)
-            advisor_recommendation = advice.recommendation if advice is not None else None
-
-            score = score_opportunity(
-                probability_edge,
-                breakout_probability_pct,
-                breakout_direction,
-                advisor_recommendation,
-            )
-            if score is None:
-                continue
-
-            results.append(
-                {
-                    "symbol": symbol,
-                    "opportunity_score": round(score, 1),
-                    "classification": classify_opportunity(score),
-                    "probability_edge_pct": probability_edge,
-                    "breakout": (
-                        {
-                            "event_type": breakout_event.event_type,
-                            "direction": breakout_direction,
-                            "probability_pct": breakout_probability_pct,
-                        }
-                        if breakout_event is not None
-                        else None
-                    ),
-                    "advisor_recommendation": advisor_recommendation,
-                }
-            )
+        # Symbols are independent of each other too, so the whole batch runs
+        # as one concurrent wave rather than one symbol after another.
+        per_symbol = await asyncio.gather(*(self._symbol_opportunity(s) for s in symbols))
+        results = [r for r in per_symbol if r is not None]
         results.sort(key=lambda r: abs(r["opportunity_score"] - 50), reverse=True)
         return results
 

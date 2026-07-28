@@ -8,6 +8,7 @@ what-if lens over existing data, not a new source of truth, so nothing
 here is persisted.
 """
 
+import asyncio
 from datetime import UTC, datetime
 
 from app.services.analysis.correlation import CorrelationEngine
@@ -50,12 +51,17 @@ class WhatIfSimulator:
         ]
 
     async def _historical_impact(self, shock: ShockDefinition) -> tuple[dict, str]:
+        # One independent read per symbol -- gathered rather than sequential.
+        occurrences_by_symbol = await asyncio.gather(
+            *(
+                self._event_impact_engine.measure_impact(shock.event_category, symbol)
+                for symbol in _IMPACT_SYMBOLS
+            )
+        )
+
         impact: dict = {}
         max_sample = 0
-        for symbol in _IMPACT_SYMBOLS:
-            occurrences = await self._event_impact_engine.measure_impact(
-                shock.event_category, symbol
-            )
+        for symbol, occurrences in zip(_IMPACT_SYMBOLS, occurrences_by_symbol, strict=True):
             avg, sample_size = average_forward_return(occurrences)
             impact[symbol] = {"expected_return_7d_pct": avg, "sample_size": sample_size}
             max_sample = max(max_sample, sample_size)
@@ -115,9 +121,11 @@ class WhatIfSimulator:
         else:
             impact, data_source = {}, "heuristic_illustrative"
 
-        regime_snapshot = await self._regime_detector.get_latest()
-        global_score = await self._global_score_engine.get_latest()
-        probability_snapshot = await self._probability_engine.get_latest("BTC", Timeframe.DAILY)
+        regime_snapshot, global_score, probability_snapshot = await asyncio.gather(
+            self._regime_detector.get_latest(),
+            self._global_score_engine.get_latest(),
+            self._probability_engine.get_latest("BTC", Timeframe.DAILY),
+        )
 
         return {
             "scenario_key": shock.key,

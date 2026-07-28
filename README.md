@@ -1222,6 +1222,194 @@ Agreement, matching what `/consensus` already prints in Telegram.
 456 tests pass (2 new router-registration checks), `ruff check` clean,
 `node --check app.js` clean.
 
+## V4.0: Institutional Intelligence Expansion
+
+A second, larger V4 effort followed the audit-driven increments above:
+a 10-phase mega-spec ("transform GPTAgent2 into the world's most
+intelligent AI Market Intelligence Platform") under the same standing
+rule as everything else in this project -- never rewrite or duplicate an
+existing module, extend only where a real capability gap exists, and
+everything must be reachable via all three surfaces (API, Telegram,
+dashboard). Phases 1-8 are complete, shipped and verified live; phases
+9-10 (performance passes across the full platform, and this
+documentation) close out the effort.
+
+### Phase 1: Market Replay Engine
+
+`app/services/replay/engine.py` (migration `0019`, table
+`market_snapshots`) takes one consolidated snapshot per cycle --
+regime, health/trend/risk/confidence scores, consensus, portfolio
+advice -- and adds `diff_snapshots()` (a pure function comparing any two
+snapshots) and `get_nearest(timestamp)`/`get_latest()` lookups. This
+became the backbone for historical comparison everywhere else in V4
+(Terminal's `/compare`, Weekly/Monthly review) rather than each later
+phase re-deriving its own "what changed since" logic.
+
+```
+GET /api/replay, GET /api/replay/history, GET /api/replay/compare
+/replay
+```
+
+### Phase 2: Breakout Intelligence
+
+`app/services/breakout/engine.py` (migration `0020`, table
+`breakout_events`) detects breakout/breakdown/retest/liquidity-sweep
+events from price action already collected, cross-confirmed against
+volume, ATR, VWAP, regime and multi-timeframe agreement -- each
+confirmation flag independently `True`/`False`/`None` (never guessed
+when the underlying signal isn't available).
+
+```
+GET /api/breakout/{symbol}
+/breakout [symbol]
+```
+
+### Phase 3: OnChain Intelligence (honest scaffold)
+
+`app/services/onchain/engine.py` reports on-chain metrics (netflow,
+SOPR, MVRV, NUPL, TVL) only when a real configured data source backs
+them -- this project has no free on-chain data provider wired in, so
+every field honestly reports "unavailable" rather than fabricating a
+number, matching the same honesty precedent as the ETF flow proxy and
+Whale Intelligence from earlier sprints.
+
+```
+GET /api/onchain/{symbol}
+/onchain [symbol]
+```
+
+### Phase 4: AI Investment Committee
+
+`app/services/committee/engine.py` convenes the same 5 specialist
+agents the Consensus Engine already runs, but produces a structured
+verdict instead of a vote tally: majority decision, dissent percentage,
+supporting/opposing evidence excerpts per agent, a minority opinion, and
+a final recommendation with a stated conviction level. A post-deploy
+bug was caught and fixed live: the evidence excerpt logic was quoting
+raw markdown `*HEADER*` lines from agent summaries instead of skipping
+them.
+
+```
+GET /api/committee
+/committee
+```
+
+### Phase 5: Scenario Simulator (what-if)
+
+`app/services/whatif/engine.py` runs named macro scenarios ("Fed cuts
+50bps", "DXY drops 3%", "Nasdaq crashes 5%", ...) forward through the
+same probability-weighted scenario math the Scenario Engine already
+uses, reporting the impact on each tracked symbol. No new market model
+-- an application of an engine that already existed to hypothetical
+inputs instead of only the live read.
+
+```
+GET /api/whatif, GET /api/whatif/{key}
+/whatif [key]
+```
+
+### Phase 6: Prediction Quality Lab
+
+`app/services/quality/engine.py` computes Brier score, precision/recall,
+a calibration curve and time-horizon accuracy breakdowns over the same
+graded-prediction history the Self-Learning engine already produces.
+`evaluate_predictions()` was extracted out of `app/services/learning/
+engine.py` into a shared function so both engines join `ProbabilitySnapshot`
+against real stored history exactly once, rather than each maintaining
+its own copy of that join.
+
+```
+GET /api/quality
+/quality
+```
+
+### Phase 7: Professional Telegram Terminal
+
+`app/services/terminal/engine.py` composes engines this platform already
+had into digest views instead of duplicating them. Critical Alerts,
+Market Replay, Committee Opinion, Risk Dashboard and Portfolio Summary
+already existed as their own commands (Smart Alert Engine, `/replay`,
+`/committee`, `/risk`, `/portfolio`) -- this phase adds only the
+genuinely new composite views:
+
+- **Top Opportunities** -- a composite conviction score per symbol
+  (BTC/ETH/SOL) from probability edge, breakout signal and portfolio
+  advisor recommendation (`app/services/terminal/opportunities.py`);
+  a symbol with zero available signals is skipped entirely rather than
+  defaulted to neutral.
+- **Daily Brief** -- Committee verdict, risk/liquidity read, Top
+  Opportunities, portfolio health and market regime in one view.
+- **Historical Comparison** -- a thin wrapper over Phase 1's
+  `diff_snapshots()`/`get_nearest()`.
+- **Weekly Review / Monthly Performance** -- period-scoped prediction
+  accuracy and alert counts, broadcast automatically (Mon 06:00 UTC /
+  1st-of-month 06:30 UTC) -- no weekly/monthly schedule existed
+  anywhere in this project before this phase.
+
+```
+GET /api/terminal/{brief,opportunities,history,weekly,monthly}
+/brief, /opportunities, /compare [days], /weekly, /monthly
+```
+
+562 tests pass, `ruff check` clean, `node --check app.js` clean.
+
+### Phase 8: Configurable Alerts
+
+The Smart Alert Engine's 10 detectors (`app/services/alerts/detectors.py`)
+are fixed and global: same thresholds, same symbols, broadcast to every
+configured chat. `app/services/alerts/rules.py` (migration `0021`, table
+`alert_rules`) adds the complementary, user-driven half: a rule fires
+when a metric *the user picked* (`price`, `probability_edge`,
+`breakout_probability`, `risk_off_score`, `liquidity_score`) crosses a
+threshold *the user picked*, and notifies only the chat that created it.
+Every metric reading reuses an existing engine (`MarketRepository`,
+`ProbabilityEngine`, `BreakoutEngine`, `GlobalScoreEngine`) -- no new
+data fetching. There is no user/auth model anywhere in this platform, so
+a rule's owner is its Telegram `chat_id`; fired rules are logged to the
+existing `AlertLog` table (`alert_type` prefixed `custom_rule:`) so
+Market Memory's audit trail covers both alert systems.
+
+```
+POST/GET /api/alerts/rules, DELETE /api/alerts/rules/{id},
+GET /api/alerts/history, GET /api/alerts/metrics
+/setalert SYMBOL METRIC OPERATOR THRESHOLD [COOLDOWN_MINUTES],
+/myrules, /delalert RULE_ID, /alerthistory
+```
+
+587 tests pass, `ruff check` clean, `node --check app.js` clean.
+
+### Phase 9: Performance -- parallelize independent per-cycle reads
+
+Several engines were awaiting a chain of 2-5 independent reads --
+different tables, different engines, no result depending on another's --
+one after another, so a single cycle's latency was the sum of every call
+instead of the slowest one. Every case below was verified independent
+first (no shared mutable state, no ordering dependency) before switching
+it to `asyncio.gather()`, matching the existing pattern this project
+already used for its 5-agent orchestrator (`app/services/agents/
+orchestrator.py`) and its multi-provider market/news aggregators:
+
+- `TerminalEngine.compute_top_opportunities()` -- 3 engine reads per
+  symbol x 3 symbols (9 sequential round-trips) now run as one gathered
+  wave per symbol, and the 3 symbols themselves run concurrently too.
+- `MarketReplayEngine.compute_and_store()` -- two clusters (assets/regime/
+  global-score; portfolio-advice/whale/etf/news/probability, 3 and 5 reads
+  respectively) gathered, preserving the existing try/except around the
+  portfolio-advice call.
+- `WhatIfSimulator._historical_impact()`'s per-symbol event-impact lookups,
+  and `simulate()`'s regime/global-score/probability read cluster.
+- `BreakoutEngine.compute_and_store()`'s three confirmation checks
+  (regime, OI/funding, multi-timeframe).
+- `CommitteeEngine.convene()` -- `run_all()` and `evaluate_reliability()`
+  don't depend on each other, gathered instead of sequential.
+
+No behavior change: same results, same error handling, same tests (587
+pass unmodified) -- only the wall-clock cost of each cycle drops.
+
+### Phase 10: Documentation
+
+This section of the README, documenting Phases 1-9 above.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is
