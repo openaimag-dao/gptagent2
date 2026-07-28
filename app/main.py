@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.admin import router as admin_router
 from app.api.agents import router as agents_router
+from app.api.alerts import router as alerts_router
 from app.api.backtest import router as backtest_router
 from app.api.brain import router as brain_router
 from app.api.breakout import router as breakout_router
@@ -125,6 +126,7 @@ app.include_router(risk_router)
 app.include_router(replay_router)
 app.include_router(breakout_router)
 app.include_router(onchain_router)
+app.include_router(alerts_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

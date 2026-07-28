@@ -555,6 +555,32 @@ class AlertLog(Base):
     )
 
 
+class AlertRule(Base):
+    """A user-defined threshold rule (v4.0 Phase 8 "Configurable Alerts"),
+    complementing rather than replacing the Smart Alert Engine's fixed
+    detectors above: those fire on deltas the platform decided matter
+    (regime changes, flash moves, ...); this fires when a metric the user
+    picked crosses a threshold the user picked, and notifies only that
+    user's chat rather than every broadcast chat. There is no user/auth
+    model in this platform, so `chat_id` (the owning Telegram chat) is the
+    only ownership key."""
+
+    __tablename__ = "alert_rules"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_id: Mapped[str] = mapped_column(String(64), index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    metric: Mapped[str] = mapped_column(String(30))
+    operator: Mapped[str] = mapped_column(String(10))
+    threshold: Mapped[float] = mapped_column(Numeric(24, 8))
+    cooldown_minutes: Mapped[int] = mapped_column(default=60)
+    enabled: Mapped[bool] = mapped_column(default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_triggered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class AgentPredictionLog(Base):
     """Every specialist agent's direction/confidence call, logged each time
     the Consensus Engine runs, so those calls can later be checked against

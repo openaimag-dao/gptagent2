@@ -51,6 +51,31 @@ async def broadcast_text(text: str) -> None:
         await bot.session.close()
 
 
+async def send_text_to(chat_id: int, text: str) -> bool:
+    """Sends `text` to a single chat (unlike broadcast_text's "every configured
+    chat") -- used by Configurable Alerts, where each rule targets only the
+    chat that created it. Returns whether the send succeeded.
+    """
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        logger.info("Telegram send skipped (not configured)")
+        return False
+
+    bot = build_bot()
+    try:
+        body = text[:4090]
+        try:
+            await bot.send_message(chat_id=chat_id, text=body, parse_mode="Markdown")
+        except TelegramBadRequest:
+            await bot.send_message(chat_id=chat_id, text=body, parse_mode=None)
+        return True
+    except Exception:
+        logger.warning("Failed to send to chat %s", chat_id, exc_info=True)
+        return False
+    finally:
+        await bot.session.close()
+
+
 async def broadcast_report(report: Report) -> None:
     """Sends a generated report to every configured Telegram chat.
 
