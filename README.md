@@ -636,6 +636,26 @@ already existed -- no new data collection, no second LLM call per agent
   call out disagreement between agents rather than just concatenating them.
   `/api/agents` exposes each agent's raw output independently.
 
+Each agent also reports an optional `direction` (`"bullish"`/`"bearish"`/
+`"neutral"`/`None`) and `confidence` (0-100/`None`) on its `AgentOutput`,
+computed from data it already has -- Macro from `risk_on_score -
+risk_off_score`, Crypto/Equity/Sentiment from their own 0-100 sub-score via
+`direction_from_score()` (`app/services/common/scoring.py`, 50 = neutral),
+News from its already-computed bullish/bearish item counts. `None` when the
+underlying data is unavailable, never a guessed default. This feeds the
+**Consensus Engine** (`app/services/consensus/engine.py`): a deterministic,
+non-LLM vote tally across all five agents, weighted by each agent's
+confidence (floored at 1.0 so a unanimous-but-low-confidence read still
+counts as a real vote). An agent with no direction this cycle is excluded
+from the tally entirely, not defaulted to neutral -- and if nothing
+reported, the endpoint returns 503 rather than fabricating a 33/33/33
+split.
+
+```
+GET /api/consensus
+/consensus
+```
+
 ### 2. Market Memory
 
 `MemoryEngine` (`app/services/memory/engine.py`) is a read-only aggregator

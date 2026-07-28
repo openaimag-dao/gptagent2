@@ -13,6 +13,7 @@ from app.database.models import (
     SentimentSnapshot,
     SignalSnapshot,
 )
+from app.services.consensus.engine import ConsensusResult
 
 _CLASS_LABELS: dict[AssetClass, str] = {
     AssetClass.CRYPTO: "Crypto",
@@ -315,6 +316,28 @@ def format_whale_snapshot(data: dict) -> str:
 
 def format_agent_outputs(outputs: dict) -> str:
     return "\n\n".join(output.summary for output in outputs.values())
+
+
+def format_consensus(result: ConsensusResult | None) -> str:
+    if result is None:
+        return "No agent reported a direction this cycle -- nothing to tally yet."
+    lines = [
+        "*CONSENSUS*",
+        "",
+        f"Bullish {result.bullish_pct}% | Bearish {result.bearish_pct}% | "
+        f"Neutral {result.neutral_pct}%",
+        f"Agreement: {result.agreement_score}%",
+        "",
+    ]
+    if result.bullish_agents:
+        lines.append(f"Bullish: {', '.join(result.bullish_agents)}")
+    if result.bearish_agents:
+        lines.append(f"Bearish: {', '.join(result.bearish_agents)}")
+    if result.neutral_agents:
+        lines.append(f"Neutral: {', '.join(result.neutral_agents)}")
+    if result.unavailable_agents:
+        lines.append(f"No data this cycle: {', '.join(result.unavailable_agents)}")
+    return "\n".join(lines)
 
 
 def format_scenarios(row: ScenarioSnapshot | None) -> str:
