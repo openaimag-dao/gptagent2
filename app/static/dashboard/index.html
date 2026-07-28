@@ -7,8 +7,12 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<nav>
+<button id="nav-toggle" aria-label="Toggle navigation">Menu</button>
+<nav id="nav">
   <h1>AI Market Intelligence</h1>
+  <div class="nav-search">
+    <input id="symbol-search" type="text" placeholder="Jump to symbol (e.g. AAPL)">
+  </div>
   <button data-page="overview" class="active">Overview</button>
   <button data-page="macro">Macro</button>
   <button data-page="crypto">Crypto</button>
@@ -34,8 +38,11 @@
   <button data-page="portfolio">Portfolio</button>
   <button data-page="settings">Settings</button>
 </nav>
-<main id="content">
-  <p class="loading">Loading...</p>
+<main>
+  <div id="topbar"><span id="last-updated" class="sub"></span></div>
+  <div id="content">
+    <p class="loading">Loading...</p>
+  </div>
 </main>
 <script src="app.js"></script>
 </body>

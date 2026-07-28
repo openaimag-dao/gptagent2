@@ -108,6 +108,40 @@ function svgLineChart(values, { width = 600, height = 160 } = {}) {
   return svg;
 }
 
+// Renders an arbitrary JSON value (nested dicts/lists included) as a
+// readable definition list instead of a raw JSON.stringify() blob -- used
+// wherever an API response's shape isn't flat/stable enough for a fixed
+// table (e.g. report.institutional_summary).
+function renderStructured(value) {
+  if (value == null) return document.createTextNode("n/a");
+  if (Array.isArray(value)) {
+    if (!value.length) return document.createTextNode("none");
+    const ul = el("ul", { class: "structured-list" });
+    for (const v of value) ul.appendChild(el("li", {}, [renderStructured(v)]));
+    return ul;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value);
+    if (!entries.length) return document.createTextNode("none");
+    const dl = el("dl", { class: "structured" });
+    for (const [k, v] of entries) {
+      dl.appendChild(el("dt", {}, k.replace(/_/g, " ")));
+      dl.appendChild(el("dd", {}, [renderStructured(v)]));
+    }
+    return dl;
+  }
+  return document.createTextNode(String(value));
+}
+
+// Correlation-style heatmap cell: background intensity scales with |value|
+// (assumed roughly in [-1, 1]), color follows the existing up/down convention.
+function heatCell(value, text) {
+  const v = Math.max(-1, Math.min(1, value ?? 0));
+  const alpha = Math.abs(v) * 0.55;
+  const bg = v > 0 ? `rgba(63, 185, 80, ${alpha})` : v < 0 ? `rgba(248, 81, 73, ${alpha})` : "transparent";
+  return el("span", { class: "heat-cell", style: `background:${bg}` }, text);
+}
+
 const content = document.getElementById("content");
 
 async function render(fn) {
@@ -217,7 +251,7 @@ async function renderCorrelations() {
       data.correlations.map((c) => [
         `${c.symbol_a}/${c.symbol_b}`,
         `${c.window_days}d`,
-        el("span", { class: changeClass(c.correlation) }, c.correlation.toFixed(2)),
+        heatCell(c.correlation, c.correlation.toFixed(2)),
         String(c.data_points),
       ])
     )
@@ -251,9 +285,13 @@ async function renderNews() {
   return nodes;
 }
 
-async function renderHistory() {
+async function renderHistory(params) {
   const nodes = [el("h2", {}, "History")];
-  const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const symbolInput = el("input", {
+    type: "text",
+    value: (params && params.get("symbol")) || "BTC",
+    placeholder: "Symbol",
+  });
   const tfSelect = el("select", {}, ["1d", "4h", "1h"].map((t) => el("option", { value: t }, t)));
   const btn = el("button", {}, "Load");
   nodes.push(el("div", { class: "controls" }, [symbolInput, tfSelect, btn]));
@@ -831,7 +869,14 @@ async function renderWhales() {
   if (!data) return nodes;
   nodes.push(el("p", {}, [pill(data.available), " ", data.symbol]));
   if (data.available) {
-    nodes.push(el("pre", { class: "summary" }, JSON.stringify(data, null, 2)));
+    nodes.push(
+      table(
+        ["Field", "Value"],
+        Object.entries(data)
+          .filter(([k]) => k !== "available" && k !== "symbol")
+          .map(([k, v]) => [k.replace(/_/g, " "), v == null ? "n/a" : String(v)])
+      )
+    );
   } else {
     nodes.push(el("p", { class: "sub" }, data.reason));
     nodes.push(el("p", { class: "sub" }, `Would return: ${(data.would_return || []).join(", ")}`));
@@ -910,7 +955,7 @@ async function renderReports() {
     ])
   );
   nodes.push(el("h2", {}, "Institutional Summary"));
-  nodes.push(el("pre", { class: "summary" }, JSON.stringify(report.institutional_summary, null, 2)));
+  nodes.push(renderStructured(report.institutional_summary));
   return nodes;
 }
 
@@ -1031,12 +1076,75 @@ const PAGES = {
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, settings: renderSettings,
 };
 
-document.querySelectorAll("nav button").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll("nav button").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    render(PAGES[btn.dataset.page]);
-  });
+// Pages made of nothing but read-only scores/summaries (no forms, no
+// in-progress user input) are safe to silently re-render on a timer.
+// Anything with inputs is excluded so a background refresh never wipes out
+// what the user is typing.
+const AUTO_REFRESH_PAGES = new Set(["overview", "signals", "sentiment", "liquidity", "scenarios"]);
+const AUTO_REFRESH_MS = 60000;
+
+const lastUpdatedEl = document.getElementById("last-updated");
+let refreshTimer = null;
+
+function parseHash() {
+  const raw = location.hash.replace(/^#/, "");
+  const [page, query] = raw.split("?");
+  return {
+    page: PAGES[page] ? page : "overview",
+    params: new URLSearchParams(query || ""),
+  };
+}
+
+async function activate(page, params) {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.page === page));
+  document.getElementById("nav").classList.remove("open");
+
+  const run = async () => {
+    await render(() => PAGES[page](params));
+    lastUpdatedEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  };
+  await run();
+
+  if (AUTO_REFRESH_PAGES.has(page)) {
+    refreshTimer = setInterval(run, AUTO_REFRESH_MS);
+  }
+}
+
+function navigate(page, params = new URLSearchParams()) {
+  const qs = [...params].length ? `?${params.toString()}` : "";
+  const target = `${page}${qs}`;
+  if (location.hash.replace(/^#/, "") === target) {
+    activate(page, params); // same page: treat as a manual refresh
+  } else {
+    location.hash = target;
+  }
+}
+
+window.addEventListener("hashchange", () => {
+  const { page, params } = parseHash();
+  activate(page, params);
 });
 
-render(renderOverview);
+document.querySelectorAll("nav button").forEach((btn) => {
+  btn.addEventListener("click", () => navigate(btn.dataset.page));
+});
+
+document.getElementById("nav-toggle").addEventListener("click", () => {
+  document.getElementById("nav").classList.toggle("open");
+});
+
+const symbolSearch = document.getElementById("symbol-search");
+symbolSearch.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || !symbolSearch.value.trim()) return;
+  navigate("history", new URLSearchParams({ symbol: symbolSearch.value.trim().toUpperCase() }));
+  symbolSearch.value = "";
+});
+
+{
+  const { page, params } = parseHash();
+  activate(page, params);
+}
