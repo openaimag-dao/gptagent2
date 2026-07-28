@@ -5,10 +5,20 @@ from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database.models import NewsItem
+from app.database.models import NewsItem, NewsSentiment
 from app.services.news.schemas import ClassifiedNewsItem
 
 logger = logging.getLogger(__name__)
+
+
+def count_by_sentiment(items: list[NewsItem]) -> tuple[int, int, int]:
+    """(bullish, bearish, neutral) counts over a batch of classified items --
+    shared by every engine that reduces news to a directional tally, so this
+    exact reduction isn't reimplemented per engine."""
+    bullish = sum(1 for i in items if i.sentiment == NewsSentiment.BULLISH)
+    bearish = sum(1 for i in items if i.sentiment == NewsSentiment.BEARISH)
+    neutral = len(items) - bullish - bearish
+    return bullish, bearish, neutral
 
 
 class NewsRepository:

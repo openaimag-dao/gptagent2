@@ -74,6 +74,13 @@ class NewsAgent:
                 for i in high_impact[:5]:
                     lines.append(f"- [{i['sentiment']}] {i['title']}")
 
+        direction: str | None = None
+        confidence: float | None = None
+        if items:
+            net = by_sentiment["bullish"] - by_sentiment["bearish"]
+            direction = "bullish" if net > 0 else "bearish" if net < 0 else "neutral"
+            confidence = abs(net) / len(items) * 100.0
+
         return AgentOutput(
             agent="news",
             summary="\n".join(lines),
@@ -82,4 +89,6 @@ class NewsAgent:
                 "sentiment_counts": by_sentiment,
                 "items": classified_items,
             },
+            direction=direction,
+            confidence=confidence,
         )

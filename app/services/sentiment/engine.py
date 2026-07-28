@@ -23,10 +23,10 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database.models import NewsItem, NewsSentiment, SentimentSnapshot
+from app.database.models import NewsItem, SentimentSnapshot
 from app.services.common.scoring import center_scaled, weighted_average
 from app.services.market.providers.alphavantage import AlphaVantageClient
-from app.services.news.repository import NewsRepository
+from app.services.news.repository import NewsRepository, count_by_sentiment
 from app.services.sentiment.fear_greed import fetch_fear_greed_index
 
 logger = logging.getLogger(__name__)
@@ -48,8 +48,7 @@ _COMPONENT_WEIGHTS: dict[str, float] = {
 def _news_sentiment_score(items: list[NewsItem]) -> float | None:
     if not items:
         return None
-    bullish = sum(1 for i in items if i.sentiment == NewsSentiment.BULLISH)
-    bearish = sum(1 for i in items if i.sentiment == NewsSentiment.BEARISH)
+    bullish, bearish, _ = count_by_sentiment(items)
     net_fraction = (bullish - bearish) / len(items)
     return center_scaled(net_fraction, scale=50.0)
 
