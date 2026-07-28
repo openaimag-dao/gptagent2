@@ -23,6 +23,7 @@ from app.api.global_score import router as global_score_router
 from app.api.history import router as history_router
 from app.api.hypothesis import router as hypothesis_router
 from app.api.knowledge import router as knowledge_router
+from app.api.learning import router as learning_router
 from app.api.liquidity import router as liquidity_router
 from app.api.market import router as market_router
 from app.api.memory import router as memory_router
@@ -103,6 +104,7 @@ app.include_router(portfolio_router)
 app.include_router(liquidity_router)
 app.include_router(admin_router)
 app.include_router(consensus_router)
+app.include_router(learning_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

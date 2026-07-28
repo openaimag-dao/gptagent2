@@ -26,6 +26,7 @@ from app.services.history.schemas import Timeframe
 from app.services.hypothesis.engine import HypothesisEngine
 from app.services.hypothesis.templates import HypothesisTemplate
 from app.services.knowledge.engine import KnowledgeEngine
+from app.services.learning.engine import LearningEngine
 from app.services.market.repository import MarketRepository
 from app.services.memory.engine import CATEGORY_NAMES, MemoryEngine
 from app.services.news.repository import NewsRepository
@@ -53,6 +54,7 @@ from app.telegram.formatters import (
     format_hypothesis,
     format_hypothesis_list,
     format_knowledge,
+    format_learning,
     format_liquidity,
     format_market_summary,
     format_monte_carlo,
@@ -98,6 +100,8 @@ HELP_TEXT = (
     "/history SYMBOL [timeframe] -- historical OHLCV + indicators (e.g. /history BTC 1d)\n"
     "/events -- curated historical market events\n"
     "/probability SYMBOL -- empirical next-day up/down probability\n"
+    "/learning SYMBOL [timeframe] -- self-learning accuracy: graded past "
+    "predictions vs what actually happened\n"
     "/patterns SYMBOL -- detected technical patterns\n"
     "/knowledge SYMBOL -- similar historical episodes for current conditions\n"
     "/brain -- AI Brain: latest institutional-grade synthesis report (alias of /report)\n"
@@ -145,6 +149,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("history", "Historical OHLCV + indicators, e.g. /history BTC 1d"),
     ("events", "Curated historical market events"),
     ("probability", "Empirical next-day up/down probability"),
+    ("learning", "Self-learning accuracy: graded past predictions"),
     ("patterns", "Detected technical patterns"),
     ("knowledge", "Similar historical episodes for current conditions"),
     ("brain", "AI Brain synthesis report (alias of /report)"),
@@ -347,6 +352,19 @@ async def cmd_probability(message: Message, command: CommandObject) -> None:
     engine = ProbabilityEngine(get_session_factory())
     snapshot = await engine.compute_and_store(config.symbol, config.model, timeframe)
     await _answer(message, format_probability(snapshot))
+
+
+@router.message(Command("learning"))
+async def cmd_learning(message: Message, command: CommandObject) -> None:
+    symbol, timeframe, timeframe_arg = _parse_symbol_and_timeframe(command)
+    config = find_symbol_config(symbol)
+    if config is None or timeframe not in config.timeframes:
+        await _answer(message, f"No historical data available for {symbol}/{timeframe_arg}.")
+        return
+
+    engine = LearningEngine(get_session_factory())
+    result = await engine.evaluate_accuracy(config.symbol, config.model, timeframe)
+    await _answer(message, format_learning(result, config.symbol, timeframe_arg))
 
 
 @router.message(Command("patterns"))

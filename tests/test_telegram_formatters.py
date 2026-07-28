@@ -1,9 +1,12 @@
+from datetime import UTC, datetime
+
 from app.database.models import AssetClass, AssetPrice, MarketRegimeSnapshot, SignalSnapshot
 from app.services.analysis.regime import MarketRegime
 from app.services.consensus.engine import ConsensusResult
 from app.telegram.formatters import (
     format_asset_class,
     format_consensus,
+    format_learning,
     format_market_summary,
     format_regime,
     format_signal,
@@ -108,3 +111,38 @@ def test_format_consensus_present():
     assert "Bullish 70.0%" in text
     assert "news, equity" in text
     assert "macro" in text
+
+
+def test_format_learning_none():
+    text = format_learning(None, "BTC", "1d")
+    assert "No graded predictions" in text
+    assert "BTC/1d" in text
+
+
+def test_format_learning_present():
+    result = {
+        "symbol": "BTC",
+        "timeframe": "1d",
+        "evaluated_predictions": 2,
+        "accuracy_pct": 50.0,
+        "recent": [
+            {
+                "reference_timestamp": datetime(2026, 1, 1, tzinfo=UTC),
+                "predicted": "up",
+                "realized": "up",
+                "correct": True,
+                "realized_return_pct": 1.5,
+            },
+            {
+                "reference_timestamp": datetime(2026, 1, 2, tzinfo=UTC),
+                "predicted": "up",
+                "realized": "down",
+                "correct": False,
+                "realized_return_pct": -0.8,
+            },
+        ],
+    }
+    text = format_learning(result, "BTC", "1d")
+    assert "Accuracy: 50.0%" in text
+    assert "correct" in text
+    assert "wrong" in text

@@ -543,6 +543,11 @@ for its outcome to exist. This is the honestly-scoped version of "self
 learning": real measurement and comparison, not an unverified claim of
 automatic weight retraining.
 
+```
+GET /api/learning/{symbol}?timeframe=1d
+/learning SYMBOL [timeframe]
+```
+
 ### 9. Global Market Score
 
 A deterministic composite (`app/services/global_score/engine.py`) --

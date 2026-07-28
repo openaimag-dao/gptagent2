@@ -205,6 +205,30 @@ def format_events(events: list[HistoricalEvent]) -> str:
     return "\n".join(lines)
 
 
+def format_learning(result: dict | None, symbol: str, timeframe: str) -> str:
+    if result is None:
+        return (
+            f"No graded predictions yet for {symbol}/{timeframe} -- a prediction only "
+            "counts once its horizon has actually elapsed in the stored history."
+        )
+    lines = [
+        f"*{result['symbol']} SELF-LEARNING ACCURACY* ({result['timeframe']})",
+        "",
+        f"Evaluated predictions: {result['evaluated_predictions']}",
+        f"Accuracy: {result['accuracy_pct']}%",
+        "",
+        "*Recent*",
+    ]
+    for entry in result["recent"]:
+        mark = "correct" if entry["correct"] else "wrong"
+        lines.append(
+            f"{entry['reference_timestamp'].date().isoformat()}: predicted "
+            f"{entry['predicted']}, realized {entry['realized']} "
+            f"({entry['realized_return_pct']:+.2f}%) -- {mark}"
+        )
+    return "\n".join(lines)
+
+
 def format_probability(snapshot: ProbabilitySnapshot | None) -> str:
     if snapshot is None:
         return "Not enough synced history to compute a probability yet."
