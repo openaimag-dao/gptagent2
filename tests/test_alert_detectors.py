@@ -3,7 +3,10 @@ from app.services.alerts.detectors import (
     detect_dxy_reversal,
     detect_etf_milestone,
     detect_fed_event_approaching,
+    detect_flash_move,
+    detect_funding_shift,
     detect_liquidity_change,
+    detect_oi_spike,
     detect_regime_change,
     detect_whale_accumulation,
 )
@@ -98,3 +101,49 @@ def test_fed_event_approaching_within_window():
 
 def test_fed_event_approaching_none_outside_window():
     assert detect_fed_event_approaching(30, "FOMC decision") is None
+
+
+def test_flash_move_fires_on_crash():
+    result = detect_flash_move("BTC", -10.0)
+    assert result["alert_type"] == "flash_crash"
+
+
+def test_flash_move_fires_on_rally():
+    result = detect_flash_move("BTC", 12.0)
+    assert result["alert_type"] == "flash_rally"
+
+
+def test_flash_move_none_below_threshold():
+    assert detect_flash_move("BTC", 3.0) is None
+
+
+def test_flash_move_none_without_data():
+    assert detect_flash_move("BTC", None) is None
+
+
+def test_funding_shift_fires_on_large_delta():
+    result = detect_funding_shift(0.01, 0.10)
+    assert result["alert_type"] == "funding_shift"
+    assert "rising" in result["message"]
+
+
+def test_funding_shift_none_on_small_delta():
+    assert detect_funding_shift(0.01, 0.02) is None
+
+
+def test_funding_shift_none_without_prior_reading():
+    assert detect_funding_shift(None, 0.10) is None
+
+
+def test_oi_spike_fires_on_large_delta():
+    result = detect_oi_spike(5.0, 25.0)
+    assert result["alert_type"] == "oi_spike"
+    assert "building" in result["message"]
+
+
+def test_oi_spike_none_on_small_delta():
+    assert detect_oi_spike(5.0, 8.0) is None
+
+
+def test_oi_spike_none_without_prior_reading():
+    assert detect_oi_spike(None, 25.0) is None

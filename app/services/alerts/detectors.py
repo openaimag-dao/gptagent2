@@ -147,3 +147,70 @@ def detect_fed_event_approaching(
         "confidence_pct": 90,
         "data": {"days_until_event": days_until_event, "event_title": event_title},
     }
+
+
+def detect_flash_move(
+    symbol: str, change_pct_24h: float | None, threshold: float = 8.0
+) -> dict | None:
+    """Flags an abnormal 24h price swing -- reuses AssetPrice.change_pct_24h,
+    already computed by every price provider, no new data fetched."""
+    if change_pct_24h is None or abs(change_pct_24h) < threshold:
+        return None
+    is_crash = change_pct_24h < 0
+    return {
+        "alert_type": "flash_crash" if is_crash else "flash_rally",
+        "message": (
+            f"{symbol} {'crashed' if is_crash else 'rallied'} {change_pct_24h:+.2f}% in 24h."
+        ),
+        # Scaled so a 2x threshold move reads as fully confident.
+        "confidence_pct": round(clamp(50 + (abs(change_pct_24h) - threshold) * 5)),
+        "data": {"symbol": symbol, "change_pct_24h": change_pct_24h, "threshold": threshold},
+    }
+
+
+def detect_funding_shift(
+    prev_momentum_pct: float | None, curr_momentum_pct: float | None, threshold: float = 0.05
+) -> dict | None:
+    """Funding-rate momentum is already computed by the Feature Engine from
+    the same whale/derivatives snapshots WhaleIntelligenceEngine persists --
+    this only flags when it moves past a threshold, no new data source."""
+    if prev_momentum_pct is None or curr_momentum_pct is None:
+        return None
+    delta = curr_momentum_pct - prev_momentum_pct
+    if abs(delta) < threshold:
+        return None
+    direction = "rising" if delta > 0 else "falling"
+    return {
+        "alert_type": "funding_shift",
+        "message": (
+            f"Funding-rate momentum {direction}: "
+            f"{prev_momentum_pct:+.3f}% -> {curr_momentum_pct:+.3f}%."
+        ),
+        "confidence_pct": round(clamp(abs(delta) * 400)),
+        "data": {"prev_momentum_pct": prev_momentum_pct, "curr_momentum_pct": curr_momentum_pct},
+    }
+
+
+def detect_oi_spike(
+    prev_oi_change_pct: float | None, curr_oi_change_pct: float | None, threshold: float = 10.0
+) -> dict | None:
+    """Open-interest change is already computed by the Feature Engine from
+    the same derivatives snapshots -- flags an abnormal swing only."""
+    if prev_oi_change_pct is None or curr_oi_change_pct is None:
+        return None
+    delta = curr_oi_change_pct - prev_oi_change_pct
+    if abs(delta) < threshold:
+        return None
+    direction = "building" if delta > 0 else "unwinding"
+    return {
+        "alert_type": "oi_spike",
+        "message": (
+            f"Open interest {direction} sharply: "
+            f"{prev_oi_change_pct:+.2f}% -> {curr_oi_change_pct:+.2f}%."
+        ),
+        "confidence_pct": round(clamp(50 + abs(delta))),
+        "data": {
+            "prev_oi_change_pct": prev_oi_change_pct,
+            "curr_oi_change_pct": curr_oi_change_pct,
+        },
+    }

@@ -1035,6 +1035,30 @@ themselves.
 
 416 tests pass (16 new), `ruff check` clean.
 
+### Increment 2: Volatility Detection -- 3 new Smart Alert types from data already collected
+
+The audit found ATR, volatility, funding-rate momentum and open-interest
+change were all already computed and stored (Historical Intelligence
+Engine, Feature Engine) but nothing read them to flag an abnormal move.
+Three new pure detectors added to `app/services/alerts/detectors.py`,
+wired into the existing `AlertEngine.check_and_broadcast()` cycle
+alongside the 7 that already existed:
+
+- **`flash_crash` / `flash_rally`** -- `AssetPrice.change_pct_24h` past an
+  8% threshold (already computed by every price provider).
+- **`funding_shift`** -- a swing in the Feature Engine's
+  `funding_rate_momentum_pct` (already derived from the same derivatives
+  snapshots `WhaleIntelligenceEngine` persists).
+- **`oi_spike`** -- a swing in the Feature Engine's
+  `open_interest_change_pct`, same source.
+
+No new data source, no new provider call. `Breakout`/`Breakdown` and
+`Large Liquidations` remain genuinely missing -- the former needs a
+price-range comparison not yet built, the latter needs actual liquidation
+event data this project has no configured source for (never faked).
+
+426 tests pass (10 new), `ruff check` clean.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is
