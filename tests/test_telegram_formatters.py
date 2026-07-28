@@ -1,7 +1,9 @@
 from app.database.models import AssetClass, AssetPrice, MarketRegimeSnapshot, SignalSnapshot
 from app.services.analysis.regime import MarketRegime
+from app.services.consensus.engine import ConsensusResult
 from app.telegram.formatters import (
     format_asset_class,
+    format_consensus,
     format_market_summary,
     format_regime,
     format_signal,
@@ -87,3 +89,22 @@ def test_format_signal_present():
 def test_format_regime_present():
     snapshot = MarketRegimeSnapshot(regime=MarketRegime.RISK_ON, inputs={})
     assert "Risk On" in format_regime(snapshot)
+
+
+def test_format_consensus_none():
+    assert "nothing to tally" in format_consensus(None)
+
+
+def test_format_consensus_present():
+    result = ConsensusResult(
+        bullish_pct=70.0,
+        bearish_pct=30.0,
+        neutral_pct=0.0,
+        agreement_score=70.0,
+        bullish_agents=["news", "equity"],
+        bearish_agents=["macro"],
+    )
+    text = format_consensus(result)
+    assert "Bullish 70.0%" in text
+    assert "news, equity" in text
+    assert "macro" in text

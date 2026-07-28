@@ -13,6 +13,7 @@ from app.api.backtest import router as backtest_router
 from app.api.brain import router as brain_router
 from app.api.btc import router as btc_router
 from app.api.calendar import router as calendar_router
+from app.api.consensus import router as consensus_router
 from app.api.conviction import router as conviction_router
 from app.api.correlations import router as correlations_router
 from app.api.etf import router as etf_router
@@ -101,6 +102,7 @@ app.include_router(conviction_router)
 app.include_router(portfolio_router)
 app.include_router(liquidity_router)
 app.include_router(admin_router)
+app.include_router(consensus_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

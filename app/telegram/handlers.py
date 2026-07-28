@@ -16,6 +16,7 @@ from app.services.analysis.regime import RegimeDetector
 from app.services.backtest.conditions import Condition
 from app.services.backtest.engine import BacktestEngine
 from app.services.backtest.strategy_engine import StrategyLabEngine
+from app.services.consensus.engine import ConsensusEngine
 from app.services.conviction.engine import ConvictionEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
@@ -42,6 +43,7 @@ from app.telegram.formatters import (
     format_agent_outputs,
     format_asset_class,
     format_backtest_result,
+    format_consensus,
     format_conviction,
     format_correlations,
     format_etf_proxy,
@@ -116,6 +118,7 @@ HELP_TEXT = (
     "/etf -- ETF flow proxy from ETF-category news sentiment\n"
     "/score -- Global Market Score\n"
     "/agents -- Macro/Crypto/Equity/News/Sentiment agent read-outs\n"
+    "/consensus -- bullish/bearish/neutral vote tally across all 5 agents\n"
     "/scenarios -- probability-weighted forward scenarios\n"
     "/sentiment -- Fear & Greed + news sentiment\n"
     "/liquidity -- liquidity + macro pressure sub-scores\n"
@@ -155,6 +158,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("etf", "ETF flow proxy from ETF-category news sentiment"),
     ("score", "Global Market Score"),
     ("agents", "Macro/Crypto/Equity/News/Sentiment agent read-outs"),
+    ("consensus", "Bullish/bearish/neutral vote tally across all 5 agents"),
     ("scenarios", "Probability-weighted forward scenarios"),
     ("sentiment", "Fear & Greed + news sentiment"),
     ("liquidity", "Liquidity + macro pressure sub-scores"),
@@ -585,6 +589,13 @@ async def cmd_agents(message: Message) -> None:
     orchestrator = build_agent_orchestrator()
     outputs = await orchestrator.run_all()
     await _answer(message, format_agent_outputs(outputs))
+
+
+@router.message(Command("consensus"))
+async def cmd_consensus(message: Message) -> None:
+    engine = ConsensusEngine(build_agent_orchestrator())
+    result = await engine.compute()
+    await _answer(message, format_consensus(result))
 
 
 @router.message(Command("scenarios"))

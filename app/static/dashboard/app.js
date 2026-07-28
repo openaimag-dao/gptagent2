@@ -203,6 +203,39 @@ async function renderOverview() {
   return nodes;
 }
 
+async function renderConsensus() {
+  const data = await safe("/api/consensus");
+  const nodes = [el("h2", {}, "Consensus")];
+  if (!data) {
+    nodes.push(
+      el("p", { class: "error" }, "No agent reported a direction this cycle -- nothing to tally yet.")
+    );
+    return nodes;
+  }
+  nodes.push(
+    el("div", { class: "grid" }, [
+      card("Bullish", `${data.bullish_pct}%`, null, "up"),
+      card("Bearish", `${data.bearish_pct}%`, null, "down"),
+      card("Neutral", `${data.neutral_pct}%`),
+    ])
+  );
+  nodes.push(scoreBar("Agreement", data.agreement_score));
+  nodes.push(
+    table(
+      ["Direction", "Agents"],
+      [
+        ["Bullish", el("span", { class: "up" }, data.bullish_agents.join(", ") || "none")],
+        ["Bearish", el("span", { class: "down" }, data.bearish_agents.join(", ") || "none")],
+        ["Neutral", data.neutral_agents.join(", ") || "none"],
+      ]
+    )
+  );
+  if (data.unavailable_agents.length) {
+    nodes.push(el("p", { class: "sub" }, `No data this cycle: ${data.unavailable_agents.join(", ")}`));
+  }
+  return nodes;
+}
+
 async function renderMacro() {
   const agents = await safe("/api/agents");
   const nodes = [el("h2", {}, "Macro")];
@@ -1067,7 +1100,8 @@ async function renderSettings() {
 }
 
 const PAGES = {
-  overview: renderOverview, macro: renderMacro, crypto: renderCrypto, stocks: renderStocks,
+  overview: renderOverview, consensus: renderConsensus, macro: renderMacro, crypto: renderCrypto,
+  stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
   patterns: renderPatterns, liquidity: renderLiquidity, sentiment: renderSentiment,
   calendar: renderCalendar, similarity: renderSimilarity, brain: renderBrain,
@@ -1080,7 +1114,14 @@ const PAGES = {
 // in-progress user input) are safe to silently re-render on a timer.
 // Anything with inputs is excluded so a background refresh never wipes out
 // what the user is typing.
-const AUTO_REFRESH_PAGES = new Set(["overview", "signals", "sentiment", "liquidity", "scenarios"]);
+const AUTO_REFRESH_PAGES = new Set([
+  "overview",
+  "consensus",
+  "signals",
+  "sentiment",
+  "liquidity",
+  "scenarios",
+]);
 const AUTO_REFRESH_MS = 60000;
 
 const lastUpdatedEl = document.getElementById("last-updated");
