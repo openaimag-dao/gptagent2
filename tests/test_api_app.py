@@ -50,6 +50,7 @@ EXPECTED_PREFIXES = {
     "/api/replay",
     "/api/breakout",
     "/api/onchain",
+    "/api/committee",
 }
 
 

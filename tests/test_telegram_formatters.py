@@ -14,6 +14,7 @@ from app.telegram.formatters import (
     format_advice,
     format_asset_class,
     format_breakout,
+    format_committee,
     format_consensus,
     format_explanation,
     format_global_score,
@@ -415,6 +416,31 @@ def test_format_onchain_includes_solana_note():
     }
     text = format_onchain(snapshot)
     assert "Solana-specific coverage needs Helius." in text
+
+
+def test_format_committee_none():
+    assert "nothing to vote on" in format_committee(None)
+
+
+def test_format_committee_present():
+    verdict = {
+        "majority_decision": "BUY",
+        "majority_pct": 70.0,
+        "dissent_pct": 30.0,
+        "confidence_pct": 70.0,
+        "supporting_evidence": [{"agent": "macro", "evidence": "Bullish backdrop."}],
+        "opposing_evidence": [{"agent": "equity", "evidence": "Weak breadth."}],
+        "minority_opinion": "equity (bearish): Weak breadth.",
+        "final_recommendation": "BUY (high conviction)",
+        "reasoning": "Majority decision: BUY with 70.0% of weighted committee votes (macro).",
+    }
+    text = format_committee(verdict)
+    assert "AI INVESTMENT COMMITTEE" in text
+    assert "BUY (high conviction)" in text
+    assert "Dissent: 30.0%" in text
+    assert "Supporting evidence" in text
+    assert "Opposing evidence (minority)" in text
+    assert "Weak breadth." in text
 
 
 def test_format_replay_none():

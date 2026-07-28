@@ -14,6 +14,7 @@ from app.api.brain import router as brain_router
 from app.api.breakout import router as breakout_router
 from app.api.btc import router as btc_router
 from app.api.calendar import router as calendar_router
+from app.api.committee import router as committee_router
 from app.api.consensus import router as consensus_router
 from app.api.conviction import router as conviction_router
 from app.api.correlations import router as correlations_router
@@ -110,6 +111,7 @@ app.include_router(portfolio_router)
 app.include_router(liquidity_router)
 app.include_router(admin_router)
 app.include_router(consensus_router)
+app.include_router(committee_router)
 app.include_router(learning_router)
 app.include_router(explanation_router)
 app.include_router(status_router)
