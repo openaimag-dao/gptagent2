@@ -881,6 +881,51 @@ async function renderProbability() {
   return nodes;
 }
 
+async function renderLearning() {
+  const nodes = [el("h2", {}, "Self-Learning Accuracy")];
+  const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const tfSelect = el("select", {}, ["1d", "4h", "1h"].map((t) => el("option", { value: t }, t)));
+  const btn = el("button", {}, "Load");
+  nodes.push(el("div", { class: "controls" }, [symbolInput, tfSelect, btn]));
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    results.innerHTML = "";
+    try {
+      const r = await fetchJSON(
+        `/api/learning/${encodeURIComponent(symbolInput.value)}?timeframe=${tfSelect.value}`
+      );
+      results.appendChild(
+        el("div", { class: "grid" }, [
+          card("Evaluated predictions", r.evaluated_predictions),
+          card("Accuracy", `${r.accuracy_pct}%`),
+        ])
+      );
+      results.appendChild(
+        table(
+          ["Date", "Predicted", "Realized", "Return", "Result"],
+          r.recent
+            .slice()
+            .reverse()
+            .map((e) => [
+              e.reference_timestamp.slice(0, 10),
+              e.predicted,
+              e.realized,
+              fmtPct(e.realized_return_pct),
+              el("span", { class: e.correct ? "up" : "down" }, e.correct ? "correct" : "wrong"),
+            ])
+        )
+      );
+    } catch (err) {
+      results.appendChild(errorBox(err));
+    }
+  }
+  btn.addEventListener("click", load);
+  load();
+  return nodes;
+}
+
 async function renderScenarios() {
   const data = await safe("/api/scenarios");
   const nodes = [el("h2", {}, "Scenarios")];
@@ -1106,7 +1151,8 @@ const PAGES = {
   patterns: renderPatterns, liquidity: renderLiquidity, sentiment: renderSentiment,
   calendar: renderCalendar, similarity: renderSimilarity, brain: renderBrain,
   research: renderResearch, strategies: renderStrategies,
-  probability: renderProbability, scenarios: renderScenarios, whales: renderWhales, etf: renderEtf,
+  probability: renderProbability, learning: renderLearning, scenarios: renderScenarios,
+  whales: renderWhales, etf: renderEtf,
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, settings: renderSettings,
 };
 

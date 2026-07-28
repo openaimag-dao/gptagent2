@@ -43,6 +43,7 @@ EXPECTED_PREFIXES = {
     "/api/liquidity",
     "/api/admin",
     "/api/consensus",
+    "/api/learning",
 }
 
 
@@ -62,7 +63,13 @@ def test_every_expected_router_is_mounted():
 
 def test_history_and_probability_and_patterns_and_knowledge_take_a_symbol_path_param():
     paths = _route_paths()
-    for prefix in ("/api/history", "/api/probability", "/api/patterns", "/api/knowledge"):
+    for prefix in (
+        "/api/history",
+        "/api/probability",
+        "/api/patterns",
+        "/api/knowledge",
+        "/api/learning",
+    ):
         assert f"{prefix}/{{symbol}}" in paths
 
 
