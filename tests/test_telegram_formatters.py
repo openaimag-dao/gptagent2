@@ -15,6 +15,7 @@ from app.telegram.formatters import (
     format_signal,
     format_single_asset,
     format_status,
+    format_watchdog,
 )
 
 
@@ -281,3 +282,36 @@ def test_format_risk_without_data():
     text = format_risk({"global_score": None, "signal_conviction": None})
     assert "not computed yet" in text
     assert "unavailable" in text
+
+
+def test_format_watchdog_empty():
+    assert "No detections logged yet" in format_watchdog([])
+
+
+def test_format_watchdog_shows_sent_and_suppressed():
+    entries = [
+        {
+            "category": "alerts",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "summary": {
+                "alert_type": "flash_crash",
+                "message": "BTC crashed -10.00% in 24h.",
+                "conviction_tier": "Strong",
+                "broadcast": True,
+            },
+        },
+        {
+            "category": "alerts",
+            "timestamp": "2026-01-01T00:05:00+00:00",
+            "summary": {
+                "alert_type": "funding_shift",
+                "message": "Funding-rate momentum rising.",
+                "conviction_tier": "Medium",
+                "broadcast": False,
+            },
+        },
+    ]
+    text = format_watchdog(entries)
+    assert "flash_crash" in text
+    assert "sent" in text
+    assert "suppressed" in text

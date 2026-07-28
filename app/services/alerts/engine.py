@@ -3,6 +3,12 @@ recent stored readings of each relevant snapshot, gates each detection by
 conviction (Step 5's "only high-confidence signals generate alerts"), logs
 every detection (broadcast or not) to AlertLog for Market Memory, and
 pushes the ones that clear the gate to Telegram.
+
+A second gate, cooldown, sits after conviction: an alert_type that already
+broadcast within `_COOLDOWN_MINUTES` is logged again (so Market Memory's
+audit trail stays complete) but not re-sent to Telegram. Without this, a
+metric oscillating right around its threshold would re-fire the same alert
+every cycle -- the Market Watchdog brief's "does NOT spam" requirement.
 """
 
 import logging
@@ -50,6 +56,17 @@ _CORRELATION_PAIR = ("BTC", "NASDAQ")
 _CORRELATION_WINDOW_DAYS = 30
 _FED_EVENT_LOOKAHEAD_DAYS = 7
 _VOLATILITY_SYMBOL = "BTC"
+_COOLDOWN_MINUTES = 60
+
+
+def _is_on_cooldown(
+    last_broadcast_at: datetime | None, now: datetime, cooldown_minutes: int = _COOLDOWN_MINUTES
+) -> bool:
+    """Pure function: has this alert_type broadcast too recently to fire
+    again? `None` (never broadcast before) is never on cooldown."""
+    if last_broadcast_at is None:
+        return False
+    return now - last_broadcast_at < timedelta(minutes=cooldown_minutes)
 
 
 async def _last_two(
@@ -80,14 +97,27 @@ class AlertEngine:
         self._etf_engine = etf_engine
         self._market_repository = market_repository
 
+    async def _last_broadcast_at(self, alert_type: str) -> datetime | None:
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(AlertLog.triggered_at)
+                .where(AlertLog.alert_type == alert_type, AlertLog.broadcast.is_(True))
+                .order_by(AlertLog.triggered_at.desc())
+                .limit(1)
+            )
+
     async def _log(self, detection: dict) -> AlertLog:
         conviction = classify_conviction(detection["confidence_pct"])
+        broadcast = conviction["alert_eligible"]
+        if broadcast:
+            last_broadcast_at = await self._last_broadcast_at(detection["alert_type"])
+            broadcast = not _is_on_cooldown(last_broadcast_at, datetime.now(UTC))
         row = AlertLog(
             alert_type=detection["alert_type"],
             message=detection["message"],
             conviction_tier=conviction["tier"],
             confidence_pct=detection["confidence_pct"],
-            broadcast=conviction["alert_eligible"],
+            broadcast=broadcast,
             data=detection["data"],
         )
         async with self._session_factory() as session:
