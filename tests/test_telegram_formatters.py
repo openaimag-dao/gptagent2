@@ -7,11 +7,14 @@ from app.telegram.formatters import (
     format_advice,
     format_asset_class,
     format_consensus,
+    format_explanation,
     format_learning,
     format_market_summary,
     format_regime,
+    format_risk,
     format_signal,
     format_single_asset,
+    format_status,
 )
 
 
@@ -205,3 +208,76 @@ def test_format_advice_hold_no_levels():
     assert "HOLD" in text
     assert "Stop-loss" not in text
     assert "Position size" not in text
+
+
+def test_format_explanation_empty():
+    data = {
+        "symbol": "BTC",
+        "indicators": [],
+        "macro_drivers": {},
+        "historical_examples": [],
+        "supporting_news": [],
+        "risk_factors": None,
+        "alternative_view": None,
+    }
+    text = format_explanation(data)
+    assert "WHY -- BTC" in text
+    assert "Not enough data" in text
+
+
+def test_format_explanation_full():
+    data = {
+        "symbol": "BTC",
+        "indicators": [{"name": "rsi_oversold", "points": 3, "triggered": True}],
+        "macro_drivers": {"dxy_trend": "down"},
+        "historical_examples": [
+            {
+                "match_timestamp": "2024-01-05T00:00:00",
+                "similarity_score": 82.0,
+                "regime": "bull",
+                "forward_return_7d_pct": 4.2,
+            }
+        ],
+        "supporting_news": [{"title": "ETF inflows surge", "sentiment": "bullish", "url": "x"}],
+        "risk_factors": {"fear_score": 30, "macro_pressure_score": 40, "risk_off_score": 20},
+        "alternative_view": {
+            "name": "Bear case",
+            "probability_pct": 25,
+            "rationale": "DXY strength",
+        },
+    }
+    text = format_explanation(data)
+    assert "rsi oversold" in text
+    assert "dxy trend: down" in text
+    assert "ETF inflows surge" in text
+    assert "82% similar" in text
+    assert "Fear 30" in text
+    assert "Bear case (25%)" in text
+
+
+def test_format_status():
+    text = format_status({"Signal": datetime(2026, 1, 1, tzinfo=UTC), "Regime": None})
+    assert "Signal: 2026-01-01T00:00:00+00:00" in text
+    assert "Regime: never computed" in text
+
+
+def test_format_risk_with_data():
+    text = format_risk(
+        {
+            "global_score": {
+                "risk_off_score": 60,
+                "risk_on_score": 40,
+                "fear_score": 55,
+                "macro_pressure_score": 45,
+            },
+            "signal_conviction": {"tier": "Strong", "effective_confidence_pct": 72},
+        }
+    )
+    assert "Risk-off: 60/100" in text
+    assert "Strong (72%)" in text
+
+
+def test_format_risk_without_data():
+    text = format_risk({"global_score": None, "signal_conviction": None})
+    assert "not computed yet" in text
+    assert "unavailable" in text

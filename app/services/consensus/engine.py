@@ -9,6 +9,11 @@ cycle (missing underlying data) is excluded from the tally entirely --
 never counted as a silent "neutral" vote, which would understate real
 disagreement. If nothing reported, this returns None rather than
 fabricating a 33/33/33 split from zero information.
+
+`conflict_pct` is simply `100 - agreement_score`: the share of vote weight
+that did NOT go to the dominant bucket. It is not a new measurement --
+just the complement of a number already computed, made explicit so a
+caller doesn't have to derive it themselves.
 """
 
 from dataclasses import dataclass, field
@@ -29,6 +34,7 @@ class ConsensusResult:
     bearish_pct: float
     neutral_pct: float
     agreement_score: float  # 0-100: the largest bucket's share of the vote
+    conflict_pct: float = 0.0  # 0-100: vote weight NOT aligned with the dominant bucket
     bullish_agents: list[str] = field(default_factory=list)
     bearish_agents: list[str] = field(default_factory=list)
     neutral_agents: list[str] = field(default_factory=list)
@@ -41,6 +47,7 @@ class ConsensusResult:
             "bearish_pct": self.bearish_pct,
             "neutral_pct": self.neutral_pct,
             "agreement_score": self.agreement_score,
+            "conflict_pct": self.conflict_pct,
             "bullish_agents": self.bullish_agents,
             "bearish_agents": self.bearish_agents,
             "neutral_agents": self.neutral_agents,
@@ -90,11 +97,13 @@ def compute_consensus(agent_outputs: dict[str, AgentOutput]) -> ConsensusResult 
         largest = max(percentages, key=percentages.get)
         rounded[largest] = round(rounded[largest] + drift, 1)
 
+    agreement_score = max(rounded.values())
     return ConsensusResult(
         bullish_pct=rounded["bullish"],
         bearish_pct=rounded["bearish"],
         neutral_pct=rounded["neutral"],
-        agreement_score=max(rounded.values()),
+        agreement_score=agreement_score,
+        conflict_pct=round(100.0 - agreement_score, 1),
         bullish_agents=bullish_agents,
         bearish_agents=bearish_agents,
         neutral_agents=neutral_agents,

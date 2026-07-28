@@ -350,7 +350,7 @@ def format_consensus(result: ConsensusResult | None) -> str:
         "",
         f"Bullish {result.bullish_pct}% | Bearish {result.bearish_pct}% | "
         f"Neutral {result.neutral_pct}%",
-        f"Agreement: {result.agreement_score}%",
+        f"Agreement: {result.agreement_score}% | Conflict: {result.conflict_pct}%",
         "",
     ]
     if result.bullish_agents:
@@ -454,6 +454,88 @@ def format_portfolio(health: dict) -> str:
         lines.append(f"\nMax drawdown: {health['max_drawdown_pct']}%")
     else:
         lines.append(f"\n{health.get('drawdown_note', 'Drawdown unavailable.')}")
+    return "\n".join(lines)
+
+
+def format_explanation(data: dict) -> str:
+    lines = [f"*WHY -- {data['symbol']}*", ""]
+
+    if data["indicators"]:
+        lines.append("*Triggered indicators*")
+        for ind in data["indicators"]:
+            lines.append(f"- {ind['name'].replace('_', ' ')} ({ind['points']:+d})")
+        lines.append("")
+
+    if data["macro_drivers"]:
+        lines.append("*Macro drivers*")
+        for name, value in data["macro_drivers"].items():
+            lines.append(f"- {name.replace('_', ' ')}: {value}")
+        lines.append("")
+
+    if data["supporting_news"]:
+        lines.append("*Supporting news*")
+        for item in data["supporting_news"]:
+            lines.append(f"- [{item['sentiment']}] {item['title']}")
+        lines.append("")
+
+    if data["historical_examples"]:
+        lines.append("*Historical examples*")
+        for ex in data["historical_examples"]:
+            forward = (
+                f"{ex['forward_return_7d_pct']:+.2f}%"
+                if ex["forward_return_7d_pct"] is not None
+                else "n/a"
+            )
+            lines.append(
+                f"- {ex['match_timestamp'][:10]} ({ex['similarity_score']:.0f}% similar, "
+                f"{ex['regime'] or 'regime unknown'}): 7d forward {forward}"
+            )
+        lines.append("")
+
+    if data["risk_factors"]:
+        rf = data["risk_factors"]
+        lines.append("*Risk factors*")
+        lines.append(
+            f"Fear {rf['fear_score']} | Macro pressure {rf['macro_pressure_score']} | "
+            f"Risk-off {rf['risk_off_score']}"
+        )
+        lines.append("")
+
+    if data["alternative_view"]:
+        av = data["alternative_view"]
+        lines.append("*Alternative view*")
+        lines.append(f"{av['name']} ({av['probability_pct']}%): {av['rationale']}")
+
+    if len(lines) <= 2:
+        lines.append("Not enough data computed yet to explain this read.")
+
+    return "\n".join(lines).strip()
+
+
+def format_status(snapshots: dict) -> str:
+    lines = ["*SYSTEM STATUS*", ""]
+    for label, timestamp in snapshots.items():
+        value = timestamp.isoformat() if timestamp is not None else "never computed"
+        lines.append(f"{label}: {value}")
+    return "\n".join(lines)
+
+
+def format_risk(data: dict) -> str:
+    lines = ["*RISK*", ""]
+    if data["global_score"] is not None:
+        gs = data["global_score"]
+        lines.append(f"Risk-off: {gs['risk_off_score']}/100 | Risk-on: {gs['risk_on_score']}/100")
+        lines.append(
+            f"Fear: {gs['fear_score']}/100 | Macro pressure: {gs['macro_pressure_score']}/100"
+        )
+    else:
+        lines.append("Global Score not computed yet -- run /score first.")
+    lines.append("")
+    if data["signal_conviction"] is not None:
+        sc = data["signal_conviction"]
+        lines.append(f"Signal conviction: {sc['tier']} ({sc['effective_confidence_pct']}%)")
+    else:
+        lines.append("Signal conviction: unavailable -- no signal computed yet.")
     return "\n".join(lines)
 
 

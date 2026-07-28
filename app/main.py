@@ -18,6 +18,7 @@ from app.api.conviction import router as conviction_router
 from app.api.correlations import router as correlations_router
 from app.api.etf import router as etf_router
 from app.api.events import router as events_router
+from app.api.explanation import router as explanation_router
 from app.api.features import router as features_router
 from app.api.global_score import router as global_score_router
 from app.api.history import router as history_router
@@ -105,6 +106,7 @@ app.include_router(liquidity_router)
 app.include_router(admin_router)
 app.include_router(consensus_router)
 app.include_router(learning_router)
+app.include_router(explanation_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")
