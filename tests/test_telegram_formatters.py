@@ -1,6 +1,12 @@
 from datetime import UTC, datetime
 
-from app.database.models import AssetClass, AssetPrice, MarketRegimeSnapshot, SignalSnapshot
+from app.database.models import (
+    AssetClass,
+    AssetPrice,
+    GlobalMarketScore,
+    MarketRegimeSnapshot,
+    SignalSnapshot,
+)
 from app.services.analysis.regime import MarketRegime
 from app.services.consensus.engine import ConsensusResult
 from app.telegram.formatters import (
@@ -8,6 +14,7 @@ from app.telegram.formatters import (
     format_asset_class,
     format_consensus,
     format_explanation,
+    format_global_score,
     format_learning,
     format_market_summary,
     format_regime,
@@ -315,3 +322,39 @@ def test_format_watchdog_shows_sent_and_suppressed():
     assert "flash_crash" in text
     assert "sent" in text
     assert "suppressed" in text
+
+
+def _global_score(**overrides) -> GlobalMarketScore:
+    defaults = dict(
+        risk_on_score=50,
+        risk_off_score=50,
+        liquidity_score=50,
+        fear_score=50,
+        greed_score=50,
+        macro_pressure_score=50,
+        institutional_activity_score=50,
+        crypto_strength_score=50,
+        stock_strength_score=50,
+        global_score=50,
+        trend_strength_score=None,
+        risk_score=None,
+        confidence_score=None,
+    )
+    defaults.update(overrides)
+    return GlobalMarketScore(**defaults)
+
+
+def test_format_global_score_shows_unavailable_for_missing_new_subscores():
+    text = format_global_score(_global_score())
+    assert "Trend strength: unavailable" in text
+    assert "Risk score: unavailable" in text
+    assert "Confidence score: unavailable" in text
+
+
+def test_format_global_score_shows_new_subscores_when_present():
+    text = format_global_score(
+        _global_score(trend_strength_score=72, risk_score=60, confidence_score=85)
+    )
+    assert "Trend strength: 72" in text
+    assert "Risk score: 60" in text
+    assert "Confidence score: 85" in text

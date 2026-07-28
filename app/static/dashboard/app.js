@@ -189,7 +189,8 @@ async function renderOverview() {
       ["Risk-On", "risk_on_score"], ["Risk-Off", "risk_off_score"], ["Liquidity", "liquidity_score"],
       ["Fear", "fear_score"], ["Greed", "greed_score"], ["Macro Pressure", "macro_pressure_score"],
       ["Institutional", "institutional_activity_score"], ["Crypto Strength", "crypto_strength_score"],
-      ["Stock Strength", "stock_strength_score"],
+      ["Stock Strength", "stock_strength_score"], ["Trend Strength", "trend_strength_score"],
+      ["Risk Score", "risk_score"], ["Confidence", "confidence_score"],
     ].forEach(([label, key]) => scoreGrid.appendChild(scoreBar(label, score[key])));
     nodes.push(scoreGrid);
   }

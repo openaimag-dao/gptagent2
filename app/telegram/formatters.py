@@ -281,20 +281,32 @@ def format_knowledge(symbol: str, analogs: list[dict]) -> str:
 def format_global_score(row: GlobalMarketScore | None) -> str:
     if row is None:
         return "Not enough data yet -- regime detection and signal scoring need to run first."
-    return "\n".join(
-        [
-            "*GLOBAL MARKET SCORE*",
-            "",
-            f"Global score: {row.global_score}/100",
-            f"Risk-On {row.risk_on_score} / Risk-Off {row.risk_off_score}",
-            f"Liquidity: {row.liquidity_score}",
-            f"Fear {row.fear_score} / Greed {row.greed_score}",
-            f"Macro pressure: {row.macro_pressure_score}",
-            f"Institutional activity: {row.institutional_activity_score}",
-            f"Crypto strength: {row.crypto_strength_score}",
-            f"Stock strength: {row.stock_strength_score}",
-        ]
-    )
+    lines = [
+        "*GLOBAL MARKET SCORE*",
+        "",
+        f"Global score: {row.global_score}/100",
+        f"Risk-On {row.risk_on_score} / Risk-Off {row.risk_off_score}",
+        f"Liquidity: {row.liquidity_score}",
+        f"Fear {row.fear_score} / Greed {row.greed_score}",
+        f"Macro pressure: {row.macro_pressure_score}",
+        f"Institutional activity: {row.institutional_activity_score}",
+        f"Crypto strength: {row.crypto_strength_score}",
+        f"Stock strength: {row.stock_strength_score}",
+        (
+            f"Trend strength: {row.trend_strength_score}"
+            if row.trend_strength_score is not None
+            else "Trend strength: unavailable"
+        ),
+        f"Risk score: {row.risk_score}"
+        if row.risk_score is not None
+        else "Risk score: unavailable",
+        (
+            f"Confidence score: {row.confidence_score}"
+            if row.confidence_score is not None
+            else "Confidence score: unavailable"
+        ),
+    ]
+    return "\n".join(lines)
 
 
 def format_similar_periods(symbol: str, matches: list[dict], limit: int = 5) -> str:
