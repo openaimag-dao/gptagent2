@@ -153,6 +153,9 @@ class MarketRegimeType(str, enum.Enum):
     CAPITULATION = "capitulation"
     RECOVERY = "recovery"
     SIDEWAYS = "sideways"
+    STRONG_BULL = "strong_bull"
+    BULL_WEAKENING = "bull_weakening"
+    ALTSEASON = "altseason"
 
 
 class MarketRegimeSnapshot(Base):
@@ -487,6 +490,12 @@ class GlobalMarketScore(Base):
     crypto_strength_score: Mapped[int] = mapped_column()
     stock_strength_score: Mapped[int] = mapped_column()
     global_score: Mapped[int] = mapped_column()
+    # Nullable: honestly None when the underlying data (30d momentum for
+    # trend_strength_score) hasn't been computed yet this cycle, rather
+    # than a fabricated neutral default.
+    trend_strength_score: Mapped[int | None] = mapped_column(nullable=True)
+    risk_score: Mapped[int | None] = mapped_column(nullable=True)
+    confidence_score: Mapped[int | None] = mapped_column(nullable=True)
     inputs: Mapped[dict] = mapped_column(JSON, default=dict)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True

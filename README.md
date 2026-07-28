@@ -1117,6 +1117,53 @@ live against real Postgres + a real LLM call, matching this project's
 established test convention for DB-and-LLM-heavy orchestration methods),
 `ruff check` clean.
 
+### Increment 5: Market State Engine -- 3 new regimes, 3 new sub-scores
+
+The audit found 13 regime labels and 9 named sub-scores already existed,
+but 3 requested regimes and 3 requested sub-scores had no analog. Added,
+reusing data already collected -- migration `0017`:
+
+- **Strong Bull** -- BTC and SPX 30d momentum both >=20% (double Bull's
+  >=10% threshold).
+- **Bull Weakening** -- momentum still positive but decelerated by more
+  than 5 points since the previous `FeatureSnapshot` reading (needed a new
+  `previous_momentum_30d` comparison in `RegimeDetector`, fetching the
+  second-most-recent snapshot per symbol -- same `_last_two()`-style
+  pattern the Smart Alert Engine already uses).
+- **Altseason** -- BTC dominance (`BTC.D`) falling >1% while both ETH and
+  SOL rally >3% -- capital rotating from BTC into alts, tracked via 3 new
+  `regime_inputs` fields (`btc_dominance_change_pct`, `eth_change_pct`,
+  `sol_change_pct`).
+
+`GlobalScoreEngine` gained 3 nullable sub-scores (honestly `None`, never a
+fabricated neutral default, when the underlying data isn't ready yet):
+
+- **`trend_strength_score`** -- magnitude of the 30d trend regardless of
+  direction, from the same `momentum_30d` the Bull/Bear rules already use.
+- **`risk_score`** -- a single blended read over `risk_off_score`,
+  `fear_score` and `macro_pressure_score` via the existing
+  `weighted_average()` helper (not a new measurement, a composite of
+  numbers the engine already produces).
+- **`confidence_score`** -- the Signal Engine's own `confidence_pct`,
+  surfaced here too rather than recomputed.
+
+Also fixed the same class of bug V3 caught before shipping: `_REGIME_RISK_SPLIT`
+is an exhaustive dict keyed by `MarketRegime` -- the 3 new regimes were
+added to it (and to the risk-level classification in `ReportGenerator`)
+before they could reach production and `KeyError`.
+
+Since `market_regime_type` is a native Postgres enum and `global_market_scores`
+gets new columns, this needs migration `0017` (`ALTER TYPE ... ADD VALUE`
++ 3 nullable `ADD COLUMN`s, same reversibility caveat as the V3 regime
+migration -- Postgres has no `DROP VALUE`). Since this project's database
+has no public network access (same reason `/api/admin/sync-history`
+exists), a matching `/api/admin/migrate` endpoint was added to apply
+migrations the same way: triggered over HTTP from outside, run by the
+container itself.
+
+445 tests pass (13 new), `ruff check` clean, migration SQL verified via
+`alembic upgrade head --sql` (chains cleanly onto 0016).
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

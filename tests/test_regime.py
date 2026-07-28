@@ -132,6 +132,63 @@ def test_no_bull_bear_when_momentum_disagrees():
     assert regime is MarketRegime.NEUTRAL
 
 
+def test_strong_bull_on_very_strong_positive_30d_momentum():
+    regime, _ = detect_regime([], momentum_30d={"BTC": 25.0, "SPX": 22.0})
+
+    assert regime is MarketRegime.STRONG_BULL
+
+
+def test_bull_weakening_on_decelerating_momentum():
+    regime, _ = detect_regime(
+        [],
+        momentum_30d={"BTC": 6.0, "SPX": 5.0},
+        previous_momentum_30d={"BTC": 14.0, "SPX": 12.0},
+    )
+
+    assert regime is MarketRegime.BULL_WEAKENING
+
+
+def test_bull_weakening_not_triggered_without_previous_momentum():
+    regime, _ = detect_regime([], momentum_30d={"BTC": 6.0, "SPX": 5.0})
+
+    assert regime is not MarketRegime.BULL_WEAKENING
+
+
+def test_bull_weakening_not_triggered_when_momentum_accelerates():
+    regime, _ = detect_regime(
+        [],
+        momentum_30d={"BTC": 12.0, "SPX": 11.0},
+        previous_momentum_30d={"BTC": 6.0, "SPX": 5.0},
+    )
+
+    assert regime is MarketRegime.BULL
+
+
+def test_altseason_on_falling_btc_dominance_and_alt_rally():
+    assets = [
+        asset("BTC.D", change_pct_24h=-2.0),
+        asset("ETH", change_pct_24h=6.0),
+        asset("SOL", change_pct_24h=8.0),
+    ]
+
+    regime, inputs = detect_regime(assets)
+
+    assert regime is MarketRegime.ALTSEASON
+    assert inputs["btc_dominance_change_pct"] == -2.0
+
+
+def test_no_altseason_when_alts_dont_both_rally():
+    assets = [
+        asset("BTC.D", change_pct_24h=-2.0),
+        asset("ETH", change_pct_24h=6.0),
+        asset("SOL", change_pct_24h=0.5),
+    ]
+
+    regime, _ = detect_regime(assets)
+
+    assert regime is not MarketRegime.ALTSEASON
+
+
 def test_accumulation_on_long_heavy_flat_price():
     assets = [asset("BTC", change_pct_24h=0.5)]
 

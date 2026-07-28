@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import AssetPrice, GlobalMarketScore
 from app.services.analysis.regime import MarketRegime, RegimeDetector
-from app.services.common.scoring import center_scaled, clamp
+from app.services.common.scoring import center_scaled, clamp, weighted_average
 from app.services.market.repository import MarketRepository
 from app.services.signals.engine import SignalEngine
 
@@ -34,6 +34,9 @@ _REGIME_RISK_SPLIT: dict[MarketRegime, tuple[int, int]] = {
     MarketRegime.ACCUMULATION: (65, 35),
     MarketRegime.DISTRIBUTION: (35, 65),
     MarketRegime.SIDEWAYS: (50, 50),
+    MarketRegime.STRONG_BULL: (95, 5),
+    MarketRegime.BULL_WEAKENING: (65, 35),
+    MarketRegime.ALTSEASON: (70, 30),
 }
 
 
@@ -52,6 +55,7 @@ def compute_global_score(
     regime_inputs: dict[str, Any],
     signal_factors: dict[str, dict],
     assets: list[AssetPrice],
+    confidence_pct: int | None = None,
 ) -> dict:
     """Pure aggregation -- every sub-score is traceable to an already-computed
     input, nothing is invented. Returns a dict matching GlobalMarketScore's
@@ -83,6 +87,30 @@ def compute_global_score(
     crypto_strength_score = center_scaled(_average_change(assets, _CRYPTO_SYMBOLS), scale=5.0)
     stock_strength_score = center_scaled(_average_change(assets, _STOCK_SYMBOLS), scale=8.0)
 
+    # Trend Strength: magnitude of the 30d trend regardless of direction --
+    # honestly None (not a fabricated neutral default) when the Feature
+    # Engine hasn't computed momentum_30d_pct for BTC/SPX this cycle yet.
+    momentum_30d = regime_inputs.get("momentum_30d") or {}
+    momentum_magnitudes = [abs(v) for v in momentum_30d.values() if v is not None]
+    trend_strength_score = (
+        round(clamp(sum(momentum_magnitudes) / len(momentum_magnitudes) * 4.0))
+        if momentum_magnitudes
+        else None
+    )
+
+    # Risk Score: a single blended read over the risk-relevant sub-scores
+    # already computed above -- not a new measurement, just a weighted
+    # composite of numbers this function already produced.
+    risk_score_raw = weighted_average(
+        {"risk_off": risk_off, "fear": fear_score, "macro_pressure": macro_pressure_score},
+        {"risk_off": 0.4, "fear": 0.3, "macro_pressure": 0.3},
+    )
+    risk_score = round(risk_score_raw) if risk_score_raw is not None else None
+
+    # Confidence Score: the Signal Engine's own confidence_pct, surfaced
+    # here too rather than recomputed.
+    confidence_score = confidence_pct
+
     global_score = clamp(
         0.20 * risk_on
         + 0.15 * liquidity_score
@@ -104,6 +132,9 @@ def compute_global_score(
         "crypto_strength_score": round(crypto_strength_score),
         "stock_strength_score": round(stock_strength_score),
         "global_score": round(global_score),
+        "trend_strength_score": trend_strength_score,
+        "risk_score": risk_score,
+        "confidence_score": confidence_score,
     }
 
 
@@ -134,6 +165,7 @@ class GlobalScoreEngine:
             regime_snapshot.inputs,
             signal_snapshot.factors,
             assets,
+            signal_snapshot.confidence_pct,
         )
 
         row = GlobalMarketScore(**scores, inputs=regime_snapshot.inputs)
