@@ -45,6 +45,7 @@ from app.api.research import router as research_router
 from app.api.risk import router as risk_router
 from app.api.scenarios import router as scenarios_router
 from app.api.sentiment import router as sentiment_router
+from app.api.shocks import router as shocks_router
 from app.api.signals import router as signals_router
 from app.api.similar import router as similar_router
 from app.api.status import router as status_router
@@ -127,6 +128,7 @@ app.include_router(replay_router)
 app.include_router(breakout_router)
 app.include_router(onchain_router)
 app.include_router(alerts_router)
+app.include_router(shocks_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

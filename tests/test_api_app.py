@@ -55,6 +55,7 @@ EXPECTED_PREFIXES = {
     "/api/quality",
     "/api/terminal",
     "/api/alerts",
+    "/api/shocks",
 }
 
 

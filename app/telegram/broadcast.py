@@ -76,6 +76,64 @@ async def send_text_to(chat_id: int, text: str) -> bool:
         await bot.session.close()
 
 
+async def send_text_to_with_id(chat_id: int, text: str) -> int | None:
+    """Same send as send_text_to(), but returns the sent message's
+    `message_id` (or None on failure) instead of a bool -- used by the
+    Autonomous Critical Alert System, which needs the id back so a later
+    escalation can edit this exact message instead of sending a new one.
+    A separate function rather than changing send_text_to()'s return type,
+    since Configurable Alerts already depends on that returning a bool.
+    """
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        logger.info("Telegram send skipped (not configured)")
+        return None
+
+    bot = build_bot()
+    try:
+        body = text[:4090]
+        try:
+            message = await bot.send_message(chat_id=chat_id, text=body, parse_mode="Markdown")
+        except TelegramBadRequest:
+            message = await bot.send_message(chat_id=chat_id, text=body, parse_mode=None)
+        return message.message_id
+    except Exception:
+        logger.warning("Failed to send to chat %s", chat_id, exc_info=True)
+        return None
+    finally:
+        await bot.session.close()
+
+
+async def edit_text(chat_id: int, message_id: int, text: str) -> bool:
+    """Edits a previously-sent message in place -- the escalation half of
+    send_text_to_with_id(): an ongoing shock episode updates its existing
+    Telegram message as severity increases rather than sending a new one
+    each cycle. Returns whether the edit succeeded (False if the message
+    was deleted, too old to edit, or Telegram isn't configured)."""
+    settings = get_settings()
+    if not settings.telegram_bot_token:
+        logger.info("Telegram edit skipped (not configured)")
+        return False
+
+    bot = build_bot()
+    try:
+        body = text[:4090]
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=body, parse_mode="Markdown"
+            )
+        except TelegramBadRequest:
+            await bot.edit_message_text(
+                chat_id=chat_id, message_id=message_id, text=body, parse_mode=None
+            )
+        return True
+    except Exception:
+        logger.warning("Failed to edit message %s in chat %s", message_id, chat_id, exc_info=True)
+        return False
+    finally:
+        await bot.session.close()
+
+
 async def broadcast_report(report: Report) -> None:
     """Sends a generated report to every configured Telegram chat.
 

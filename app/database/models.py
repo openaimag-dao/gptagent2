@@ -924,3 +924,34 @@ class BreakoutEvent(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class CriticalAlert(Base):
+    """v5.1 Autonomous Critical Alert System -- a SECOND, independent alert
+    layer alongside AlertLog/AlertRule above, not a replacement for either.
+    Tracks one live "episode" per (category, symbol-or-direction) so
+    escalating severity can EDIT the existing Telegram message instead of
+    spamming a new one -- `telegram_message_ids` is `{chat_id: message_id}`
+    for every chat the live message was sent to. `active=False` means the
+    episode is resolved (either it cooled back down or timed out); the next
+    detection for the same `alert_key` starts a fresh row/message rather
+    than reopening a stale one. Every detection, notified or not, is also
+    logged to the existing AlertLog table (alert_type prefixed
+    "critical_shock:") so Market Memory/Watchdog cover this system too --
+    this table only owns the escalation/message-editing lifecycle, which
+    AlertLog (append-only) has no concept of."""
+
+    __tablename__ = "critical_alerts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    alert_key: Mapped[str] = mapped_column(String(60), index=True)
+    category: Mapped[str] = mapped_column(String(30))
+    tier: Mapped[str] = mapped_column(String(10))
+    symbols: Mapped[list] = mapped_column(JSON, default=list)
+    message: Mapped[str] = mapped_column(Text)
+    telegram_message_ids: Mapped[dict] = mapped_column(JSON, default=dict)
+    active: Mapped[bool] = mapped_column(default=True, index=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    first_triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

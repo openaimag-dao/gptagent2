@@ -1410,6 +1410,138 @@ pass unmodified) -- only the wall-clock cost of each cycle drops.
 
 This section of the README, documenting Phases 1-9 above.
 
+## V5.1: Autonomous Critical Market Alert System
+
+A SECOND, independent alert layer alongside the Smart Alert Engine and
+Configurable Alerts above -- neither is modified or removed by this
+effort. Where those two require a human to define a rule (or ship a
+built-in detector), this system decides for itself: it monitors 12
+markets continuously and pushes a Telegram notification only when a
+price move clears both a magnitude bar *and* a corroboration bar built
+from signals this platform already computes. No user configuration
+exists anywhere in this system by design.
+
+`app/services/shocks/detectors.py` (pure, no I/O) and `app/services/
+shocks/engine.py` (`CriticalAlertEngine`) implement it; table
+`critical_alerts` (migration `0022`) tracks live episodes.
+
+**Monitored assets**: BTC, ETH, SOL, Nasdaq, S&P 500, Dow Jones, DXY,
+Gold, Oil, VIX, the 10-year Treasury yield, and the Crypto Fear & Greed
+Index -- the same symbols the rest of the platform already tracks
+(`app/services/market/`, `app/services/sentiment/`), read here rather
+than fetched anew.
+
+**Time windows -- an honest limitation, not an oversight**: prices are
+collected every `market_data_interval_minutes` (5 minutes in production)
+into a real historical time series (a new `SnapshotBatch`+`AssetPrice`
+row set every cycle, never overwritten). 5 minutes is therefore the
+finest window this system can honestly evaluate; the spec's 1-minute
+window is not implemented, since supporting it would need a dedicated
+per-minute poller this project doesn't have -- standing one up would
+roughly 5x provider API call volume for a window no other engine would
+ever use. Windows actually evaluated: 5m/15m/30m/1h/4h/24h.
+
+**Detection**: each symbol has a 4-tier absolute-move threshold ladder
+(info/important/high/critical, e.g. BTC 3/5/8/10%) checked across every
+window; the worst tier that clears wins, shortest window breaking ties.
+When >= 3 of (BTC, ETH, SOL, Nasdaq, S&P 500, Dow Jones) move the same
+direction at `important`+ simultaneously, one combined Market Shock
+alert fires instead of several individual ones (escalated one tier
+beyond the worst individual reading).
+
+**AI filtering ("Suppress low-quality alerts")**: before a detection can
+notify, its raw tier is checked against a composite 0-100 quality score
+built from 9 signals this platform already computes -- reused, not
+recomputed: volume (the window's `AssetPrice.volume_24h` change),
+realized volatility (stdev of the window's own price series), Market
+Regime alignment (`RegimeDetector`), Trend Strength/Risk Score/Confidence
+Score (`GlobalScoreEngine`), Consensus alignment and Committee alignment
+(the 5-agent orchestrator run *once* per cycle -- `compute_consensus()`
+and `convene_committee()` both derive from that single run, never a
+second agent invocation), and (BTC/ETH/SOL only, best-effort)
+Historical Similarity (`SimilarMarketEngine`). A low score can soften a
+tier by one step; it can never upgrade a tier or suppress an
+unmistakably large move outright.
+
+**Escalation, not spam**: an ongoing episode is tracked by `alert_key`
+(e.g. `shock:BTC:down`, `multi_asset_shock:down`). A worsening tier on
+an active episode *edits* the existing Telegram message
+(`app.telegram.broadcast.edit_text`, new -- the codebase had never
+called `bot.edit_message_text` before this) instead of sending a new
+one; a same-or-declining tier is suppressed outright (no DB write, no
+Telegram call); an episode untouched for 2 hours is marked resolved so
+the next detection starts a fresh message rather than reopening a stale
+one.
+
+**Alert priority**: INFO/IMPORTANT are logged (silent mode -- stored,
+never sent) to the existing `AlertLog` table (`alert_type` prefixed
+`critical_shock:`), so Market Memory/Watchdog's audit trail already
+covers this system with zero new wiring there. Only HIGH/CRITICAL push
+to Telegram.
+
+```
+GET /api/shocks/active, GET /api/shocks/history
+/shocks
+```
+
+629 tests pass (42 new: detectors' threshold/tier/quality/escalation
+logic, the engine's cooldown/escalation/duplicate-suppression paths per
+this feature's explicit test requirements, and formatter coverage),
+`ruff check` clean,
+`node --check app.js` clean, `alembic history` confirms `0022` chains
+onto `0021`.
+
+### Example Telegram alerts
+
+*Momentum alert (single symbol, HIGH tier):*
+
+```
+🚨 *MOMENTUM ALERT* (HIGH)
+
+*BTC*: -9.50% (15m) -- now 60,000.00
+
+Market Regime: Risk Off
+Trend Strength: 60/100
+Risk Score: 60/100
+AI Confidence: 82%
+
+Committee Verdict: SELL (moderate conviction)
+
+Reasons: elevated volume; elevated volatility; consistent with the current market regime; agent consensus agrees; AI committee agrees
+
+Recommendation:
+High downside volatility. Avoid aggressive entries until stabilization;
+consider tightening stops on existing longs.
+
+Expected Scenarios:
+- Risk Off (40%)
+```
+
+*Market shock (synchronized multi-asset move, CRITICAL tier):*
+
+```
+🆘 *MARKET SHOCK* (CRITICAL)
+
+*BTC*: -6.20% (15m) -- now 60,000.00
+*ETH*: -7.40% (15m) -- now 2,500.00
+*SOL*: -11.10% (15m) -- now 100.00
+
+Market Regime: Risk Off
+Trend Strength: 55/100
+Risk Score: 68/100
+AI Confidence: 91%
+
+Committee Verdict: SELL (high conviction)
+
+Reasons: elevated volatility; consistent with the current market regime; agent consensus agrees; AI committee agrees; elevated risk conditions
+
+Recommendation:
+Extreme downside volatility. Avoid aggressive entries until stabilization;
+consider tightening stops on existing longs.
+
+Related Markets: BTC, ETH, SOL
+```
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

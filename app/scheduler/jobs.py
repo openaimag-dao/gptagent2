@@ -36,6 +36,7 @@ from app.services.replay.engine import MarketReplayEngine
 from app.services.research.researcher import AIResearcherEngine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
+from app.services.shocks.engine import build_critical_alert_engine
 from app.services.signals.engine import SignalEngine
 from app.services.terminal.engine import TerminalEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
@@ -57,6 +58,7 @@ SCENARIO_JOB_ID = "compute_scenarios"
 WHALE_ETF_SNAPSHOT_JOB_ID = "snapshot_whale_etf"
 ALERT_CHECK_JOB_ID = "check_alerts"
 ALERT_RULE_CHECK_JOB_ID = "check_alert_rules"
+CRITICAL_ALERT_CHECK_JOB_ID = "check_critical_alerts"
 REPORT_JOB_ID = "generate_scheduled_report"
 ECONOMIC_CALENDAR_JOB_ID = "sync_economic_calendar"
 FEATURE_JOB_ID = "compute_features"
@@ -250,6 +252,19 @@ async def collect_market_data_job() -> None:
         )
     except Exception:
         logger.exception("Market data collection job failed")
+
+
+async def check_critical_alerts_job() -> None:
+    engine = build_critical_alert_engine()
+    try:
+        results = await engine.run_cycle()
+        logger.info(
+            "Critical alert check: %d detections, %d notified",
+            len(results),
+            sum(1 for r in results if r["notified"]),
+        )
+    except Exception:
+        logger.exception("Critical alert check job failed")
 
 
 async def collect_news_job() -> None:
@@ -481,6 +496,14 @@ def start_scheduler() -> AsyncIOScheduler:
         collect_market_data_job,
         trigger=IntervalTrigger(minutes=settings.market_data_interval_minutes),
         id=MARKET_DATA_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        check_critical_alerts_job,
+        trigger=IntervalTrigger(minutes=settings.market_data_interval_minutes),
+        id=CRITICAL_ALERT_CHECK_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,
