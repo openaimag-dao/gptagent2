@@ -50,6 +50,7 @@ from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.signals.engine import SignalEngine
 from app.services.similar_market.engine import SimilarMarketEngine
+from app.services.terminal.engine import TerminalEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
 from app.services.whatif.engine import WhatIfSimulator
 from app.telegram.formatters import (
@@ -58,6 +59,7 @@ from app.telegram.formatters import (
     format_asset_class,
     format_backtest_result,
     format_breakout,
+    format_brief,
     format_committee,
     format_consensus,
     format_conviction,
@@ -66,6 +68,7 @@ from app.telegram.formatters import (
     format_events,
     format_explanation,
     format_global_score,
+    format_historical_comparison,
     format_history,
     format_hypothesis,
     format_hypothesis_list,
@@ -74,8 +77,10 @@ from app.telegram.formatters import (
     format_liquidity,
     format_market_summary,
     format_monte_carlo,
+    format_monthly_performance,
     format_news,
     format_onchain,
+    format_opportunities,
     format_patterns,
     format_portfolio,
     format_probability,
@@ -94,6 +99,7 @@ from app.telegram.formatters import (
     format_strategy_result,
     format_walk_forward,
     format_watchdog,
+    format_weekly_review,
     format_whale_snapshot,
     format_whatif,
 )
@@ -154,6 +160,11 @@ HELP_TEXT = (
     "/consensus -- bullish/bearish/neutral vote tally across all 5 agents\n"
     "/committee -- AI Investment Committee: majority decision, dissent, "
     "supporting/opposing evidence, final recommendation\n"
+    "/brief -- Daily Terminal Brief: committee, risk, top opportunities, portfolio\n"
+    "/opportunities -- Top Opportunities across BTC/ETH/SOL (probability + breakout + advisor)\n"
+    "/compare [days] -- historical comparison vs N days ago (default 7)\n"
+    "/weekly -- Weekly Review: accuracy, alerts, historical comparison\n"
+    "/monthly -- Monthly Performance: accuracy, alerts, historical comparison\n"
     "/scenarios -- probability-weighted forward scenarios\n"
     "/whatif [KEY] -- what-if impact simulator (Fed cuts, DXY drops, Nasdaq crashes, "
     "etc); no args lists scenario keys\n"
@@ -212,6 +223,11 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("agents", "Macro/Crypto/Equity/News/Sentiment agent read-outs"),
     ("consensus", "Bullish/bearish/neutral vote tally across all 5 agents"),
     ("committee", "AI Investment Committee: majority/dissent/evidence/recommendation"),
+    ("brief", "Daily Terminal Brief: committee, risk, top opportunities, portfolio"),
+    ("opportunities", "Top Opportunities across BTC/ETH/SOL"),
+    ("compare", "Historical comparison vs N days ago"),
+    ("weekly", "Weekly Review: accuracy, alerts, historical comparison"),
+    ("monthly", "Monthly Performance: accuracy, alerts, historical comparison"),
     ("scenarios", "Probability-weighted forward scenarios"),
     ("scenario", "Probability-weighted forward scenarios (alias of /scenarios)"),
     ("whatif", "What-if impact simulator (Fed cuts, DXY drops, Nasdaq crashes, etc)"),
@@ -721,6 +737,90 @@ async def cmd_committee(message: Message) -> None:
     )
     verdict = await engine.convene()
     await _answer(message, format_committee(verdict.to_dict() if verdict is not None else None))
+
+
+def _build_terminal_engine() -> TerminalEngine:
+    session_factory = get_session_factory()
+    market_repository = _market_repository()
+    news_repository = NewsRepository(session_factory)
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    global_score_engine = GlobalScoreEngine(
+        session_factory, market_repository, regime_detector, signal_engine
+    )
+    portfolio_engine = PortfolioEngine(session_factory, market_repository)
+    probability_engine = ProbabilityEngine(session_factory)
+    portfolio_advisor = PortfolioAdvisorEngine(
+        session_factory, signal_engine, probability_engine, portfolio_engine
+    )
+    feature_engine = FeatureEngine(session_factory, market_repository)
+    breakout_engine = BreakoutEngine(session_factory, regime_detector, feature_engine)
+    committee_engine = CommitteeEngine(
+        build_agent_orchestrator(), AgentReliabilityEngine(session_factory)
+    )
+    replay_engine = MarketReplayEngine(
+        session_factory,
+        market_repository,
+        news_repository,
+        regime_detector,
+        global_score_engine,
+        build_agent_orchestrator(),
+        AgentReliabilityEngine(session_factory),
+        portfolio_advisor,
+        WhaleIntelligenceEngine(session_factory),
+        ETFIntelligenceEngine(news_repository, session_factory),
+        probability_engine,
+    )
+    return TerminalEngine(
+        session_factory,
+        probability_engine,
+        breakout_engine,
+        portfolio_advisor,
+        portfolio_engine,
+        committee_engine,
+        global_score_engine,
+        replay_engine,
+    )
+
+
+@router.message(Command("brief"))
+async def cmd_brief(message: Message) -> None:
+    engine = _build_terminal_engine()
+    brief = await engine.compute_brief()
+    await _answer(message, format_brief(brief))
+
+
+@router.message(Command("opportunities"))
+async def cmd_opportunities(message: Message) -> None:
+    engine = _build_terminal_engine()
+    opportunities = await engine.compute_top_opportunities()
+    await _answer(message, format_opportunities(opportunities))
+
+
+@router.message(Command("compare"))
+async def cmd_compare_history(message: Message, command: CommandObject) -> None:
+    days_arg = (command.args or "7").strip()
+    try:
+        days = int(days_arg)
+    except ValueError:
+        days = 7
+    engine = _build_terminal_engine()
+    result = await engine.compute_historical_comparison(days_ago=days)
+    await _answer(message, format_historical_comparison(result))
+
+
+@router.message(Command("weekly"))
+async def cmd_weekly(message: Message) -> None:
+    engine = _build_terminal_engine()
+    result = await engine.compute_period_performance(days=7)
+    await _answer(message, format_weekly_review(result))
+
+
+@router.message(Command("monthly"))
+async def cmd_monthly(message: Message) -> None:
+    engine = _build_terminal_engine()
+    result = await engine.compute_period_performance(days=30)
+    await _answer(message, format_monthly_performance(result))
 
 
 @router.message(Command("scenarios"))

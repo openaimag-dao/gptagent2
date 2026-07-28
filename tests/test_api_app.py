@@ -53,6 +53,7 @@ EXPECTED_PREFIXES = {
     "/api/committee",
     "/api/whatif",
     "/api/quality",
+    "/api/terminal",
 }
 
 
