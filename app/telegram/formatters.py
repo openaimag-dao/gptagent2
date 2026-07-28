@@ -457,6 +457,35 @@ def format_portfolio(health: dict) -> str:
     return "\n".join(lines)
 
 
+def format_advice(advice: dict | None, symbol: str, timeframe_arg: str) -> str:
+    if advice is None:
+        return (
+            f"Not enough data yet for {symbol}/{timeframe_arg} -- needs synced history "
+            "(run sync_history.py), a computed Signal snapshot and a computed "
+            "Probability snapshot."
+        )
+    probs = advice["probability"]
+    lines = [
+        f"*{advice['symbol']} ADVICE* ({advice['timeframe']}) -- {advice['recommendation']}",
+        "",
+        advice["reasoning"],
+        "",
+        f"Reference price: {advice['entry_reference_price']:,.2f}",
+        f"ATR: {advice['atr']:.4f}" if advice["atr"] is not None else "ATR: unavailable",
+        f"Probability -- up: {probs['up']}% | down: {probs['down']}% | flat: {probs['flat']}%",
+    ]
+    if advice["stop_loss_price"] is not None:
+        lines.append("")
+        lines.append(f"Stop-loss: {advice['stop_loss_price']:,.2f}")
+        lines.append(f"Take-profit: {advice['take_profit_price']:,.2f}")
+        lines.append(f"Risk:reward: 1:{advice['risk_reward_ratio']:.1f}")
+    if advice["position_size_note"]:
+        lines.append(
+            f"Position size: {advice['position_size_quantity']} -- {advice['position_size_note']}"
+        )
+    return "\n".join(lines)
+
+
 def format_research_result(result: dict | None) -> str:
     if result is None:
         return "No usable result -- unknown event category, no recorded events, or no history."

@@ -4,6 +4,7 @@ from app.database.models import AssetClass, AssetPrice, MarketRegimeSnapshot, Si
 from app.services.analysis.regime import MarketRegime
 from app.services.consensus.engine import ConsensusResult
 from app.telegram.formatters import (
+    format_advice,
     format_asset_class,
     format_consensus,
     format_learning,
@@ -146,3 +147,61 @@ def test_format_learning_present():
     assert "Accuracy: 50.0%" in text
     assert "correct" in text
     assert "wrong" in text
+
+
+def test_format_advice_none():
+    text = format_advice(None, "BTC", "1d")
+    assert "Not enough data yet" in text
+    assert "BTC/1d" in text
+
+
+def test_format_advice_buy_with_levels():
+    advice = {
+        "symbol": "BTC",
+        "timeframe": "1d",
+        "recommendation": "BUY",
+        "reasoning": (
+            "Signal Engine net score 3 (bullish) agrees with the empirical probability read."
+        ),
+        "signal_net_score": 3,
+        "probability": {"up": 60, "down": 20, "flat": 20},
+        "entry_reference_price": 100.0,
+        "atr": 5.0,
+        "stop_loss_price": 90.0,
+        "take_profit_price": 120.0,
+        "risk_reward_ratio": 2.0,
+        "position_size_quantity": 10.0,
+        "position_size_note": (
+            "Sized to risk 1.0% of portfolio equity (100.00) if stopped out at 90.0."
+        ),
+    }
+    text = format_advice(advice, "BTC", "1d")
+    assert "BTC ADVICE" in text
+    assert "BUY" in text
+    assert "Stop-loss: 90.00" in text
+    assert "Take-profit: 120.00" in text
+    assert "Position size: 10.0" in text
+
+
+def test_format_advice_hold_no_levels():
+    advice = {
+        "symbol": "BTC",
+        "timeframe": "1d",
+        "recommendation": "HOLD",
+        "reasoning": (
+            "Signal Engine net score 3 (bullish) disagrees with the empirical probability read."
+        ),
+        "signal_net_score": 3,
+        "probability": {"up": 20, "down": 60, "flat": 20},
+        "entry_reference_price": 100.0,
+        "atr": 5.0,
+        "stop_loss_price": None,
+        "take_profit_price": None,
+        "risk_reward_ratio": None,
+        "position_size_quantity": None,
+        "position_size_note": None,
+    }
+    text = format_advice(advice, "BTC", "1d")
+    assert "HOLD" in text
+    assert "Stop-loss" not in text
+    assert "Position size" not in text

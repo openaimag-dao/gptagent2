@@ -5,7 +5,14 @@ from aiogram.filters import CommandObject
 from aiogram.methods import SendMessage
 from aiogram.types import ErrorEvent, Update
 
-from app.telegram.handlers import BOT_COMMANDS, _answer, cmd_memory, cmd_portfolio, handle_errors
+from app.telegram.handlers import (
+    BOT_COMMANDS,
+    _answer,
+    cmd_advice,
+    cmd_memory,
+    cmd_portfolio,
+    handle_errors,
+)
 
 
 def _bad_request() -> TelegramBadRequest:
@@ -70,6 +77,29 @@ async def test_cmd_portfolio_rejects_bad_entry_price_without_crashing():
     message.answer.assert_awaited_once()
     (text,), kwargs = message.answer.call_args
     assert "Couldn't add position" in text
+
+
+async def test_cmd_advice_reports_unavailable_without_crashing():
+    message = AsyncMock()
+    command = CommandObject(args="BTC 1d")
+    portfolio = AsyncMock()
+    portfolio.get_or_create.return_value.id = 1
+    advisor = AsyncMock()
+    advisor.advise.return_value = None
+
+    with (
+        patch("app.telegram.handlers.PortfolioEngine", return_value=portfolio),
+        patch("app.telegram.handlers.PortfolioAdvisorEngine", return_value=advisor),
+        patch("app.telegram.handlers._market_repository"),
+        patch("app.telegram.handlers.get_session_factory"),
+    ):
+        await cmd_advice(message, command)
+
+    advisor.advise.assert_awaited_once()
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "Not enough data yet" in text
+    assert "BTC/1d" in text
 
 
 async def test_handle_errors_notifies_user_instead_of_staying_silent():
