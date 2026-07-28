@@ -35,6 +35,7 @@ from app.api.onchain import router as onchain_router
 from app.api.patterns import router as patterns_router
 from app.api.portfolio import router as portfolio_router
 from app.api.probability import router as probability_router
+from app.api.quality import router as quality_router
 from app.api.ranking import router as ranking_router
 from app.api.regime import router as regime_router
 from app.api.replay import router as replay_router
@@ -115,6 +116,7 @@ app.include_router(admin_router)
 app.include_router(consensus_router)
 app.include_router(committee_router)
 app.include_router(learning_router)
+app.include_router(quality_router)
 app.include_router(explanation_router)
 app.include_router(status_router)
 app.include_router(risk_router)

@@ -21,6 +21,7 @@ from app.telegram.formatters import (
     format_learning,
     format_market_summary,
     format_onchain,
+    format_quality,
     format_regime,
     format_replay,
     format_risk,
@@ -487,6 +488,48 @@ def test_format_whatif_correlation_direction():
     }
     text = format_whatif(result)
     assert "BTC: bullish (correlation -0.4)" in text
+
+
+def test_format_quality_none():
+    text = format_quality(None, "BTC", "1d")
+    assert "No graded predictions" in text
+    assert "BTC/1d" in text
+
+
+def test_format_quality_present():
+    result = {
+        "symbol": "BTC",
+        "timeframe": "1d",
+        "evaluated_predictions": 10,
+        "accuracy_pct": 70.0,
+        "brier_score": 0.25,
+        "average_error_pct": 20.0,
+        "precision_recall": {
+            "macro_precision_pct": 75.0,
+            "macro_recall_pct": 72.0,
+            "per_class": {
+                "up": {"precision_pct": 80.0, "recall_pct": 75.0, "support": 4},
+                "down": {"precision_pct": 70.0, "recall_pct": 69.0, "support": 4},
+                "flat": {"precision_pct": None, "recall_pct": None, "support": 0},
+            },
+        },
+        "calibration": [
+            {
+                "confidence_bucket": "60-80%",
+                "count": 5,
+                "avg_predicted_confidence_pct": 65.0,
+                "observed_accuracy_pct": 60.0,
+                "calibration_gap_pct": 5.0,
+            }
+        ],
+        "time_horizon_accuracy": [{"horizon_periods": 1, "count": 10, "accuracy_pct": 70.0}],
+    }
+    text = format_quality(result, "BTC", "1d")
+    assert "BTC PREDICTION QUALITY LAB" in text
+    assert "Brier score: 0.25" in text
+    assert "Macro precision: 75.0% | Macro recall: 72.0%" in text
+    assert "60-80%" in text
+    assert "1 period(s)" in text
 
 
 def test_format_replay_none():

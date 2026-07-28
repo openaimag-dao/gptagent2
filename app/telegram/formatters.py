@@ -230,6 +230,49 @@ def format_learning(result: dict | None, symbol: str, timeframe: str) -> str:
     return "\n".join(lines)
 
 
+def format_quality(result: dict | None, symbol: str, timeframe: str) -> str:
+    if result is None:
+        return (
+            f"No graded predictions yet for {symbol}/{timeframe} -- a prediction only "
+            "counts once its horizon has actually elapsed in the stored history."
+        )
+    pr = result["precision_recall"]
+    lines = [
+        f"*{result['symbol']} PREDICTION QUALITY LAB* ({result['timeframe']})",
+        "",
+        f"Evaluated predictions: {result['evaluated_predictions']}",
+        f"Accuracy: {result['accuracy_pct']}%",
+        f"Brier score: {result['brier_score']}",
+        f"Average calibration error: {result['average_error_pct']}%",
+        "",
+        "*Precision / Recall*",
+        f"Macro precision: {pr['macro_precision_pct']}% | Macro recall: {pr['macro_recall_pct']}%",
+    ]
+    for direction, stats in pr["per_class"].items():
+        lines.append(
+            f"- {direction}: precision {stats['precision_pct']}%, recall {stats['recall_pct']}% "
+            f"(support {stats['support']})"
+        )
+    if result["calibration"]:
+        lines.append("")
+        lines.append("*Calibration*")
+        for bucket in result["calibration"]:
+            lines.append(
+                f"- {bucket['confidence_bucket']} (n={bucket['count']}): predicted "
+                f"{bucket['avg_predicted_confidence_pct']}%, observed "
+                f"{bucket['observed_accuracy_pct']}%"
+            )
+    if result["time_horizon_accuracy"]:
+        lines.append("")
+        lines.append("*Accuracy by Horizon*")
+        for row in result["time_horizon_accuracy"]:
+            lines.append(
+                f"- {row['horizon_periods']} period(s) (n={row['count']}): "
+                f"{row['accuracy_pct']}%"
+            )
+    return "\n".join(lines)
+
+
 def format_probability(snapshot: ProbabilitySnapshot | None) -> str:
     if snapshot is None:
         return "Not enough synced history to compute a probability yet."
