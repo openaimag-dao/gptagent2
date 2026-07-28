@@ -34,6 +34,7 @@ from app.api.portfolio import router as portfolio_router
 from app.api.probability import router as probability_router
 from app.api.ranking import router as ranking_router
 from app.api.regime import router as regime_router
+from app.api.replay import router as replay_router
 from app.api.reports import router as reports_router
 from app.api.research import router as research_router
 from app.api.risk import router as risk_router
@@ -111,6 +112,7 @@ app.include_router(learning_router)
 app.include_router(explanation_router)
 app.include_router(status_router)
 app.include_router(risk_router)
+app.include_router(replay_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

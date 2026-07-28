@@ -18,6 +18,7 @@ from app.telegram.formatters import (
     format_learning,
     format_market_summary,
     format_regime,
+    format_replay,
     format_risk,
     format_signal,
     format_single_asset,
@@ -358,3 +359,31 @@ def test_format_global_score_shows_new_subscores_when_present():
     assert "Trend strength: 72" in text
     assert "Risk score: 60" in text
     assert "Confidence score: 85" in text
+
+
+def test_format_replay_none():
+    assert "No market snapshot" in format_replay(None)
+
+
+def test_format_replay_present():
+    snapshot = {
+        "computed_at": "2026-01-01T00:00:00+00:00",
+        "regime": "bull",
+        "health_score": 70,
+        "trend_strength_score": 55,
+        "risk_score": 40,
+        "confidence_score": 60,
+        "consensus": {
+            "bullish_pct": 60.0,
+            "bearish_pct": 30.0,
+            "neutral_pct": 10.0,
+            "conflict_pct": 40.0,
+        },
+        "portfolio_advice": {"symbol": "BTC", "recommendation": "BUY"},
+        "alerts": [{"alert_type": "flash_rally"}],
+    }
+    text = format_replay(snapshot)
+    assert "Bull" in text
+    assert "bullish 60.0%" in text
+    assert "Portfolio advice (BTC): BUY" in text
+    assert "Alerts since previous snapshot: 1" in text

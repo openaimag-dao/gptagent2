@@ -566,6 +566,32 @@ def format_watchdog(entries: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
+def format_replay(snapshot: dict | None) -> str:
+    if snapshot is None:
+        return "No market snapshot has been taken yet -- check back shortly."
+    lines = [
+        f"*MARKET REPLAY* ({snapshot['computed_at']})",
+        "",
+        f"Regime: {(snapshot['regime'] or 'unknown').replace('_', ' ').title()}",
+        (
+            f"Health {snapshot['health_score']} | Trend {snapshot['trend_strength_score']} | "
+            f"Risk {snapshot['risk_score']} | Confidence {snapshot['confidence_score']}"
+        ),
+    ]
+    if snapshot["consensus"]:
+        c = snapshot["consensus"]
+        lines.append(
+            f"Consensus: bullish {c['bullish_pct']}% / bearish {c['bearish_pct']}% / "
+            f"neutral {c['neutral_pct']}% (conflict {c['conflict_pct']}%)"
+        )
+    if snapshot["portfolio_advice"]:
+        pa = snapshot["portfolio_advice"]
+        lines.append(f"Portfolio advice ({pa['symbol']}): {pa['recommendation']}")
+    if snapshot["alerts"]:
+        lines.append(f"Alerts since previous snapshot: {len(snapshot['alerts'])}")
+    return "\n".join(lines)
+
+
 def format_advice(advice: dict | None, symbol: str, timeframe_arg: str) -> str:
     if advice is None:
         return (

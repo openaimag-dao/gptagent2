@@ -104,4 +104,5 @@ class Settings(BaseSettings):
     news_collection_interval_minutes: int = 10
     analysis_interval_minutes: int = 30
     report_interval_minutes: int = 30
+    replay_interval_minutes: int = 15
     http_timeout_seconds: float = 15.0

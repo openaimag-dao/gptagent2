@@ -826,3 +826,38 @@ class RankingSnapshot(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class MarketSnapshot(Base):
+    """v4.0 Market Replay -- a single point-in-time consolidation of every
+    other engine's already-computed latest read (regime, Global Score
+    sub-scores, Consensus, per-agent outputs, Portfolio Advice, macro/crypto
+    prices, whale/ETF snapshots, news, the latest BTC probability read, and
+    alerts logged since the previous snapshot). Nothing here is a new
+    computation except Consensus itself (which has no persistence of its
+    own elsewhere) -- every other field is a direct read of a row another
+    engine already wrote. Every JSON field is nullable and independently
+    optional: a snapshot taken before some engine has ever run just honestly
+    carries `None` for that field rather than a fabricated placeholder."""
+
+    __tablename__ = "market_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    regime: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    health_score: Mapped[int | None] = mapped_column(nullable=True)
+    trend_strength_score: Mapped[int | None] = mapped_column(nullable=True)
+    risk_score: Mapped[int | None] = mapped_column(nullable=True)
+    confidence_score: Mapped[int | None] = mapped_column(nullable=True)
+    consensus: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    agents: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    portfolio_advice: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    macro: Mapped[dict] = mapped_column(JSON, default=dict)
+    crypto: Mapped[dict] = mapped_column(JSON, default=dict)
+    whale: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    etf: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    news: Mapped[dict] = mapped_column(JSON, default=dict)
+    predictions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    alerts: Mapped[list] = mapped_column(JSON, default=list)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
