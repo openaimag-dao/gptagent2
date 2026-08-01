@@ -680,27 +680,202 @@ async function renderStatus() {
   return nodes;
 }
 
+function healthClass(label) {
+  if (label === "Healthy") return "up";
+  if (label === "Stressed") return "down";
+  return "neutral";
+}
+
+function healthPill(healthy) {
+  return el("span", { class: `pill ${healthy ? "available" : "unavailable"}` }, healthy ? "healthy" : "unhealthy");
+}
+
+// v5.4 Next Generation Market Watchdog -- the central Market Monitoring Hub.
+// Extends (never replaces) the original Watchdog: Alert History below is the
+// exact same AlertLog/MemoryEngine data the page always showed, now embedded
+// alongside Current Market Status/Market Overview/Crypto+Macro Overview/
+// On-Chain Overview/AI Status/What Changed/Provider Status -- one combined
+// /api/watchdog fetch, matching "reuse existing engine outputs, refresh only
+// changed sections" (no per-section polling loop; every number here is real,
+// never fabricated -- "unavailable" renders as unavailable).
 async function renderWatchdog() {
-  const data = await safe("/api/memory?category=alerts&limit=15");
-  const nodes = [el("h2", {}, "Market Watchdog")];
-  if (!data || !data.entries.length) {
-    nodes.push(el("p", { class: "sub" }, "No detections logged yet."));
+  const nodes = [el("h2", {}, "Market Watchdog -- Market Monitoring Hub")];
+  const d = await safe("/api/watchdog");
+  if (!d) {
+    nodes.push(el("p", { class: "error" }, "Watchdog dashboard unavailable."));
     return nodes;
   }
+
+  const cs = d.current_status;
+  nodes.push(el("h2", {}, "Current Market Status"));
+  nodes.push(
+    el("div", { class: "grid" }, [
+      card("Market Health", cs.market_health, null, healthClass(cs.market_health)),
+      card("Last Update", (cs.last_update || "never").slice(0, 16).replace("T", " ")),
+      card("Next Scan", (cs.next_scan || "unknown").slice(0, 16).replace("T", " ")),
+      card("Scan Duration", cs.scan_duration_ms != null ? `${cs.scan_duration_ms}ms` : "n/a"),
+      card("Brain", cs.brain_status),
+      card("Replay", cs.replay_status),
+      card("Committee", cs.committee_status),
+      card("Consensus", cs.consensus_status),
+    ])
+  );
+
+  const mo = d.market_overview;
+  nodes.push(el("h2", {}, "Market Overview"));
+  nodes.push(
+    el("div", { class: "grid" }, [
+      card("Regime", (mo.regime || "unknown").replace(/_/g, " ")),
+      card("Trend", mo.trend || "n/a"),
+      card("Trend Strength", fmtNum(mo.trend_strength, 0)),
+      card("Momentum", fmtNum(mo.momentum, 1)),
+      card("Volatility", fmtNum(mo.volatility, 0)),
+      card("Confidence", fmtNum(mo.confidence, 0)),
+      card("Risk Score", fmtNum(mo.risk_score, 0)),
+      card("Liquidity Score", fmtNum(mo.liquidity_score, 0)),
+      card("Market Intelligence Score", fmtNum(mo.market_intelligence_score, 0)),
+    ])
+  );
+
+  nodes.push(el("h2", {}, "Crypto Overview"));
   nodes.push(
     table(
-      ["Time", "Alert type", "Tier", "State", "Message"],
-      data.entries.map((e) => [
-        e.timestamp.slice(0, 16).replace("T", " "),
-        e.summary.alert_type,
-        e.summary.conviction_tier,
-        e.summary.broadcast
-          ? el("span", { class: "up" }, "sent")
-          : el("span", { class: "sub" }, "suppressed"),
-        e.summary.message,
+      ["Symbol", "Price", "24h %", "1h %", "15m %", "Trend", "Volume", "Momentum", "AI Bias"],
+      d.crypto_overview.map((r) =>
+        r.available
+          ? [
+              r.symbol,
+              fmtNum(r.price),
+              el("span", { class: changeClass(r.change_pct_24h) }, fmtPct(r.change_pct_24h)),
+              el("span", { class: changeClass(r.change_pct_1h) }, fmtPct(r.change_pct_1h)),
+              el("span", { class: changeClass(r.change_pct_15m) }, fmtPct(r.change_pct_15m)),
+              r.trend || "n/a",
+              r.volume_24h != null ? fmtNum(r.volume_24h, 0) : "n/a",
+              r.momentum != null ? fmtNum(r.momentum, 1) : "n/a",
+              r.ai_bias || "n/a",
+            ]
+          : [r.symbol, el("span", { class: "sub" }, "unavailable"), "", "", "", "", "", "", ""]
+      )
+    )
+  );
+
+  nodes.push(el("h2", {}, "Macro Overview"));
+  nodes.push(
+    table(
+      ["Symbol", "Price", "Direction", "Daily %", "Trend", "Impact on Crypto"],
+      d.macro_overview.map((r) =>
+        r.available
+          ? [
+              r.name,
+              fmtNum(r.price),
+              r.direction || "n/a",
+              el("span", { class: changeClass(r.daily_pct) }, fmtPct(r.daily_pct)),
+              r.trend || "n/a",
+              r.impact_on_crypto || "n/a",
+            ]
+          : [r.name, el("span", { class: "sub" }, "unavailable"), "", "", "", ""]
+      )
+    )
+  );
+
+  const oc = d.onchain_overview;
+  nodes.push(el("h2", {}, "On-Chain Overview"));
+  if (!oc.available) {
+    nodes.push(el("p", { class: "sub" }, `Unavailable${oc.reason ? " -- " + oc.reason : ""}`));
+  } else {
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Whale Positioning", (oc.whales && oc.whales.classification) || "unknown"),
+        card("Funding", oc.funding != null ? oc.funding : "n/a"),
+        card("Open Interest", oc.open_interest != null ? fmtNum(oc.open_interest, 0) : "n/a"),
+        card("Exchange Flows", "unavailable"),
+        card("Stablecoin Flow", "unavailable"),
+        card("TVL", "unavailable"),
+      ])
+    );
+  }
+
+  const ai = d.ai_status;
+  nodes.push(el("h2", {}, "AI Status"));
+  if (ai.computed_at == null) {
+    nodes.push(el("p", { class: "sub" }, "No Watchdog cycle has run yet -- check back shortly."));
+  } else {
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Committee Opinion", ai.committee_opinion || "n/a"),
+        card("Prediction Confidence", fmtNum(ai.prediction_confidence, 0)),
+        card(
+          "Expected Scenario",
+          ai.expected_scenario ? `${ai.expected_scenario} (${ai.expected_scenario_pct}%)` : "n/a"
+        ),
+      ])
+    );
+    if (ai.consensus) {
+      nodes.push(
+        el(
+          "p",
+          { class: "sub" },
+          `Consensus: bullish ${ai.consensus.bullish_pct}% / bearish ${ai.consensus.bearish_pct}% / ` +
+            `neutral ${ai.consensus.neutral_pct}%`
+        )
+      );
+    }
+    if (ai.highest_risk) nodes.push(el("p", {}, `Highest Risk: ${ai.highest_risk}`));
+    if (ai.biggest_opportunity) nodes.push(el("p", {}, `Biggest Opportunity: ${ai.biggest_opportunity}`));
+  }
+
+  const wc = d.what_changed;
+  nodes.push(el("h2", {}, "What Changed"));
+  if (!wc.available || (!wc.fields.length && !wc.events.length)) {
+    nodes.push(el("p", { class: "sub" }, "No significant changes since the last cycle."));
+  } else {
+    if (wc.fields.length) {
+      nodes.push(
+        table(
+          ["Field", "Previous", "Current"],
+          wc.fields.map((f) => [f.label, String(f.prev), String(f.curr)])
+        )
+      );
+    }
+    if (wc.events.length) {
+      nodes.push(el("ul", {}, wc.events.map((e) => el("li", {}, e.message))));
+    }
+  }
+
+  nodes.push(el("h2", {}, "Provider Status"));
+  nodes.push(
+    table(
+      ["Provider", "Status", "Latency", "Reconnects", "Last Update"],
+      d.provider_status.map((p) => [
+        p.name,
+        p.configured ? healthPill(p.healthy) : el("span", { class: "sub" }, "not configured"),
+        p.latency_ms != null ? `${p.latency_ms}ms` : "n/a",
+        p.reconnect_count != null ? String(p.reconnect_count) : "n/a",
+        p.last_successful_update ? p.last_successful_update.slice(0, 16).replace("T", " ") : "never",
       ])
     )
   );
+
+  nodes.push(el("h2", {}, "Alert History"));
+  if (!d.alert_history.length) {
+    nodes.push(el("p", { class: "sub" }, "No detections logged yet."));
+  } else {
+    nodes.push(
+      table(
+        ["Time", "Alert type", "Tier", "State", "Message"],
+        d.alert_history.map((e) => [
+          e.timestamp.slice(0, 16).replace("T", " "),
+          e.summary.alert_type,
+          e.summary.conviction_tier,
+          e.summary.broadcast
+            ? el("span", { class: "up" }, "sent")
+            : el("span", { class: "sub" }, "suppressed"),
+          e.summary.message,
+        ])
+      )
+    );
+  }
+
   return nodes;
 }
 

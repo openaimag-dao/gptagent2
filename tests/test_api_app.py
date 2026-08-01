@@ -57,6 +57,7 @@ EXPECTED_PREFIXES = {
     "/api/alerts",
     "/api/shocks",
     "/api/technical",
+    "/api/watchdog",
 }
 
 

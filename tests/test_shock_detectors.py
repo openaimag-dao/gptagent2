@@ -1,16 +1,19 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from app.services.shocks.detectors import (
     best_window_detection,
     classify_tier,
     committee_alignment_score,
     compute_realized_volatility,
+    compute_window_changes,
     consensus_alignment_score,
     decide_alert_action,
     detect_multi_asset_shock,
     gate_severity,
     historical_similarity_score,
     regime_alignment_score,
+    regime_direction_bucket,
     score_alert_quality,
     should_notify,
     volatility_score,
@@ -202,6 +205,35 @@ def test_compute_realized_volatility_positive_for_swinging_prices():
     result = compute_realized_volatility([100.0, 105.0, 98.0, 103.0])
     assert result is not None
     assert result > 0
+
+
+def test_regime_direction_bucket_classifies_labels():
+    assert regime_direction_bucket("bear") == "bearish"
+    assert regime_direction_bucket("strong_bull") == "bullish"
+    assert regime_direction_bucket("sideways") == "neutral"
+    assert regime_direction_bucket(None) == "neutral"
+
+
+def _row(price: float, minutes_ago: int, now: datetime) -> SimpleNamespace:
+    return SimpleNamespace(price=price, recorded_at=now - timedelta(minutes=minutes_ago))
+
+
+def test_compute_window_changes_empty_history_returns_all_none():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    changes = compute_window_changes([], now, windows={"15m": 15, "1h": 60})
+    assert changes == {"15m": None, "1h": None}
+
+
+def test_compute_window_changes_picks_nearest_row_per_window():
+    now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    history = [
+        _row(100.0, 65, now),
+        _row(110.0, 16, now),
+        _row(120.0, 0, now),
+    ]
+    changes = compute_window_changes(history, now, windows={"15m": 15, "1h": 60})
+    assert changes["15m"] == (120.0 - 110.0) / 110.0 * 100
+    assert changes["1h"] == (120.0 - 100.0) / 100.0 * 100
 
 
 def test_regime_alignment_score_matches_direction():

@@ -17,6 +17,7 @@ Omitted rather than faked.
 
 import statistics
 from datetime import datetime, timedelta
+from typing import Any
 
 from app.services.common.scoring import clamp, weighted_average
 
@@ -89,6 +90,33 @@ def classify_tier(symbol: str, pct_change: float) -> str | None:
     return tier
 
 
+def compute_window_changes(
+    history: list[Any], now: datetime, windows: dict[str, int] = WINDOWS_MINUTES
+) -> dict[str, float | None]:
+    """Pure: given ascending-by-`recorded_at` rows (each needs `.price` and
+    `.recorded_at`, e.g. AssetPrice) and the current time, returns the %
+    change from the row closest to `now - window` to the latest row, for
+    every window. Nearest-neighbor rather than exact-timestamp match, since
+    rows land every `market_data_interval_minutes` (~5 min in production),
+    not on the window boundary itself. Shared by CriticalAlertEngine
+    (app/services/shocks/engine.py) and the v5.4 Watchdog hub's Crypto/Macro
+    Overview so both read the exact same windowing logic rather than each
+    reimplementing it."""
+    if not history:
+        return {w: None for w in windows}
+    prices = [float(row.price) for row in history]
+    latest_price = prices[-1]
+    changes: dict[str, float | None] = {}
+    for window, minutes in windows.items():
+        target = now - timedelta(minutes=minutes)
+        earlier_row = min(history, key=lambda r: abs((r.recorded_at - target).total_seconds()))
+        earlier_price = float(earlier_row.price)
+        changes[window] = (
+            (latest_price - earlier_price) / earlier_price * 100 if earlier_price else None
+        )
+    return changes
+
+
 def best_window_detection(symbol: str, changes_by_window: dict[str, float | None]) -> dict | None:
     """Picks the single (window, tier) worth alerting on out of every window
     checked for this symbol: highest tier first, shortest window (more
@@ -155,7 +183,12 @@ def compute_realized_volatility(prices: list[float]) -> float | None:
     return statistics.stdev(returns)
 
 
-def _direction_bucket(label: str | None) -> str:
+def regime_direction_bucket(label: str | None) -> str:
+    """ "bullish"/"bearish"/"neutral" bucket for a regime (or similar) label
+    string -- shared by this module's regime_alignment_score() and the
+    v5.4 Watchdog hub's Market Overview "Trend" field, so both read the
+    exact same bull/bear market-regime word lists rather than each keeping
+    its own copy."""
     if label is None:
         return "neutral"
     value = label.lower()
@@ -172,7 +205,7 @@ def regime_alignment_score(regime_value: str | None, move_direction: str) -> flo
     either direction."""
     if regime_value is None:
         return None
-    bucket = _direction_bucket(regime_value)
+    bucket = regime_direction_bucket(regime_value)
     if bucket == "neutral":
         return 50.0
     return 100.0 if bucket == move_direction else 0.0
