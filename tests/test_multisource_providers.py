@@ -21,17 +21,22 @@ def _provider_with_fake_cache(provider_cls, **kwargs) -> object:
 async def test_stock_provider_uses_twelvedata_when_it_succeeds():
     twelvedata = AsyncMock()
     twelvedata.configured = True
-    twelvedata.get_quotes.return_value = {
-        "NASDAQ": (18000.0, 17900.0, 500.0),
-        "AAPL": (150.0, 148.0, 1000.0),
-    }
+    # Two independent calls now (indices, then Magnificent 7) -- see
+    # multisource_stocks.py's module docstring for why they're split.
+    twelvedata.get_quotes.side_effect = [
+        {"NASDAQ": (18000.0, 17900.0, 500.0)},
+        {"AAPL": (150.0, 148.0, 1000.0)},
+    ]
     provider = _provider_with_fake_cache(
         MultiSourceStockProvider, twelvedata=twelvedata, alphavantage=AsyncMock(configured=False)
     )
 
-    with patch(
-        "app.services.market.multisource_stocks.download_last_two_closes",
-        new=AsyncMock(return_value={}),
+    with (
+        patch(
+            "app.services.market.multisource_stocks.download_last_two_closes",
+            new=AsyncMock(return_value={}),
+        ),
+        patch("app.services.market.multisource_stocks.asyncio.sleep", new=AsyncMock()),
     ):
         quotes = await provider.fetch()
 
@@ -42,12 +47,50 @@ async def test_stock_provider_uses_twelvedata_when_it_succeeds():
     # symbols Twelve Data didn't return and yfinance mock returned nothing for
     # should simply be absent, not crash the whole fetch
     assert "SPX" not in by_symbol
+    assert twelvedata.get_quotes.await_count == 2
+
+
+async def test_stock_provider_staggers_magnificent_seven_call_away_from_indices():
+    twelvedata = AsyncMock()
+    twelvedata.configured = True
+    twelvedata.get_quotes.side_effect = [
+        {"NASDAQ": (18000.0, 17900.0, 500.0)},
+        {"AAPL": (150.0, 148.0, 1000.0)},
+    ]
+    provider = _provider_with_fake_cache(
+        MultiSourceStockProvider, twelvedata=twelvedata, alphavantage=AsyncMock(configured=False)
+    )
+
+    with (
+        patch(
+            "app.services.market.multisource_stocks.download_last_two_closes",
+            new=AsyncMock(return_value={}),
+        ),
+        patch(
+            "app.services.market.multisource_stocks.asyncio.sleep", new=AsyncMock()
+        ) as sleep_mock,
+    ):
+        await provider.fetch()
+
+    # Only the Magnificent 7 call is staggered -- the 4-credit indices call
+    # fires immediately since it's already well under Twelve Data's
+    # 8-credit/minute cap on its own.
+    sleep_mock.assert_awaited_once()
+    requested_symbols = [call.args[0] for call in twelvedata.get_quotes.await_args_list]
+    assert "NASDAQ" in requested_symbols[0]
+    assert "AAPL" in requested_symbols[1]
 
 
 async def test_stock_provider_falls_back_to_alphavantage_for_missing_mag7():
     twelvedata = AsyncMock()
     twelvedata.configured = True
-    twelvedata.get_quotes.return_value = {"NASDAQ": (18000.0, 17900.0, 500.0)}
+    # Indices succeed (4 credits, under budget); Magnificent 7 still fails
+    # (e.g. Twelve Data still rate-limited for other reasons) -- Alpha
+    # Vantage should cover the gap.
+    twelvedata.get_quotes.side_effect = [
+        {"NASDAQ": (18000.0, 17900.0, 500.0)},
+        TwelveDataError("rate limited"),
+    ]
 
     alphavantage = AsyncMock()
     alphavantage.configured = True
@@ -57,13 +100,17 @@ async def test_stock_provider_falls_back_to_alphavantage_for_missing_mag7():
         MultiSourceStockProvider, twelvedata=twelvedata, alphavantage=alphavantage
     )
 
-    with patch(
-        "app.services.market.multisource_stocks.download_last_two_closes",
-        new=AsyncMock(return_value={}),
+    with (
+        patch(
+            "app.services.market.multisource_stocks.download_last_two_closes",
+            new=AsyncMock(return_value={}),
+        ),
+        patch("app.services.market.multisource_stocks.asyncio.sleep", new=AsyncMock()),
     ):
         quotes = await provider.fetch()
 
     by_symbol = {q.symbol: q for q in quotes}
+    assert by_symbol["NASDAQ"].source == "twelvedata"
     assert by_symbol["AAPL"].source == "alphavantage"
     # Alpha Vantage should only ever be asked for Magnificent 7 tickers,
     # never index symbols like SPX/DJI/RUT/NASDAQ.
@@ -118,9 +165,12 @@ async def test_stock_provider_survives_twelvedata_error():
         MultiSourceStockProvider, twelvedata=twelvedata, alphavantage=AsyncMock(configured=False)
     )
 
-    with patch(
-        "app.services.market.multisource_stocks.download_last_two_closes",
-        new=AsyncMock(return_value={"^IXIC": (18000.0, 17900.0, 500.0)}),
+    with (
+        patch(
+            "app.services.market.multisource_stocks.download_last_two_closes",
+            new=AsyncMock(return_value={"^IXIC": (18000.0, 17900.0, 500.0)}),
+        ),
+        patch("app.services.market.multisource_stocks.asyncio.sleep", new=AsyncMock()),
     ):
         quotes = await provider.fetch()
 
