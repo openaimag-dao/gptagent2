@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -161,6 +162,34 @@ async def test_ai_filter_reads_from_latest_watchdog_snapshot_not_a_fresh_agent_r
     # score highly and clear the notify-eligible gate at "high"+ tier.
     assert detection["quality_score"] is not None
     assert detection["quality_score"] > 50
+
+
+async def test_ai_filter_handles_decimal_committee_confidence_pct_from_postgres():
+    # Regression test: WatchdogSnapshot.committee_confidence_pct is a
+    # Numeric(6,2) column -- asyncpg returns decimal.Decimal for it in
+    # production (unlike the plain float SimpleNamespace mocks used
+    # elsewhere in this file), and passing a Decimal straight into
+    # score_alert_quality()'s weighted_average() raised
+    # "TypeError: unsupported operand type(s) for *: 'float' and
+    # 'decimal.Decimal'" on every single run_cycle() call in production,
+    # silently swallowed by compute_market_scan_job's try/except so the
+    # scanner never persisted a single detection.
+    watchdog_snapshot = SimpleNamespace(
+        regime="risk_off",
+        risk_score=70,
+        confidence_score=40,
+        committee_decision="SELL",
+        committee_confidence_pct=Decimal("75.00"),
+        consensus={"bullish_pct": 20.0, "bearish_pct": 70.0, "agreement_score": 70.0},
+    )
+    engine, deps, _ = _engine(watchdog_snapshot=watchdog_snapshot)
+    deps["universe"].get_universe.return_value = [_universe_entry("PEPE", "pepe", 200)]
+    deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 1.0, -9.0)]
+
+    result = await engine.run_cycle()
+
+    detection = result["processed"][0]
+    assert detection["quality_score"] is not None
 
 
 def test_engine_module_never_imports_telegram():

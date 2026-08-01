@@ -218,7 +218,17 @@ class MarketScannerEngine:
             "risk_score": snapshot.risk_score,
             "confidence_score": snapshot.confidence_score,
             "committee_decision": snapshot.committee_decision,
-            "committee_majority_pct": snapshot.committee_confidence_pct,
+            # committee_confidence_pct is a Numeric(6,2) column -- asyncpg
+            # returns decimal.Decimal for it, which breaks weighted_average's
+            # float multiplication in score_alert_quality() if passed through
+            # unconverted (Decimal * float raises TypeError). Cast at the
+            # DB-row boundary, same as every other Decimal-column read in
+            # this codebase (e.g. universe.py's float(data["price"])).
+            "committee_majority_pct": (
+                float(snapshot.committee_confidence_pct)
+                if snapshot.committee_confidence_pct is not None
+                else None
+            ),
             "consensus": consensus or None,
         }
 
