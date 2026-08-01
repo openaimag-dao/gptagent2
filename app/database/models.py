@@ -955,3 +955,35 @@ class CriticalAlert(Base):
     first_triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     last_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TechnicalAnalysisSnapshot(Base):
+    """v5.3 TradingView MCP Integration -- the combined, multi-timeframe AI
+    Technical Score for one symbol (app/services/technical/engine.py).
+    Deliberately does NOT store raw indicator values -- "never expose raw
+    indicator values directly to users, AI Brain must interpret them" --
+    only the interpreted score/probabilities/signals a consumer (API,
+    Telegram, the technical specialist agent, Smart Alerts) is meant to
+    see. `source` is "tradingview" when TradingView MCP answered, "local"
+    when this project's own synced OHLCV history did instead."""
+
+    __tablename__ = "technical_analysis_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    source: Mapped[str] = mapped_column(String(20))
+    bullish_score: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    bearish_score: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    trend_strength: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    momentum: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    volatility: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    breakout_probability: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    breakdown_probability: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    active_signals: Mapped[list] = mapped_column(JSON, default=list)
+    timeframes_covered: Mapped[list] = mapped_column(JSON, default=list)
+    support: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    resistance: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

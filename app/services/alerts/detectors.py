@@ -214,3 +214,26 @@ def detect_oi_spike(
             "curr_oi_change_pct": curr_oi_change_pct,
         },
     }
+
+
+def detect_technical_alignment(alignment: dict | None, symbol: str = "BTC") -> dict | None:
+    """v5.3: multiple technical indicators aligning at once -- reuses
+    app.services.technical.signals.detect_high_confidence_alignment's
+    result rather than recomputing it; this just translates that result
+    into the Smart Alert Engine's detector contract as its 11th detector."""
+    if alignment is None:
+        return None
+    signal = alignment["signal"]
+    is_buy = signal == "HIGH_CONFIDENCE_BUY"
+    reasons = ", ".join(alignment["reasons"])
+    return {
+        "alert_type": "high_confidence_buy" if is_buy else "high_confidence_sell",
+        "message": (
+            f"{symbol} HIGH CONFIDENCE {'BUY' if is_buy else 'SELL'} SIGNAL -- "
+            f"{len(alignment['reasons'])} aligned technical signals: {reasons}."
+        ),
+        # More aligned reasons -> higher confidence; 2 is the floor
+        # (detect_high_confidence_alignment never fires below that).
+        "confidence_pct": round(clamp(60 + len(alignment["reasons"]) * 10)),
+        "data": {"symbol": symbol, "signal": signal, "reasons": alignment["reasons"]},
+    }

@@ -38,6 +38,7 @@ from app.telegram.formatters import (
     format_signal,
     format_single_asset,
     format_status,
+    format_technical,
     format_watchdog,
     format_weekly_review,
     format_whatif,
@@ -807,3 +808,58 @@ def test_format_active_shocks_present():
     text = format_active_shocks([row])
     assert "CRITICAL" in text
     assert "BTC, ETH" in text
+
+
+def test_format_technical_none():
+    text = format_technical("BTC", None)
+    assert "No technical analysis available for BTC" in text
+
+
+def test_format_technical_never_exposes_raw_indicators():
+    result = {
+        "source": "local",
+        "bullish_score": 62.0,
+        "bearish_score": 38.0,
+        "trend_strength": 55.0,
+        "momentum": 3.2,
+        "volatility": 40.0,
+        "breakout_probability": 65.0,
+        "breakdown_probability": 20.0,
+        "confidence": 70.0,
+        "support": 60000.0,
+        "resistance": 65000.0,
+        "timeframes_covered": ["1h", "4h", "1d"],
+        "active_signals": ["TechnicalBullish", "RSIOversold"],
+        "high_confidence_alignment": None,
+    }
+    text = format_technical("BTC", result)
+    assert "BTC" in text
+    assert "Bullish 62" in text
+    assert "TechnicalBullish" in text
+    for raw_term in ("RSI:", "MACD:", "rsi=", "macd_line"):
+        assert raw_term not in text
+
+
+def test_format_technical_includes_high_confidence_alignment():
+    result = {
+        "source": "local",
+        "bullish_score": 80.0,
+        "bearish_score": 20.0,
+        "trend_strength": 70.0,
+        "momentum": 5.0,
+        "volatility": 30.0,
+        "breakout_probability": 75.0,
+        "breakdown_probability": 10.0,
+        "confidence": 85.0,
+        "support": 60000.0,
+        "resistance": 65000.0,
+        "timeframes_covered": ["1d"],
+        "active_signals": [],
+        "high_confidence_alignment": {
+            "signal": "HIGH_CONFIDENCE_BUY",
+            "reasons": ["RSI oversold", "MACD bullish crossover"],
+        },
+    }
+    text = format_technical("BTC", result)
+    assert "HIGH CONFIDENCE BUY" in text
+    assert "RSI oversold" in text

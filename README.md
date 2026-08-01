@@ -1542,6 +1542,178 @@ consider tightening stops on existing longs.
 Related Markets: BTC, ETH, SOL
 ```
 
+## V5.3: TradingView MCP Integration
+
+TradingView MCP as the **Institutional Technical Analysis Provider** --
+a new provider slotted into the existing Provider Layer, not a
+replacement for anything. Its job is not prices (the existing market
+providers already do that); it's professional multi-timeframe technical
+analysis, normalized before it ever reaches the AI Brain:
+
+```
+TradingView MCP -> TradingView Adapter -> Normalizer -> Provider Layer -> Event Bus -> Existing Engines
+```
+
+`app/services/technical/tradingview_client.py` (`TradingViewMCPClient`)
+is the adapter -- optional, unconfigured by default (`tradingview_mcp_url`
+/ `tradingview_mcp_api_key` in settings, mirroring the
+`MultiSourceMacroProvider` pattern). `app/services/technical/
+normalizer.py` normalizes either TradingView's raw JSON or this
+project's own synced OHLCV history into one `NormalizedIndicators`
+shape, so `app/services/technical/provider.py`
+(`TechnicalAnalysisProvider`) -- the Provider Layer entry point -- never
+cares which source answered. **Failover is automatic and honest**: no
+MCP endpoint configured, or a configured one that errors, falls back to
+indicators computed locally from this platform's already-synced
+history; a symbol/timeframe neither source can answer returns `None`
+rather than a fabricated reading. This is the same "never invent data"
+discipline as the OnChain and Whale Intelligence engines.
+
+### 1. Files Added
+
+```
+app/services/technical/__init__.py
+app/services/technical/indicators.py       -- EMA, Bollinger Bands, VWMA, Stochastic RSI, ROC,
+                                               Momentum, CCI, ADX, Pivot Points, Support/Resistance
+app/services/technical/resampling.py       -- daily -> weekly candle resampling (ISO week grouping)
+app/services/technical/tradingview_client.py -- TradingView MCP adapter (optional, honest fallback)
+app/services/technical/normalizer.py       -- NormalizedIndicators + normalize_local/normalize_tradingview
+app/services/technical/provider.py         -- TechnicalAnalysisProvider (the Provider Layer entry point)
+app/services/technical/scoring.py          -- AI Technical Score (bullish/bearish/trend/momentum/
+                                               volatility/breakout/breakdown/confidence)
+app/services/technical/signals.py          -- signal-event detection + Smart Alert alignment logic
+app/services/technical/engine.py           -- TechnicalAnalysisEngine (composes the above, persists snapshots)
+app/services/agents/technical_agent.py     -- 6th AI Brain agent (TechnicalAgent)
+app/api/technical.py                       -- GET /api/technical/{symbol}
+alembic/versions/0023_v5_technical_analysis.py -- technical_analysis_snapshots table
+tests/test_technical_indicators.py
+tests/test_technical_resampling.py
+tests/test_technical_normalizer.py
+tests/test_technical_provider.py
+tests/test_technical_scoring.py
+tests/test_technical_signals.py
+tests/test_technical_engine.py
+```
+
+### 2. Files Modified
+
+```
+app/config/settings.py            -- tradingview_mcp_url / tradingview_mcp_api_key (optional)
+.env.example                      -- mirrored settings block
+app/database/models.py            -- TechnicalAnalysisSnapshot model (interpreted fields only)
+app/services/agents/orchestrator.py -- AgentOrchestrator gains a 6th agent (technical); every
+                                        downstream consumer (Consensus/Committee/Replay/Critical
+                                        Alerts) iterates agent_outputs generically, so none of them
+                                        needed a single line changed
+app/services/alerts/detectors.py  -- detect_technical_alignment() (11th Smart Alert detector)
+app/services/alerts/engine.py     -- AlertEngine wires TechnicalAnalysisEngine, checks alignment
+                                      every cycle alongside the existing 10 detectors
+app/main.py                       -- registers technical_router
+app/scheduler/jobs.py             -- compute_technical_analysis_job (every analysis_interval_minutes)
+app/telegram/formatters.py        -- format_technical() (interpreted fields only)
+app/telegram/handlers.py          -- /technical SYMBOL command
+app/static/dashboard/index.html   -- "Technical Analysis" nav entry
+app/static/dashboard/app.js       -- renderTechnical() page
+tests/test_agents.py, tests/test_alert_detectors.py, tests/test_telegram_formatters.py,
+tests/test_api_app.py             -- coverage for all of the above
+```
+
+### 3. New Provider
+
+`TechnicalAnalysisProvider` (`app/services/technical/provider.py`), the
+first provider in the Provider Layer built specifically to sit on top of
+another optional MCP-style source rather than a REST market-data API.
+Any future MCP or third-party analysis provider follows the same shape:
+an adapter with a `.configured` property, a normalizer function that
+maps its raw payload onto `NormalizedIndicators`, and honest `None` on
+anything it can't answer.
+
+### 4. New Events
+
+`TechnicalBullish`, `TechnicalBearish`, `GoldenCross`, `DeathCross`,
+`RSIOverbought`, `RSIOversold`, `MACDBullishCrossover`,
+`MACDBearishCrossover`, `SupportBroken`, `ResistanceBroken`,
+`TrendAcceleration`, `TrendWeakening` -- every event the mission asked
+for, generated by `app/services/technical/signals.py` and fed into
+`active_signals` on every `TechnicalAnalysisEngine.analyze()` call.
+Two or more aligned events (e.g. RSI Oversold + MACD Bullish Crossover +
+Support Held) additionally produce a `HIGH_CONFIDENCE_BUY` /
+`HIGH_CONFIDENCE_SELL` alignment, which `detect_technical_alignment()`
+turns into a Smart Alert broadcast to Telegram -- the mission's worked
+examples, implemented directly.
+
+### 5. Indicator Coverage
+
+Collected: RSI, MACD, EMA, SMA (20/50/200), VWMA, ATR, ADX, CCI,
+Momentum, ROC, Stochastic RSI, Bollinger Bands, Pivot Points, Support,
+Resistance -- 15 of the mission's 19. Honestly scoped out rather than
+faked: **Ichimoku, Parabolic SAR, SuperTrend** (meaningfully more complex
+than this platform's existing indicator math for the value they'd add
+over what's already collected) and **Volume Profile** (no intraday
+volume-at-price data exists anywhere in this project's history sync).
+Multi-timeframe: 1H/4H/1D are computed from this project's own synced
+OHLCV history (`Timeframe.ONE_HOUR/FOUR_HOUR/DAILY`); 1W is a real
+secondary computation (`resampling.py` groups stored daily candles by
+ISO week -- not fabricated, genuinely derived); 1m/5m/15m/30m are only
+ever answerable through a configured TradingView MCP endpoint, since no
+intraday OHLCV data this granular is synced locally -- with no endpoint
+configured, `get_indicators()` honestly returns `None` for those four
+rather than inventing a reading. Symbol coverage: BTC/ETH/SOL plus the
+indices/macro symbols already in the history registry (SPX, NASDAQ, DJI,
+DXY, GOLD, VIX, ...); BNB/LINK/XRP/DOGE/ADA/AVAX/SPY/QQQ/RUSSELL/US10Y/
+Oil are real gaps in what's synced locally -- a configured TradingView
+MCP endpoint is the only path to cover them without duplicating this
+project's history-sync infrastructure.
+
+### 6. AI Enhancements
+
+- **6th AI Brain agent** (`TechnicalAgent`): folds the technical read
+  into `AgentOrchestrator.run_all()` alongside Macro/Crypto/Equity/News/
+  Sentiment, so Consensus, Committee, Replay and Critical Alerts all see
+  it automatically.
+- **AI Technical Score**: bullish/bearish score, trend strength,
+  momentum, volatility, breakout/breakdown probability and confidence,
+  combined across every timeframe that actually returned data
+  (`combine_multi_timeframe`) -- confidence scales down honestly when
+  fewer timeframes are covered.
+- **Smart Alerts**: `detect_technical_alignment()` is now the 11th Smart
+  Alert detector, checked every `check_and_broadcast()` cycle.
+- **Never exposes raw indicators**: `TechnicalAnalysisSnapshot` (the
+  persisted model), `GET /api/technical/{symbol}`, `format_technical()`
+  and the dashboard's Technical Analysis tab all surface only the
+  interpreted score/probabilities/signals -- RSI/MACD/ATR/... numeric
+  values are computed internally and never returned anywhere.
+
+### 7. Performance Metrics
+
+- **Cached**: `TechnicalAnalysisEngine.get_latest()` reads the most
+  recent persisted `TechnicalAnalysisSnapshot` first; `GET /api/technical/
+  {symbol}` and `/technical` only fall through to a fresh `analyze()`
+  call on a cache miss.
+- **Refresh cadence**: `compute_technical_analysis_job` runs on the
+  existing `analysis_interval_minutes` scheduler cadence (not per
+  request), matching "refresh only when candles close" for the daily/4h/
+  1h timeframes this platform actually has closed-candle data for.
+  Symbols computed per cycle: BTC, ETH, SOL, SPX, NASDAQ, DJI, DXY, GOLD,
+  VIX.
+- **No duplicate requests**: local computation reuses `app.services.
+  history.repository.get_series` (already-synced rows, no new provider
+  calls); the TradingView adapter is only ever called when actually
+  configured.
+
+### 8. Test Results
+
+79 new tests (71 across the `technical` package's 7 modules + 2 for the
+new `TechnicalAgent` + 3 for the new `detect_technical_alignment` Smart
+Alert detector + 3 for `format_technical`'s never-expose-raw-indicators
+contract), **708 total, all passing**. `ruff check app tests` clean,
+`node --check app.js` clean. A genuine scoring bug was caught by this
+suite before shipping: `_trend_structure()` in `scoring.py` originally
+used strict `>` for price-vs-moving-average, so a price exactly at its
+SMA read as 100% bearish instead of neutral -- fixed to treat equality
+as neutral (0.5), confirmed by `test_score_timeframe_neutral_reading_
+scores_near_50`.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

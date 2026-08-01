@@ -8,6 +8,7 @@ from app.services.agents.equity_agent import EquityAgent
 from app.services.agents.macro_agent import MacroAgent
 from app.services.agents.news_agent import NewsAgent
 from app.services.agents.sentiment_agent import SentimentAgent
+from app.services.agents.technical_agent import TechnicalAgent
 from app.services.analysis.regime import RegimeDetector
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
@@ -15,6 +16,8 @@ from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
 from app.services.sentiment.engine import SentimentEngine
 from app.services.signals.engine import SignalEngine
+from app.services.technical.engine import TechnicalAnalysisEngine
+from app.services.technical.provider import TechnicalAnalysisProvider
 from app.services.whales.engine import WhaleIntelligenceEngine
 
 
@@ -30,20 +33,23 @@ class AgentOrchestrator:
         equity_agent: EquityAgent,
         news_agent: NewsAgent,
         sentiment_agent: SentimentAgent,
+        technical_agent: TechnicalAgent,
     ) -> None:
         self._macro_agent = macro_agent
         self._crypto_agent = crypto_agent
         self._equity_agent = equity_agent
         self._news_agent = news_agent
         self._sentiment_agent = sentiment_agent
+        self._technical_agent = technical_agent
 
     async def run_all(self) -> dict[str, AgentOutput]:
-        macro, crypto, equity, news, sentiment = await asyncio.gather(
+        macro, crypto, equity, news, sentiment, technical = await asyncio.gather(
             self._macro_agent.summarize(),
             self._crypto_agent.summarize(),
             self._equity_agent.summarize(),
             self._news_agent.summarize(),
             self._sentiment_agent.summarize(),
+            self._technical_agent.summarize(),
         )
         return {
             "macro": macro,
@@ -51,6 +57,7 @@ class AgentOrchestrator:
             "equity": equity,
             "news": news,
             "sentiment": sentiment,
+            "technical": technical,
         }
 
 
@@ -69,6 +76,9 @@ def build_agent_orchestrator() -> AgentOrchestrator:
     whale_engine = WhaleIntelligenceEngine()
     etf_engine = ETFIntelligenceEngine(news_repository)
     sentiment_engine = SentimentEngine(session_factory, news_repository)
+    technical_engine = TechnicalAnalysisEngine(
+        session_factory, TechnicalAnalysisProvider(session_factory)
+    )
 
     return AgentOrchestrator(
         macro_agent=MacroAgent(market_repository, global_score_engine),
@@ -76,4 +86,5 @@ def build_agent_orchestrator() -> AgentOrchestrator:
         equity_agent=EquityAgent(market_repository, global_score_engine),
         news_agent=NewsAgent(news_repository),
         sentiment_agent=SentimentAgent(sentiment_engine),
+        technical_agent=TechnicalAgent(technical_engine),
     )

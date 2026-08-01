@@ -38,6 +38,7 @@ from app.services.alerts.detectors import (
     detect_liquidity_change,
     detect_oi_spike,
     detect_regime_change,
+    detect_technical_alignment,
     detect_whale_accumulation,
 )
 from app.services.analysis.regime import RegimeDetector
@@ -47,6 +48,8 @@ from app.services.global_score.engine import GlobalScoreEngine
 from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
 from app.services.signals.engine import SignalEngine
+from app.services.technical.engine import TechnicalAnalysisEngine
+from app.services.technical.provider import TechnicalAnalysisProvider
 from app.services.whales.engine import WhaleIntelligenceEngine
 from app.telegram.broadcast import broadcast_text
 
@@ -90,12 +93,14 @@ class AlertEngine:
         whale_engine: WhaleIntelligenceEngine,
         etf_engine: ETFIntelligenceEngine,
         market_repository: MarketRepository | None = None,
+        technical_engine: TechnicalAnalysisEngine | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._global_score_engine = global_score_engine
         self._whale_engine = whale_engine
         self._etf_engine = etf_engine
         self._market_repository = market_repository
+        self._technical_engine = technical_engine
 
     async def _last_broadcast_at(self, alert_type: str) -> datetime | None:
         async with self._session_factory() as session:
@@ -217,6 +222,14 @@ class AlertEngine:
             curr.features.get("open_interest_change_pct"),
         )
 
+    async def _detect_technical_alignment(self) -> dict | None:
+        if self._technical_engine is None:
+            return None
+        result = await self._technical_engine.analyze(_VOLATILITY_SYMBOL)
+        if result is None:
+            return None
+        return detect_technical_alignment(result["high_confidence_alignment"], _VOLATILITY_SYMBOL)
+
     async def _detect_fed_event(self) -> dict | None:
         now = datetime.now(UTC)
         horizon = now + timedelta(days=_FED_EVENT_LOOKAHEAD_DAYS)
@@ -257,6 +270,7 @@ class AlertEngine:
                 await self._detect_flash_move(),
                 await self._detect_funding(),
                 await self._detect_oi(),
+                await self._detect_technical_alignment(),
             ]
             if d is not None
         ]
@@ -288,4 +302,5 @@ def build_alert_engine() -> AlertEngine:
         WhaleIntelligenceEngine(session_factory),
         ETFIntelligenceEngine(news_repository, session_factory),
         market_repository,
+        TechnicalAnalysisEngine(session_factory, TechnicalAnalysisProvider(session_factory)),
     )

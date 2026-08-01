@@ -38,6 +38,7 @@ from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.shocks.engine import build_critical_alert_engine
 from app.services.signals.engine import SignalEngine
+from app.services.technical.engine import build_technical_analysis_engine
 from app.services.terminal.engine import TerminalEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
 from app.telegram.broadcast import broadcast_report, broadcast_text
@@ -59,6 +60,23 @@ WHALE_ETF_SNAPSHOT_JOB_ID = "snapshot_whale_etf"
 ALERT_CHECK_JOB_ID = "check_alerts"
 ALERT_RULE_CHECK_JOB_ID = "check_alert_rules"
 CRITICAL_ALERT_CHECK_JOB_ID = "check_critical_alerts"
+TECHNICAL_ANALYSIS_JOB_ID = "compute_technical_analysis"
+
+# BTC/ETH/SOL (crypto) plus the most-watched indices/macro symbols already
+# in the history sync registry -- see app/services/technical/provider.py
+# for exactly why this list can't cover the mission's full asset list
+# without a configured TradingView MCP endpoint.
+TECHNICAL_ANALYSIS_SYMBOLS: tuple[str, ...] = (
+    "BTC",
+    "ETH",
+    "SOL",
+    "SPX",
+    "NASDAQ",
+    "DJI",
+    "DXY",
+    "GOLD",
+    "VIX",
+)
 REPORT_JOB_ID = "generate_scheduled_report"
 ECONOMIC_CALENDAR_JOB_ID = "sync_economic_calendar"
 FEATURE_JOB_ID = "compute_features"
@@ -265,6 +283,21 @@ async def check_critical_alerts_job() -> None:
         )
     except Exception:
         logger.exception("Critical alert check job failed")
+
+
+async def compute_technical_analysis_job() -> None:
+    engine = build_technical_analysis_engine()
+    computed = 0
+    for symbol in TECHNICAL_ANALYSIS_SYMBOLS:
+        try:
+            result = await engine.analyze(symbol)
+            if result is not None:
+                computed += 1
+        except Exception:
+            logger.exception("Technical analysis failed for %s", symbol)
+    logger.info(
+        "Technical analysis computed for %d/%d symbols", computed, len(TECHNICAL_ANALYSIS_SYMBOLS)
+    )
 
 
 async def collect_news_job() -> None:
@@ -504,6 +537,14 @@ def start_scheduler() -> AsyncIOScheduler:
         check_critical_alerts_job,
         trigger=IntervalTrigger(minutes=settings.market_data_interval_minutes),
         id=CRITICAL_ALERT_CHECK_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_technical_analysis_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=TECHNICAL_ANALYSIS_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,
