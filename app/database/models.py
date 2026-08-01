@@ -1046,3 +1046,60 @@ class WatchdogEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class ScannerSnapshot(Base):
+    """v5.5 Market Scanner -- one row per (symbol, scan cycle), the
+    scanner's own lightweight price/volume/sector history for its up-to-
+    ~500-symbol universe (app/services/scanner/engine.py). Kept separate
+    from AssetPrice/SnapshotBatch (the existing market-data pipeline's
+    table) rather than reusing it, since AssetPrice is written every
+    `market_data_interval_minutes` for a small, curated symbol set consumed
+    by Regime/GlobalScore/etc.; mixing in hundreds of scanner-only symbols
+    at a different cadence would bloat that table and its consumers'
+    queries for no benefit to them."""
+
+    __tablename__ = "scanner_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    price: Mapped[float] = mapped_column(Numeric(24, 8))
+    change_pct_1h: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    change_pct_24h: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    volume_24h: Mapped[float | None] = mapped_column(Numeric(24, 2), nullable=True)
+    market_cap: Mapped[float | None] = mapped_column(Numeric(24, 2), nullable=True)
+    market_cap_rank: Mapped[int | None] = mapped_column(nullable=True)
+    sector: Mapped[str] = mapped_column(String(30), default="Unclassified")
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class ScannerAlert(Base):
+    """v5.5 Market Scanner -- one live "episode" per (category, symbol-or-
+    sector), mirroring CriticalAlert's (v5.1) exact escalation lifecycle so
+    a worsening tier EDITS the existing Telegram message instead of
+    spamming a new one. Written by MarketScannerEngine (never sends
+    Telegram itself -- see its module docstring); `telegram_message_ids`
+    is populated by the separate notifier step
+    (app/services/scanner/notifier.py) after a successful send. Every
+    detection, notified or not, is also logged to the existing AlertLog
+    table (alert_type prefixed "scanner:") so Market Memory/Watchdog/Replay
+    cover this system too, exactly like v5.1 -- this table only owns the
+    escalation/message-editing lifecycle AlertLog has no concept of."""
+
+    __tablename__ = "scanner_alerts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    alert_key: Mapped[str] = mapped_column(String(60), index=True)
+    category: Mapped[str] = mapped_column(String(30))
+    tier: Mapped[str] = mapped_column(String(10))
+    symbols: Mapped[list] = mapped_column(JSON, default=list)
+    message: Mapped[str] = mapped_column(Text)
+    telegram_message_ids: Mapped[dict] = mapped_column(JSON, default=dict)
+    active: Mapped[bool] = mapped_column(default=True, index=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    first_triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    last_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

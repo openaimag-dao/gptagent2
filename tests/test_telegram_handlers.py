@@ -12,6 +12,7 @@ from app.telegram.handlers import (
     cmd_health,
     cmd_memory,
     cmd_portfolio,
+    cmd_scanner,
     cmd_watchdog,
     handle_errors,
 )
@@ -191,6 +192,97 @@ async def test_cmd_watchdog_no_args_returns_full_dashboard():
     (text,), kwargs = message.answer.call_args
     assert "CURRENT MARKET STATUS" in text
     assert "MARKET OVERVIEW" in text
+
+
+def _scanner_alert_row():
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        alert_key="scanner:price_event:BTC:up",
+        category="price_event",
+        tier="high",
+        symbols=["BTC"],
+        message="BTC +9.00% (24h)",
+        active=True,
+        last_updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+async def test_cmd_scanner_movers_subcommand():
+    message = AsyncMock()
+    command = CommandObject(args="movers")
+    engine = AsyncMock()
+    engine.get_latest_breadth.return_value = None
+
+    with patch("app.telegram.handlers.build_market_scanner_engine", return_value=engine):
+        await cmd_scanner(message, command)
+
+    engine.get_latest_breadth.assert_awaited_once()
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "TOP MOVERS" in text
+    assert "No scan data yet" in text
+
+
+async def test_cmd_scanner_sectors_subcommand():
+    message = AsyncMock()
+    command = CommandObject(args="sectors")
+    engine = AsyncMock()
+    engine.get_latest_sector_breadth.return_value = []
+
+    with patch("app.telegram.handlers.build_market_scanner_engine", return_value=engine):
+        await cmd_scanner(message, command)
+
+    engine.get_latest_sector_breadth.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "No sector data yet" in text
+
+
+async def test_cmd_scanner_detections_subcommand_serializes_rows():
+    message = AsyncMock()
+    command = CommandObject(args="detections")
+    engine = AsyncMock()
+    engine.list_recent_alerts.return_value = [_scanner_alert_row()]
+
+    with patch("app.telegram.handlers.build_market_scanner_engine", return_value=engine):
+        await cmd_scanner(message, command)
+
+    engine.list_recent_alerts.assert_awaited_once_with(limit=20)
+    (text,), kwargs = message.answer.call_args
+    assert "BTC" in text
+    assert "[HIGH]" in text
+
+
+async def test_cmd_scanner_pending_subcommand():
+    message = AsyncMock()
+    command = CommandObject(args="pending")
+    engine = AsyncMock()
+    engine.list_active_alerts.return_value = []
+
+    with patch("app.telegram.handlers.build_market_scanner_engine", return_value=engine):
+        await cmd_scanner(message, command)
+
+    engine.list_active_alerts.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "No detections logged yet" in text
+
+
+async def test_cmd_scanner_no_args_returns_combined_dashboard():
+    message = AsyncMock()
+    command = CommandObject(args=None)
+    engine = AsyncMock()
+    engine.get_latest_breadth.return_value = None
+    engine.get_latest_sector_breadth.return_value = []
+    engine.list_active_alerts.return_value = []
+    engine.list_suppressed_alerts.return_value = []
+
+    with patch("app.telegram.handlers.build_market_scanner_engine", return_value=engine):
+        await cmd_scanner(message, command)
+
+    engine.list_suppressed_alerts.assert_awaited_once_with(limit=50)
+    (text,), kwargs = message.answer.call_args
+    assert "MARKET SCANNER" in text
 
 
 async def test_handle_errors_notifies_user_instead_of_staying_silent():

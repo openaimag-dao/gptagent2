@@ -34,6 +34,8 @@ from app.services.ranking.engine import RankingEngine
 from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import MarketReplayEngine
 from app.services.research.researcher import AIResearcherEngine
+from app.services.scanner.engine import build_market_scanner_engine
+from app.services.scanner.notifier import send_scanner_notifications
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.shocks.engine import build_critical_alert_engine
@@ -64,6 +66,7 @@ ALERT_RULE_CHECK_JOB_ID = "check_alert_rules"
 CRITICAL_ALERT_CHECK_JOB_ID = "check_critical_alerts"
 TECHNICAL_ANALYSIS_JOB_ID = "compute_technical_analysis"
 WATCHDOG_SNAPSHOT_JOB_ID = "compute_watchdog_snapshot"
+MARKET_SCAN_JOB_ID = "compute_market_scan"
 
 # BTC/ETH/SOL (crypto) plus the most-watched indices/macro symbols already
 # in the history sync registry -- see app/services/technical/provider.py
@@ -299,6 +302,22 @@ async def compute_watchdog_snapshot_job() -> None:
         )
     except Exception:
         logger.exception("Watchdog snapshot job failed")
+
+
+async def compute_market_scan_job() -> None:
+    engine = build_market_scanner_engine()
+    try:
+        result = await engine.run_cycle()
+        processed = result["processed"]
+        notified = await send_scanner_notifications(get_session_factory(), processed)
+        logger.info(
+            "Market scan: %d symbols scanned, %d detections, %d Telegram notification(s)",
+            result["universe_size"],
+            len(processed),
+            notified,
+        )
+    except Exception:
+        logger.exception("Market scan job failed")
 
 
 async def check_critical_alerts_job() -> None:
@@ -582,6 +601,14 @@ def start_scheduler() -> AsyncIOScheduler:
         compute_watchdog_snapshot_job,
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
         id=WATCHDOG_SNAPSHOT_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_market_scan_job,
+        trigger=IntervalTrigger(minutes=settings.scanner_interval_minutes),
+        id=MARKET_SCAN_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,

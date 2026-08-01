@@ -126,4 +126,12 @@ class Settings(BaseSettings):
     analysis_interval_minutes: int = 30
     report_interval_minutes: int = 30
     replay_interval_minutes: int = 15
+    # v5.5 Market Scanner: 15 minutes, not market_data_interval_minutes's 5 --
+    # the scanner tracks up to ~500 symbols per cycle (2 paginated CoinGecko
+    # /coins/markets calls), so a 5-minute cadence would multiply API calls
+    # and stored ScannerSnapshot rows 3x for a window granularity nothing else
+    # in this project needs. 1m/5m windows are honestly not offered for the
+    # scanner's universe -- see app/services/scanner/engine.py.
+    scanner_interval_minutes: int = 15
+    scanner_universe_refresh_hours: int = 24
     http_timeout_seconds: float = 15.0

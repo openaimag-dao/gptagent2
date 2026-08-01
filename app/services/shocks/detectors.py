@@ -137,21 +137,30 @@ def best_window_detection(symbol: str, changes_by_window: dict[str, float | None
     return {"symbol": symbol, "window": window, "pct_change": pct, "tier": tier}
 
 
-def detect_multi_asset_shock(per_symbol_detections: dict[str, dict | None]) -> dict | None:
+def detect_multi_asset_shock(
+    per_symbol_detections: dict[str, dict | None],
+    symbols: tuple[str, ...] = _MULTI_ASSET_SYMBOLS,
+    min_count: int = _MULTI_ASSET_MIN_COUNT,
+    min_tier: str = _MULTI_ASSET_MIN_TIER,
+    category: str = "multi_asset_shock",
+) -> dict | None:
     """One combined Market Shock instead of several individual alerts when
-    >= _MULTI_ASSET_MIN_COUNT of the tracked risk assets move the same
-    direction at >= _MULTI_ASSET_MIN_TIER simultaneously."""
-    min_rank = SEVERITY_ORDER.index(_MULTI_ASSET_MIN_TIER)
+    >= `min_count` of `symbols` move the same direction at >= `min_tier`
+    simultaneously. Defaults to v5.1's original cross-asset risk basket
+    (BTC/ETH/SOL/NASDAQ/SPX/DJI); the v5.5 Market Scanner reuses this same
+    function with its own crypto-only symbol list and a "crypto_market_shock"
+    category instead of reimplementing the same synchronized-move logic."""
+    min_rank = SEVERITY_ORDER.index(min_tier)
     down_moves = []
     up_moves = []
-    for symbol in _MULTI_ASSET_SYMBOLS:
+    for symbol in symbols:
         detection = per_symbol_detections.get(symbol)
         if detection is None or SEVERITY_ORDER.index(detection["tier"]) < min_rank:
             continue
         (down_moves if detection["pct_change"] < 0 else up_moves).append(detection)
 
     moves = down_moves if len(down_moves) >= len(up_moves) else up_moves
-    if len(moves) < _MULTI_ASSET_MIN_COUNT:
+    if len(moves) < min_count:
         return None
 
     direction = "down" if moves is down_moves else "up"
@@ -161,7 +170,7 @@ def detect_multi_asset_shock(per_symbol_detections: dict[str, dict | None]) -> d
     # reading, capped at "critical".
     escalated_rank = min(SEVERITY_ORDER.index(max_tier) + 1, len(SEVERITY_ORDER) - 1)
     return {
-        "category": "multi_asset_shock",
+        "category": category,
         "direction": direction,
         "tier": SEVERITY_ORDER[escalated_rank],
         "moves": moves,
