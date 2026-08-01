@@ -8,6 +8,7 @@ from app.services.alerts.detectors import (
     detect_liquidity_change,
     detect_oi_spike,
     detect_regime_change,
+    detect_technical_alignment,
     detect_whale_accumulation,
 )
 
@@ -147,3 +148,28 @@ def test_oi_spike_none_on_small_delta():
 
 def test_oi_spike_none_without_prior_reading():
     assert detect_oi_spike(None, 25.0) is None
+
+
+def test_technical_alignment_none_without_alignment():
+    assert detect_technical_alignment(None) is None
+
+
+def test_technical_alignment_buy():
+    alignment = {
+        "signal": "HIGH_CONFIDENCE_BUY",
+        "reasons": ["RSI oversold", "MACD bullish crossover"],
+    }
+    result = detect_technical_alignment(alignment, "BTC")
+    assert result["alert_type"] == "high_confidence_buy"
+    assert "HIGH CONFIDENCE BUY" in result["message"]
+    assert result["confidence_pct"] == 80
+
+
+def test_technical_alignment_sell():
+    alignment = {
+        "signal": "HIGH_CONFIDENCE_SELL",
+        "reasons": ["RSI overbought", "resistance rejected"],
+    }
+    result = detect_technical_alignment(alignment, "ETH")
+    assert result["alert_type"] == "high_confidence_sell"
+    assert "HIGH CONFIDENCE SELL" in result["message"]

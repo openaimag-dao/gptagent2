@@ -50,6 +50,7 @@ from app.api.signals import router as signals_router
 from app.api.similar import router as similar_router
 from app.api.status import router as status_router
 from app.api.strategy import router as strategy_router
+from app.api.technical import router as technical_router
 from app.api.terminal import router as terminal_router
 from app.api.whales import router as whales_router
 from app.api.whatif import router as whatif_router
@@ -129,6 +130,7 @@ app.include_router(breakout_router)
 app.include_router(onchain_router)
 app.include_router(alerts_router)
 app.include_router(shocks_router)
+app.include_router(technical_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

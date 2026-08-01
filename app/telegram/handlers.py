@@ -52,6 +52,7 @@ from app.services.sentiment.engine import SentimentEngine
 from app.services.shocks.engine import build_critical_alert_engine
 from app.services.signals.engine import SignalEngine
 from app.services.similar_market.engine import SimilarMarketEngine
+from app.services.technical.engine import build_technical_analysis_engine
 from app.services.terminal.engine import TerminalEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
 from app.services.whatif.engine import WhatIfSimulator
@@ -103,6 +104,7 @@ from app.telegram.formatters import (
     format_single_asset,
     format_status,
     format_strategy_result,
+    format_technical,
     format_walk_forward,
     format_watchdog,
     format_weekly_review,
@@ -197,7 +199,11 @@ HELP_TEXT = (
     "/replay -- latest consolidated market snapshot (regime, scores, consensus, "
     "portfolio advice, alerts since the previous snapshot)\n"
     "/shocks -- v5.1 Autonomous Critical Alert System: currently active price-shock "
-    "and market-shock episodes (no configuration -- the AI decides what's significant)"
+    "and market-shock episodes (no configuration -- the AI decides what's significant)\n"
+    "/technical [SYMBOL] -- v5.3 AI-interpreted technical analysis (TradingView MCP "
+    "Institutional Technical Analysis Provider, multi-timeframe): bullish/bearish score, "
+    "trend, momentum, breakout/breakdown probability, active signals -- never raw "
+    "indicator values (e.g. /technical BTC)"
 )
 
 # Registered with Telegram via Bot.set_my_commands() so the client's "/" menu
@@ -262,11 +268,48 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("watchdog", "Recent alert detections, sent vs suppressed"),
     ("replay", "Latest consolidated market snapshot"),
     ("shocks", "Active Autonomous Critical Alert System episodes"),
+    ("technical", "AI-interpreted technical analysis (TradingView MCP provider)"),
 ]
 
 
 def _market_repository() -> MarketRepository:
     return MarketRepository(get_session_factory(), get_redis())
+
+
+def _serialize_technical_snapshot(snapshot) -> dict:
+    """Maps a stored TechnicalAnalysisSnapshot onto the same dict shape
+    TechnicalAnalysisEngine.analyze() returns, so format_technical() can
+    handle both a cached read and a freshly computed one identically."""
+    return {
+        "source": snapshot.source,
+        "bullish_score": float(snapshot.bullish_score)
+        if snapshot.bullish_score is not None
+        else None,
+        "bearish_score": float(snapshot.bearish_score)
+        if snapshot.bearish_score is not None
+        else None,
+        "trend_strength": (
+            float(snapshot.trend_strength) if snapshot.trend_strength is not None else None
+        ),
+        "momentum": float(snapshot.momentum) if snapshot.momentum is not None else None,
+        "volatility": float(snapshot.volatility) if snapshot.volatility is not None else None,
+        "breakout_probability": (
+            float(snapshot.breakout_probability)
+            if snapshot.breakout_probability is not None
+            else None
+        ),
+        "breakdown_probability": (
+            float(snapshot.breakdown_probability)
+            if snapshot.breakdown_probability is not None
+            else None
+        ),
+        "confidence": float(snapshot.confidence) if snapshot.confidence is not None else None,
+        "active_signals": snapshot.active_signals,
+        "timeframes_covered": snapshot.timeframes_covered,
+        "support": float(snapshot.support) if snapshot.support is not None else None,
+        "resistance": float(snapshot.resistance) if snapshot.resistance is not None else None,
+        "high_confidence_alignment": None,
+    }
 
 
 async def _answer(message: Message, text: str) -> None:
@@ -1095,6 +1138,17 @@ async def cmd_shocks(message: Message) -> None:
     engine = build_critical_alert_engine()
     rows = await engine.list_active()
     await _answer(message, format_active_shocks(rows))
+
+
+@router.message(Command("technical"))
+async def cmd_technical(message: Message, command: CommandObject) -> None:
+    symbol = (command.args or "BTC").strip().upper()
+    engine = build_technical_analysis_engine()
+    snapshot = await engine.get_latest(symbol)
+    result = _serialize_technical_snapshot(snapshot) if snapshot is not None else None
+    if result is None:
+        result = await engine.analyze(symbol)
+    await _answer(message, format_technical(symbol, result))
 
 
 @router.message(Command("status"))

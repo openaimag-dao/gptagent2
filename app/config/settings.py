@@ -111,6 +111,15 @@ class Settings(BaseSettings):
     glassnode_api_key: str | None = None
     helius_api_key: str | None = None
 
+    # ---- TradingView MCP: Institutional Technical Analysis Provider (optional, v5.3) ----
+    # No MCP server is configured by default -- TechnicalAnalysisProvider
+    # falls back to indicators computed locally from this project's own
+    # synced OHLCV history (1h/4h/1d only; see app/services/technical/
+    # provider.py for exactly which symbols/timeframes that covers). Set
+    # both to point at a real TradingView MCP endpoint to prefer it.
+    tradingview_mcp_url: str | None = None
+    tradingview_mcp_api_key: str | None = None
+
     # ---- Scheduling / networking ----
     market_data_interval_minutes: int = 5
     news_collection_interval_minutes: int = 10

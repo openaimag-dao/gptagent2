@@ -756,6 +756,54 @@ async function renderShocks() {
   return nodes;
 }
 
+async function renderTechnical() {
+  const nodes = [el("h2", {}, "Technical Analysis (v5.3)")];
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      "TradingView MCP -- Institutional Technical Analysis Provider. Multi-timeframe " +
+        "AI-interpreted read only: raw indicator values (RSI, MACD, ...) are never shown here."
+    )
+  );
+  const input = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const btn = el("button", {}, "Load");
+  nodes.push(el("div", { class: "controls" }, [input, btn]));
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    results.innerHTML = "";
+    try {
+      const d = await fetchJSON(`/api/technical/${encodeURIComponent(input.value)}`);
+      results.appendChild(
+        el("div", { class: "grid" }, [
+          card("Bullish Score", d.bullish_score != null ? d.bullish_score.toFixed(0) : "n/a"),
+          card("Bearish Score", d.bearish_score != null ? d.bearish_score.toFixed(0) : "n/a"),
+          card("Trend Strength", d.trend_strength != null ? d.trend_strength.toFixed(0) : "n/a"),
+          card("Momentum", d.momentum != null ? d.momentum.toFixed(1) : "n/a"),
+          card("Volatility", d.volatility != null ? d.volatility.toFixed(0) : "n/a"),
+          card("Confidence", d.confidence != null ? `${d.confidence.toFixed(0)}%` : "n/a"),
+          card("Breakout Probability", d.breakout_probability != null ? `${d.breakout_probability.toFixed(0)}%` : "n/a"),
+          card("Breakdown Probability", d.breakdown_probability != null ? `${d.breakdown_probability.toFixed(0)}%` : "n/a"),
+          card("Support", d.support != null ? d.support.toLocaleString() : "n/a"),
+          card("Resistance", d.resistance != null ? d.resistance.toLocaleString() : "n/a"),
+        ])
+      );
+      results.appendChild(el("p", { class: "sub" }, `Source: ${d.source} -- timeframes: ${(d.timeframes_covered || []).join(", ") || "n/a"}`));
+      if (d.active_signals && d.active_signals.length) {
+        results.appendChild(el("h2", {}, "Active Signals"));
+        results.appendChild(el("p", {}, d.active_signals.join(", ")));
+      }
+    } catch (err) {
+      results.appendChild(errorBox(err));
+    }
+  }
+  btn.addEventListener("click", load);
+  load();
+  return nodes;
+}
+
 async function renderExplanation() {
   const nodes = [el("h2", {}, "Why")];
   const input = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
@@ -1969,7 +2017,7 @@ const PAGES = {
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, advice: renderAdvice,
   alerts: renderAlerts,
   risk: renderRisk, why: renderExplanation, watchdog: renderWatchdog, status: renderStatus,
-  replay: renderReplay, shocks: renderShocks,
+  replay: renderReplay, shocks: renderShocks, technical: renderTechnical,
   settings: renderSettings,
 };
 

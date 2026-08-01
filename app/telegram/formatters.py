@@ -1089,6 +1089,73 @@ def format_active_shocks(rows: list) -> str:
     return "\n".join(lines)
 
 
+def format_technical(symbol: str, result: dict | None) -> str:
+    """AI-interpreted technical read only -- bullish/bearish score, trend
+    strength, momentum, volatility, breakout/breakdown probability,
+    confidence, support/resistance and active signal names. Never shows raw
+    indicator values (RSI/MACD/...), matching the mission's "AI Brain must
+    interpret them" constraint. `result` is the dict shape produced by
+    TechnicalAnalysisEngine.analyze() (or the equivalent serialized
+    snapshot from GET /api/technical)."""
+    if result is None:
+        return (
+            f"No technical analysis available for {symbol} -- not in the synced history "
+            "registry and TradingView MCP is not configured."
+        )
+
+    lines = [f"*TECHNICAL ANALYSIS -- {symbol}*", f"Source: {result.get('source', 'unknown')}", ""]
+
+    bullish = result.get("bullish_score")
+    bearish = result.get("bearish_score")
+    if bullish is not None and bearish is not None:
+        lines.append(f"Bullish {bullish:.0f} / Bearish {bearish:.0f}")
+
+    trend = result.get("trend_strength")
+    momentum = result.get("momentum")
+    volatility = result.get("volatility")
+    if trend is not None:
+        lines.append(f"Trend Strength: {trend:.0f}")
+    if momentum is not None:
+        lines.append(f"Momentum: {momentum:.1f}")
+    if volatility is not None:
+        lines.append(f"Volatility: {volatility:.0f}")
+
+    breakout = result.get("breakout_probability")
+    breakdown = result.get("breakdown_probability")
+    if breakout is not None and breakdown is not None:
+        lines.append(
+            f"Breakout Probability: {breakout:.0f}% / Breakdown Probability: {breakdown:.0f}%"
+        )
+
+    confidence = result.get("confidence")
+    if confidence is not None:
+        lines.append(f"Confidence: {confidence:.0f}%")
+
+    support = result.get("support")
+    resistance = result.get("resistance")
+    if support is not None or resistance is not None:
+        support_str = f"{support:,.2f}" if support is not None else "n/a"
+        resistance_str = f"{resistance:,.2f}" if resistance is not None else "n/a"
+        lines.append(f"Support: {support_str} | Resistance: {resistance_str}")
+
+    timeframes = result.get("timeframes_covered")
+    if timeframes:
+        lines.append(f"Timeframes: {', '.join(timeframes)}")
+
+    signals = result.get("active_signals")
+    if signals:
+        lines.append("")
+        lines.append("Active Signals: " + ", ".join(signals))
+
+    alignment = result.get("high_confidence_alignment")
+    if alignment:
+        lines.append("")
+        signal_label = alignment["signal"].replace("_", " ")
+        lines.append(f"*{signal_label}*: " + "; ".join(alignment["reasons"]))
+
+    return "\n".join(lines)
+
+
 def format_alert_rule_created(rule) -> str:
     return (
         f"*Alert rule #{rule.id} created*\n"

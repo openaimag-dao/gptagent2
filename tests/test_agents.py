@@ -7,6 +7,7 @@ from app.services.agents.equity_agent import EquityAgent
 from app.services.agents.macro_agent import MacroAgent
 from app.services.agents.news_agent import NewsAgent, estimate_impact
 from app.services.agents.sentiment_agent import SentimentAgent
+from app.services.agents.technical_agent import TechnicalAgent
 
 
 def test_estimate_impact_high_for_strong_weighted_fed_news():
@@ -163,3 +164,36 @@ async def test_sentiment_agent_reports_no_direction_when_global_score_unavailabl
 
     assert output.direction is None
     assert output.confidence is None
+
+
+async def test_technical_agent_reports_no_direction_when_analysis_unavailable():
+    technical_engine = AsyncMock()
+    technical_engine.analyze.return_value = None
+
+    output = await TechnicalAgent(technical_engine).summarize()
+
+    assert output.direction is None
+    assert output.confidence is None
+    assert output.data["available"] is False
+
+
+async def test_technical_agent_bullish_when_bullish_score_dominates():
+    technical_engine = AsyncMock()
+    technical_engine.analyze.return_value = {
+        "symbol": "BTC",
+        "bullish_score": 90.0,
+        "bearish_score": 10.0,
+        "trend_strength": 60.0,
+        "confidence": 80.0,
+        "active_signals": ["RSIOversold", "TechnicalBullish"],
+        "high_confidence_alignment": {
+            "signal": "HIGH_CONFIDENCE_BUY",
+            "reasons": ["RSI oversold", "MACD bullish crossover"],
+        },
+    }
+
+    output = await TechnicalAgent(technical_engine).summarize()
+
+    assert output.direction == "bullish"
+    assert "HIGH_CONFIDENCE_BUY" in output.summary
+    assert output.data["available"] is True
