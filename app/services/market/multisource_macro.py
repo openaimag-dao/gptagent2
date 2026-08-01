@@ -5,8 +5,24 @@ intentionally left on FredMacroProvider (app/services/market/macro/fred.py,
 unchanged) -- FRED is an official, keyed, non-scraped source that's
 already reliable when FRED_API_KEY is configured, so routing it through a
 scraped/rate-limited chain as well would be a downgrade, not a fix.
+
+Twelve Data's free "Basic" plan is 8 credits/minute, and a multi-symbol
+/quote call costs one credit per symbol (confirmed via their pricing docs).
+MultiSourceStockProvider's own /quote call already requests 11 symbols (11
+credits) -- over the per-minute cap by itself -- and MarketDataAggregator
+runs every provider concurrently via asyncio.gather, so this provider's
+3-credit macro call was firing in the exact same instant as that 11-credit
+stocks call every 5-minute cycle, both landing in the same rate-limit
+window and both getting rejected with 429 together (confirmed in
+production logs: every single cycle, both calls 429 in the same second).
+3 credits alone is well under the 8/minute cap, so `_STAGGER_DELAY_SECONDS`
+below deliberately pushes this provider's Twelve Data attempt into the next
+minute, clear of the stocks provider's request -- only on an actual cache
+miss (never on a cache hit, so once Twelve Data succeeds this delay is
+skipped entirely for the following hour via `_TWELVEDATA_TTL_SECONDS`).
 """
 
+import asyncio
 import logging
 
 from app.database.redis import get_redis
@@ -21,6 +37,10 @@ from app.services.market.yfinance_utils import download_last_two_closes
 logger = logging.getLogger(__name__)
 
 _TWELVEDATA_TTL_SECONDS = 3600  # 3 symbols x 24/day = 72 credits/day
+# > 60s so this always crosses into a fresh per-minute credit window,
+# regardless of exactly when in the previous minute the stocks provider's
+# concurrent call landed.
+_STAGGER_DELAY_SECONDS = 70
 
 Bar = tuple[float, float, float | None]
 
@@ -43,6 +63,7 @@ class MultiSourceMacroProvider(MarketDataProvider):
             return {symbol: tuple(bar) for symbol, bar in cached.items()}
         if not self._twelvedata.configured:
             return {}
+        await asyncio.sleep(_STAGGER_DELAY_SECONDS)
         try:
             bars = await self._twelvedata.get_quotes(TD_MACRO_SYMBOLS)
         except TwelveDataError as exc:

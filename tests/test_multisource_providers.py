@@ -134,9 +134,12 @@ async def test_macro_provider_prefers_twelvedata_then_yfinance():
     twelvedata.get_quotes.return_value = {"DXY": (104.0, 103.5, None)}
     provider = _provider_with_fake_cache(MultiSourceMacroProvider, twelvedata=twelvedata)
 
-    with patch(
-        "app.services.market.multisource_macro.download_last_two_closes",
-        new=AsyncMock(return_value={"GC=F": (2000.0, 1990.0, 100.0)}),
+    with (
+        patch(
+            "app.services.market.multisource_macro.download_last_two_closes",
+            new=AsyncMock(return_value={"GC=F": (2000.0, 1990.0, 100.0)}),
+        ),
+        patch("app.services.market.multisource_macro.asyncio.sleep", new=AsyncMock()) as sleep_mock,
     ):
         quotes = await provider.fetch()
 
@@ -144,3 +147,28 @@ async def test_macro_provider_prefers_twelvedata_then_yfinance():
     assert by_symbol["DXY"].source == "twelvedata"
     assert by_symbol["GOLD"].source == "yfinance"
     assert by_symbol["GOLD"].price == 2000.0
+    # Stagger delay must fire before the real Twelve Data call on a cache
+    # miss -- this is what keeps it out of the stocks provider's per-minute
+    # credit window (see the module docstring for why).
+    sleep_mock.assert_awaited_once()
+
+
+async def test_macro_provider_skips_stagger_delay_on_cache_hit():
+    twelvedata = AsyncMock()
+    twelvedata.configured = True
+    provider = _provider_with_fake_cache(MultiSourceMacroProvider, twelvedata=twelvedata)
+    provider._td_cache.get.return_value = {"DXY": [104.0, 103.5, None]}
+
+    with (
+        patch(
+            "app.services.market.multisource_macro.download_last_two_closes",
+            new=AsyncMock(return_value={}),
+        ),
+        patch("app.services.market.multisource_macro.asyncio.sleep", new=AsyncMock()) as sleep_mock,
+    ):
+        quotes = await provider.fetch()
+
+    twelvedata.get_quotes.assert_not_called()
+    sleep_mock.assert_not_awaited()
+    by_symbol = {q.symbol: q for q in quotes}
+    assert by_symbol["DXY"].source == "twelvedata"
