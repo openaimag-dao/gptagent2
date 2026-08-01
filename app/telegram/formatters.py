@@ -703,6 +703,190 @@ def format_watchdog(entries: list[dict]) -> str:
     return "\n".join(lines).strip()
 
 
+def _fmt_pct(value: float | None) -> str:
+    return f"{value:+.2f}%" if value is not None else "n/a"
+
+
+def _fmt_num(value, digits: int = 0) -> str:
+    return f"{value:.{digits}f}" if value is not None else "n/a"
+
+
+def format_watchdog_current_status(status: dict) -> str:
+    lines = [
+        "*CURRENT MARKET STATUS*",
+        "",
+        f"Time: {status['current_time'][:16].replace('T', ' ')}",
+        f"Last Update: {(status['last_update'] or 'never')[:16].replace('T', ' ')}",
+        f"Next Scan: {(status.get('next_scan') or 'unknown')[:16].replace('T', ' ')}",
+        f"Scan Duration: {_fmt_num(status['scan_duration_ms'], 0)}ms",
+        f"Market Health: {status['market_health']}",
+        f"Brain: {status['brain_status']} | Replay: {status['replay_status']} | "
+        f"Committee: {status['committee_status']} | Consensus: {status['consensus_status']}",
+    ]
+    return "\n".join(lines)
+
+
+def format_watchdog_market(
+    market_overview: dict, crypto_overview: list[dict], macro_overview: list[dict]
+) -> str:
+    lines = ["*MARKET OVERVIEW*", ""]
+    m = market_overview
+    regime_label = (m["regime"] or "unknown").replace("_", " ").title()
+    lines.append(f"Regime: {regime_label} | Trend: {m['trend'] or 'n/a'}")
+    lines.append(
+        f"Trend Strength: {_fmt_num(m['trend_strength'])} | "
+        f"Momentum: {_fmt_num(m['momentum'], 1)} | Volatility: {_fmt_num(m['volatility'])}"
+    )
+    market_score = _fmt_num(m["market_intelligence_score"])
+    lines.append(
+        f"Confidence: {_fmt_num(m['confidence'])} | Risk: {_fmt_num(m['risk_score'])} | "
+        f"Liquidity: {_fmt_num(m['liquidity_score'])} | Market Score: {market_score}"
+    )
+
+    lines.append("")
+    lines.append("*Crypto Overview*")
+    for row in crypto_overview:
+        if not row.get("available"):
+            lines.append(f"{row['symbol']}: unavailable")
+            continue
+        lines.append(
+            f"{row['symbol']} {row['price']:,.2f} ({_fmt_pct(row['change_pct_24h'])} 24h / "
+            f"{_fmt_pct(row['change_pct_1h'])} 1h) {row['ai_bias'] or ''}".rstrip()
+        )
+
+    lines.append("")
+    lines.append("*Macro Overview*")
+    for row in macro_overview:
+        if not row.get("available"):
+            lines.append(f"{row['name']}: unavailable")
+            continue
+        impact = f" -- {row['impact_on_crypto']} for crypto" if row["impact_on_crypto"] else ""
+        lines.append(f"{row['name']} {row['price']:,.2f} ({_fmt_pct(row['daily_pct'])}){impact}")
+
+    return "\n".join(lines)
+
+
+def format_watchdog_onchain(onchain: dict) -> str:
+    lines = ["*ON-CHAIN OVERVIEW*", ""]
+    if not onchain.get("available"):
+        lines.append("Unavailable" + (f" -- {onchain['reason']}" if onchain.get("reason") else ""))
+        return "\n".join(lines)
+    whales = onchain["whales"]
+    lines.append(f"Whale positioning: {whales.get('classification', 'unknown')}")
+    if onchain.get("funding") is not None:
+        lines.append(f"Funding rate: {onchain['funding']}")
+    if onchain.get("open_interest") is not None:
+        lines.append(f"Open interest: {onchain['open_interest']}")
+    lines.append("Exchange flows / stablecoin flow / TVL: unavailable (no on-chain provider wired)")
+    return "\n".join(lines)
+
+
+def format_watchdog_ai(ai_status: dict) -> str:
+    if ai_status.get("computed_at") is None:
+        return "*AI STATUS*\n\nNo Watchdog cycle has run yet -- check back shortly."
+    lines = [
+        "*AI STATUS*",
+        "",
+        f"Committee Opinion: {ai_status['committee_opinion'] or 'n/a'}",
+    ]
+    consensus = ai_status.get("consensus")
+    if consensus:
+        lines.append(
+            f"Consensus: bullish {consensus['bullish_pct']}% / bearish {consensus['bearish_pct']}% "
+            f"/ neutral {consensus['neutral_pct']}%"
+        )
+    lines.append(f"Prediction Confidence: {_fmt_num(ai_status['prediction_confidence'])}%")
+    if ai_status.get("expected_scenario"):
+        lines.append(
+            f"Expected Scenario: {ai_status['expected_scenario']} "
+            f"({ai_status['expected_scenario_pct']}%)"
+        )
+    if ai_status.get("highest_risk"):
+        lines.append(f"Highest Risk: {ai_status['highest_risk']}")
+    if ai_status.get("biggest_opportunity"):
+        lines.append(f"Biggest Opportunity: {ai_status['biggest_opportunity']}")
+    return "\n".join(lines)
+
+
+def format_watchdog_changes(changes: dict) -> str:
+    if not changes.get("available"):
+        return (
+            "*WHAT CHANGED*\n\nNot enough Watchdog history yet -- check back after the next cycle."
+        )
+    lines = ["*WHAT CHANGED*", ""]
+    if not changes["fields"] and not changes["events"]:
+        lines.append("No significant changes since the last cycle.")
+        return "\n".join(lines)
+    for field in changes["fields"]:
+        lines.append(f"{field['label']}: {field['prev']} -> {field['curr']}")
+    if changes["events"]:
+        lines.append("")
+        for event in changes["events"]:
+            lines.append(f"- {event['message']}")
+    return "\n".join(lines)
+
+
+def format_watchdog_providers(providers: list[dict]) -> str:
+    lines = ["*PROVIDER STATUS*", ""]
+    for p in providers:
+        if not p["configured"]:
+            reason = f" -- {p['reason']}" if p.get("reason") else ""
+            lines.append(f"{p['name']}: not configured{reason}")
+            continue
+        state = "healthy" if p["healthy"] else "unhealthy"
+        extra = []
+        if p.get("latency_ms") is not None:
+            extra.append(f"{p['latency_ms']}ms")
+        if p.get("reconnect_count") is not None:
+            extra.append(f"{p['reconnect_count']} failure(s)")
+        if p.get("last_successful_update"):
+            extra.append(f"last update {p['last_successful_update'][:16].replace('T', ' ')}")
+        suffix = f" ({', '.join(extra)})" if extra else ""
+        lines.append(f"{p['name']}: {state}{suffix}")
+    return "\n".join(lines)
+
+
+def format_watchdog_performance(status: dict) -> str:
+    lines = [
+        "*WATCHDOG PERFORMANCE*",
+        "",
+        f"Last cycle duration: {_fmt_num(status.get('scan_duration_ms'), 0)}ms",
+        f"Last update: {(status.get('last_update') or 'never')[:16].replace('T', ' ')}",
+        f"Next scan: {(status.get('next_scan') or 'unknown')[:16].replace('T', ' ')}",
+    ]
+    if status.get("memory_mb") is not None:
+        lines.append(f"Memory: {status['memory_mb']} MB")
+    if status.get("cpu_load_avg") is not None:
+        lines.append(f"CPU load avg (1/5/15m): {status['cpu_load_avg']}")
+    if status.get("scheduled_job_count") is not None:
+        lines.append(f"Scheduled jobs (queue): {status['scheduled_job_count']}")
+    return "\n".join(lines)
+
+
+def format_watchdog_dashboard(dashboard: dict) -> str:
+    """The Watchdog hub's "Complete dashboard" -- /watchdog with no
+    arguments. A condensed version of every section (Current Market
+    Status/Market Overview/Crypto+Macro Overview/AI Status/What Changed/
+    Provider Status); the per-section subcommands (/watchdog market,
+    /watchdog ai, ...) give the fuller read of each."""
+    sections = [
+        format_watchdog_current_status(dashboard["current_status"]),
+        "",
+        format_watchdog_market(
+            dashboard["market_overview"],
+            dashboard["crypto_overview"],
+            dashboard["macro_overview"],
+        ),
+        "",
+        format_watchdog_ai(dashboard["ai_status"]),
+        "",
+        format_watchdog_changes(dashboard["what_changed"]),
+        "",
+        "Use /watchdog events | providers | market | ai | changes | performance for more detail.",
+    ]
+    return "\n".join(sections)
+
+
 def format_replay(snapshot: dict | None) -> str:
     if snapshot is None:
         return "No market snapshot has been taken yet -- check back shortly."

@@ -987,3 +987,62 @@ class TechnicalAnalysisSnapshot(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class WatchdogSnapshot(Base):
+    """v5.4 Next Generation Market Watchdog -- one row per Watchdog cycle
+    (app/services/watchdog/engine.py's WatchdogEngine.run_cycle()),
+    persisted so "Current Market Status"/"AI Status" reads are cheap
+    (no live agent-orchestrator run per dashboard/Telegram request) and so
+    "What Changed" can diff against the previous cycle. Every field here is
+    read from another engine's own already-computed output
+    (GlobalScoreEngine/RegimeDetector/ScenarioEngine/Consensus/Committee/
+    TechnicalAnalysisEngine) -- nothing is recomputed from scratch, matching
+    "never duplicate calculations already performed by Replay/Committee/
+    Consensus/Scenario/Risk"."""
+
+    __tablename__ = "watchdog_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    scan_duration_ms: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    regime: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    market_health: Mapped[str] = mapped_column(String(20))
+    global_score: Mapped[int | None] = mapped_column(nullable=True)
+    trend_strength_score: Mapped[int | None] = mapped_column(nullable=True)
+    risk_score: Mapped[int | None] = mapped_column(nullable=True)
+    confidence_score: Mapped[int | None] = mapped_column(nullable=True)
+    liquidity_score: Mapped[int | None] = mapped_column(nullable=True)
+    volatility: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    consensus: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    committee_decision: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    committee_confidence_pct: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
+    committee_recommendation: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    expected_scenario: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    expected_scenario_pct: Mapped[int | None] = mapped_column(nullable=True)
+    highest_risk: Mapped[str | None] = mapped_column(Text, nullable=True)
+    biggest_opportunity: Mapped[str | None] = mapped_column(Text, nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+
+
+class WatchdogEvent(Base):
+    """v5.4 -- automatic change-detection events (Trend Strength Increased/
+    Decreased, Market Regime Changed, Committee Changed, Confidence
+    Increased/Dropped, Risk Increased/Reduced, Liquidity Shift, Volatility
+    Spike), created by comparing consecutive WatchdogSnapshot rows
+    (app/services/watchdog/detectors.py). Distinct from AlertLog (Smart
+    Alert Engine) and CriticalAlert (v5.1) -- this is the Watchdog hub's own
+    "what changed" changelog, not a third alert-broadcast system; only a
+    gated subset of these ever reach Telegram (`telegram_sent`)."""
+
+    __tablename__ = "watchdog_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    message: Mapped[str] = mapped_column(Text)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    telegram_sent: Mapped[bool] = mapped_column(default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

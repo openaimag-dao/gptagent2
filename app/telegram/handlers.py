@@ -54,6 +54,7 @@ from app.services.signals.engine import SignalEngine
 from app.services.similar_market.engine import SimilarMarketEngine
 from app.services.technical.engine import build_technical_analysis_engine
 from app.services.terminal.engine import TerminalEngine
+from app.services.watchdog.engine import build_watchdog_engine
 from app.services.whales.engine import WhaleIntelligenceEngine
 from app.services.whatif.engine import WhatIfSimulator
 from app.telegram.formatters import (
@@ -107,6 +108,13 @@ from app.telegram.formatters import (
     format_technical,
     format_walk_forward,
     format_watchdog,
+    format_watchdog_ai,
+    format_watchdog_changes,
+    format_watchdog_dashboard,
+    format_watchdog_market,
+    format_watchdog_onchain,
+    format_watchdog_performance,
+    format_watchdog_providers,
     format_weekly_review,
     format_whale_snapshot,
     format_whatif,
@@ -194,8 +202,17 @@ HELP_TEXT = (
     "/risk -- risk-on/off, fear, macro pressure and signal conviction\n"
     "/status -- last-computed timestamps for Signal/Regime/Global Score\n"
     "/health -- bot liveness check\n"
-    "/watchdog -- recent alert detections and whether each was sent or "
-    "suppressed (conviction gate or cooldown)\n"
+    "/watchdog -- v5.4 Market Monitoring Hub: complete real-time dashboard "
+    "(market status, market/crypto/macro/on-chain overview, AI status, what changed, "
+    "provider health, alert history)\n"
+    "/watchdog events -- recent alert detections and whether each was sent or "
+    "suppressed (conviction gate or cooldown) -- the original /watchdog view\n"
+    "/watchdog providers -- provider health (CoinGecko/FRED/Binance/DefiLlama/Helius/"
+    "Telegram/Database/Brain)\n"
+    "/watchdog market -- current market/crypto/macro/on-chain overview\n"
+    "/watchdog ai -- committee/consensus/expected scenario/highest risk/biggest opportunity\n"
+    "/watchdog changes -- what changed since the last Watchdog cycle\n"
+    "/watchdog performance -- cycle timing, memory, CPU load, scheduled job count\n"
     "/replay -- latest consolidated market snapshot (regime, scores, consensus, "
     "portfolio advice, alerts since the previous snapshot)\n"
     "/shocks -- v5.1 Autonomous Critical Alert System: currently active price-shock "
@@ -265,7 +282,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("risk", "Risk-on/off, fear, macro pressure and signal conviction"),
     ("status", "Last-computed timestamps for core engines"),
     ("health", "Bot liveness check"),
-    ("watchdog", "Recent alert detections, sent vs suppressed"),
+    ("watchdog", "Market Monitoring Hub -- complete real-time dashboard"),
     ("replay", "Latest consolidated market snapshot"),
     ("shocks", "Active Autonomous Critical Alert System episodes"),
     ("technical", "AI-interpreted technical analysis (TradingView MCP provider)"),
@@ -1126,11 +1143,59 @@ async def cmd_health(message: Message) -> None:
     await _answer(message, f"Bot is running. {datetime.now(UTC).isoformat()}")
 
 
+async def _watchdog_next_scan() -> str | None:
+    # Lazy import: app.scheduler.jobs imports app.telegram.broadcast at
+    # module level, which imports app.telegram.bot, which imports this
+    # module (app.telegram.handlers) back -- a module-level import here
+    # would be circular (same fix as build_critical_alert_engine's/
+    # AlertRuleEngine's Telegram sends elsewhere in this codebase).
+    from app.scheduler.jobs import WATCHDOG_SNAPSHOT_JOB_ID, get_job_next_run
+
+    next_run = get_job_next_run(WATCHDOG_SNAPSHOT_JOB_ID)
+    return next_run.isoformat() if next_run is not None else None
+
+
 @router.message(Command("watchdog"))
-async def cmd_watchdog(message: Message) -> None:
-    engine = MemoryEngine(get_session_factory())
-    entries = await engine.get_category("alerts", limit=10)
-    await _answer(message, format_watchdog(entries))
+async def cmd_watchdog(message: Message, command: CommandObject) -> None:
+    sub = (command.args or "").strip().lower()
+    engine = build_watchdog_engine()
+
+    if sub == "events":
+        entries = await engine.get_alert_history(limit=10)
+        await _answer(message, format_watchdog(entries))
+        return
+    if sub == "providers":
+        providers = await engine.get_provider_status()
+        await _answer(message, format_watchdog_providers(providers))
+        return
+    if sub == "market":
+        market, crypto, macro, onchain = (
+            await engine.get_market_overview(),
+            await engine.get_crypto_overview(),
+            await engine.get_macro_overview(),
+            await engine.get_onchain_overview(),
+        )
+        market_text = format_watchdog_market(market, crypto, macro)
+        text = f"{market_text}\n\n{format_watchdog_onchain(onchain)}"
+        await _answer(message, text)
+        return
+    if sub == "ai":
+        ai_status = await engine.get_ai_status()
+        await _answer(message, format_watchdog_ai(ai_status))
+        return
+    if sub == "changes":
+        changes = await engine.get_what_changed()
+        await _answer(message, format_watchdog_changes(changes))
+        return
+    if sub == "performance":
+        status = await engine.get_current_status()
+        status["next_scan"] = await _watchdog_next_scan()
+        await _answer(message, format_watchdog_performance(status))
+        return
+
+    dashboard = await engine.get_dashboard()
+    dashboard["current_status"]["next_scan"] = await _watchdog_next_scan()
+    await _answer(message, format_watchdog_dashboard(dashboard))
 
 
 @router.message(Command("shocks"))

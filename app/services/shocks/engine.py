@@ -51,6 +51,7 @@ from app.services.shocks.detectors import (
     best_window_detection,
     committee_alignment_score,
     compute_realized_volatility,
+    compute_window_changes,
     consensus_alignment_score,
     decide_alert_action,
     detect_multi_asset_shock,
@@ -133,15 +134,7 @@ class CriticalAlertEngine:
         if not history:
             return {w: None for w in WINDOWS_MINUTES}, []
         prices = [float(row.price) for row in history]
-        latest_price = prices[-1]
-        changes: dict[str, float | None] = {}
-        for window, minutes in WINDOWS_MINUTES.items():
-            target = now - timedelta(minutes=minutes)
-            earlier_row = min(history, key=lambda r: abs((r.recorded_at - target).total_seconds()))
-            earlier_price = float(earlier_row.price)
-            changes[window] = (
-                (latest_price - earlier_price) / earlier_price * 100 if earlier_price else None
-            )
+        changes = compute_window_changes(history, now)
         return changes, prices
 
     async def _fear_greed_window_prices(self) -> tuple[dict[str, float | None], list[float]]:

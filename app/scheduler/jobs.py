@@ -40,6 +40,8 @@ from app.services.shocks.engine import build_critical_alert_engine
 from app.services.signals.engine import SignalEngine
 from app.services.technical.engine import build_technical_analysis_engine
 from app.services.terminal.engine import TerminalEngine
+from app.services.watchdog.engine import build_watchdog_engine
+from app.services.watchdog.provider_health import record_provider_failure, record_provider_success
 from app.services.whales.engine import WhaleIntelligenceEngine
 from app.telegram.broadcast import broadcast_report, broadcast_text
 from app.telegram.formatters import format_monthly_performance, format_weekly_review
@@ -61,6 +63,7 @@ ALERT_CHECK_JOB_ID = "check_alerts"
 ALERT_RULE_CHECK_JOB_ID = "check_alert_rules"
 CRITICAL_ALERT_CHECK_JOB_ID = "check_critical_alerts"
 TECHNICAL_ANALYSIS_JOB_ID = "compute_technical_analysis"
+WATCHDOG_SNAPSHOT_JOB_ID = "compute_watchdog_snapshot"
 
 # BTC/ETH/SOL (crypto) plus the most-watched indices/macro symbols already
 # in the history sync registry -- see app/services/technical/provider.py
@@ -268,8 +271,34 @@ async def collect_market_data_job() -> None:
             len(snapshot.quotes),
             len(snapshot.errors),
         )
+        # Real, cheap health signal for the v5.4 Watchdog "Provider Status"
+        # panel's Reconnect Count -- a consecutive-failure counter per
+        # provider, incremented on every failed cycle and reset on the next
+        # success. Only CoinGecko/FRED are tracked (the only two providers
+        # both wired in AND listed in the mission's Provider Status panel).
+        redis = get_redis()
+        succeeded = {quote.source for quote in snapshot.quotes}
+        failed = {err.split(":", 1)[0] for err in snapshot.errors}
+        for provider_name in succeeded:
+            await record_provider_success(redis, provider_name)
+        for provider_name in failed:
+            await record_provider_failure(redis, provider_name)
     except Exception:
         logger.exception("Market data collection job failed")
+
+
+async def compute_watchdog_snapshot_job() -> None:
+    engine = build_watchdog_engine()
+    try:
+        snapshot = await engine.run_cycle()
+        logger.info(
+            "Watchdog snapshot computed: health=%s regime=%s scan_duration_ms=%s",
+            snapshot.market_health,
+            snapshot.regime,
+            snapshot.scan_duration_ms,
+        )
+    except Exception:
+        logger.exception("Watchdog snapshot job failed")
 
 
 async def check_critical_alerts_job() -> None:
@@ -550,6 +579,14 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
+        compute_watchdog_snapshot_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=WATCHDOG_SNAPSHOT_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
         collect_news_job,
         trigger=IntervalTrigger(minutes=settings.news_collection_interval_minutes),
         id=NEWS_JOB_ID,
@@ -733,3 +770,23 @@ def shutdown_scheduler() -> None:
     if _scheduler is not None:
         _scheduler.shutdown(wait=False)
         _scheduler = None
+
+
+def get_job_next_run(job_id: str) -> datetime | None:
+    """A real, already-tracked-by-APScheduler timestamp -- "Next Scan" for
+    the Watchdog hub's Current Market Status/Performance sections. Returns
+    None if the scheduler hasn't started yet or the job id is unknown,
+    rather than fabricating a guess."""
+    if _scheduler is None:
+        return None
+    job = _scheduler.get_job(job_id)
+    return job.next_run_time if job is not None else None
+
+
+def get_scheduled_job_count() -> int | None:
+    """A real proxy for "Queue" in the Watchdog hub's Performance view: how
+    many jobs are currently registered with the scheduler. None (not 0) if
+    the scheduler hasn't started yet."""
+    if _scheduler is None:
+        return None
+    return len(_scheduler.get_jobs())

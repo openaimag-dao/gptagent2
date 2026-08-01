@@ -1714,6 +1714,187 @@ SMA read as 100% bearish instead of neutral -- fixed to treat equality
 as neutral (0.5), confirmed by `test_score_timeframe_neutral_reading_
 scores_near_50`.
 
+## V5.4: Next Generation Market Watchdog
+
+Upgrades Market Watchdog from an alert-history viewer into the central
+**Market Monitoring Hub** -- one place that answers "what is happening in
+the market RIGHT NOW?" -- while keeping every byte of the existing Watchdog
+(alert history, cooldown, suppressed alerts, severity, timestamps, Telegram
+delivery status) exactly as it was, just moved from the bare `/watchdog`
+command to `/watchdog events` (see Files Modified). Nothing here duplicates
+Replay/Committee/Consensus/Scenario/Risk's own calculations -- the new
+`WatchdogEngine` (`app/services/watchdog/engine.py`) is a read-only
+composition layer over their already-computed outputs, with exactly one
+exception: `run_cycle()` runs the shared 6-agent orchestrator ONCE per its
+own scheduler cadence (`compute_watchdog_snapshot_job`, same
+`analysis_interval_minutes` cadence as Consensus/Committee/Scenario) and
+persists the result to a new `WatchdogSnapshot` row, so every read (API,
+Telegram, dashboard) is a cheap cached lookup rather than a fresh agent
+run -- the exact `_cycle_context()` pattern v5.1's `CriticalAlertEngine`
+established (one orchestrator run per cycle, reused for everything).
+
+### 1. Files Added
+
+```
+app/services/watchdog/__init__.py
+app/services/watchdog/detectors.py     -- pure change-detection (trend/confidence/risk/
+                                           liquidity/volatility/committee/regime) + small
+                                           classification helpers (market health, AI bias,
+                                           freshness)
+app/services/watchdog/provider_health.py -- honest Provider Status (CoinGecko/FRED/Binance/
+                                           DefiLlama/Helius/Telegram/Database/Brain)
+app/services/watchdog/engine.py        -- WatchdogEngine (the Market Monitoring Hub)
+app/api/watchdog.py                    -- GET /api/watchdog (+/events/providers/market/ai/
+                                           changes/performance)
+alembic/versions/0024_v5_watchdog_hub.py -- watchdog_snapshots + watchdog_events tables
+tests/test_watchdog_detectors.py
+tests/test_watchdog_provider_health.py
+tests/test_watchdog_engine.py
+```
+
+### 2. Files Modified
+
+```
+app/database/models.py            -- WatchdogSnapshot, WatchdogEvent models
+app/services/shocks/detectors.py  -- extracted compute_window_changes() (shared windowing
+                                      logic, previously private to CriticalAlertEngine) and
+                                      promoted _direction_bucket -> regime_direction_bucket
+                                      (public), both now reused by the Watchdog hub instead
+                                      of being reimplemented
+app/services/shocks/engine.py     -- _window_prices() now calls the extracted
+                                      compute_window_changes() (identical behavior, no
+                                      duplicate logic)
+app/scheduler/jobs.py             -- compute_watchdog_snapshot_job, provider-health
+                                      recording in collect_market_data_job,
+                                      get_job_next_run()/get_scheduled_job_count() helpers
+app/main.py                       -- registers watchdog_router
+app/telegram/formatters.py        -- format_watchdog_dashboard/_market/_onchain/_ai/
+                                      _changes/_providers/_performance (format_watchdog()
+                                      itself is untouched -- still the alert-history view,
+                                      now reached via /watchdog events)
+app/telegram/handlers.py          -- cmd_watchdog gains subcommand routing
+app/static/dashboard/index.html, app.js -- renderWatchdog() rebuilt into the full hub
+tests/test_shock_detectors.py, tests/test_telegram_handlers.py, tests/test_api_app.py
+                                   -- coverage for all of the above + the pinned bare-
+                                      /watchdog test updated to /watchdog events
+```
+
+### 3. New Commands
+
+```
+/watchdog              Complete dashboard (Current Market Status, Market/Crypto/Macro/
+                        On-Chain Overview, AI Status, What Changed, Provider Status,
+                        Alert History)
+/watchdog events        Alert history (the original /watchdog view, unchanged)
+/watchdog providers      Provider health
+/watchdog market         Current market/crypto/macro/on-chain state
+/watchdog ai             Committee/consensus/expected scenario/highest risk/opportunity
+/watchdog changes        What changed since the last Watchdog cycle
+/watchdog performance    Cycle timing, memory, CPU load average, scheduled job count
+```
+
+Mirrored on the API (`GET /api/watchdog`, `/events`, `/providers`, `/market`,
+`/ai`, `/changes`, `/performance`) and the dashboard's rebuilt Watchdog Hub
+page.
+
+### 4. New Watchdog Sections
+
+- **Current Market Status**: current time, last update, next scan (a real
+  APScheduler `next_run_time`, not a guess), scan duration (timed around
+  `run_cycle()`), Market Health (derived from the Global Market Score),
+  Brain/Replay/Committee/Consensus status (`ok`/`stale`/`unavailable`,
+  timestamp-only freshness checks against each engine's own already-stored
+  reading).
+- **Market Overview**: regime, trend (bull/bear/neutral bucket, shared with
+  v5.1's shock-alignment scoring), trend strength, momentum/volatility
+  (from the existing v5.3 Technical Analysis Engine's BTC proxy read),
+  confidence, risk score, liquidity score, Market Intelligence Score
+  (`GlobalMarketScore.global_score`).
+- **Crypto Overview**: BTC/ETH/SOL/BNB/LINK/ADA/AVAX -- price, 24h/1h/15m %
+  (the 1h/15m windows reuse v5.1's exact nearest-neighbor windowing
+  algorithm), trend, volume, momentum, AI bias. BNB/LINK/ADA/AVAX have no
+  CoinGecko coverage in this codebase (only BTC/ETH/SOL are synced) --
+  reported honestly `available: false`, never a fabricated price.
+- **Macro Overview**: DXY/VIX/Gold/Oil/US10Y/US02Y/Nasdaq/S&P 500/Dow
+  Jones/Russell 2000 -- direction, daily %, trend, and Impact on Crypto (a
+  documented directional heuristic, e.g. "DXY up -> bearish for crypto",
+  labeled as a heuristic, not a measured correlation). US02Y (2-year
+  Treasury yield) isn't in FRED's synced series list (only 10Y/30Y are) --
+  honestly `available: false`.
+- **On-Chain Overview**: whale positioning/funding/open interest from the
+  real `WhaleIntelligenceEngine` (CoinGlass/CoinGecko-derivatives) when
+  configured; exchange flows/stablecoin flow/TVL always "Unavailable" --
+  `OnChainIntelligenceEngine` remains the honest scaffold it's always been
+  (no Glassnode/Helius client exists in this codebase).
+- **AI Status**: committee opinion, consensus split, prediction confidence,
+  expected scenario, highest risk and biggest opportunity (the
+  highest-probability bearish/bullish scenarios from the existing
+  `ScenarioEngine`, with their own rationale strings) -- all read from the
+  latest `WatchdogSnapshot`, never recomputed on request.
+- **What Changed**: field-level diff (regime/trend strength/confidence/
+  risk/liquidity/committee) between the two most recent `WatchdogSnapshot`
+  rows, plus the human-readable auto-detected events below.
+- **Provider Status**: CoinGecko/FRED (real, DB-backed: last successful
+  `AssetPrice` write per source, a Redis consecutive-failure counter as
+  "Reconnect Count"), Database (a live, timed `SELECT 1`), Telegram
+  (configured + last successful `AlertLog` broadcast), Brain (configured +
+  last `Report.generated_at`), Binance/DefiLlama (no client exists in this
+  codebase -- reported not-implemented), Helius (a settings key exists but
+  no client is wired in -- reported not-configured, matching
+  `OnChainIntelligenceEngine`'s own honesty). Latency is only live-probed
+  for Database -- probing external providers on every dashboard/Telegram
+  request would make the status page itself a source of rate-limit risk,
+  so CoinGecko/FRED health is instead inferred from write recency.
+
+### 5. Automatic Detection (Watchdog Events)
+
+`app/services/watchdog/detectors.py` runs on every `run_cycle()`:
+`MarketRegimeChanged`, `TrendStrengthIncreased`/`Decreased`,
+`ConfidenceIncreased`/`Dropped`, `RiskIncreased`/`Reduced`,
+`LiquidityShift`, `VolatilitySpike`, `CommitteeChanged` -- every event the
+mission asked for, persisted to a new `WatchdogEvent` table (distinct from
+`AlertLog`/`CriticalAlert` -- this is the hub's own changelog, not a third
+alert-broadcast system). Telegram only fires for `MarketRegimeChanged`,
+`ConfidenceIncreased`/`Dropped`, `RiskIncreased` and `CommitteeChanged`
+("never spam"), each with its own 60-minute cooldown
+(`WatchdogEvent.telegram_sent`). Market Shock detection is intentionally
+NOT duplicated here -- v5.1's `CriticalAlertEngine` already owns that,
+independently, on its own schedule.
+
+### 6. Performance Impact
+
+- **One agent-orchestrator run per Watchdog cycle**, not per request --
+  every dashboard/Telegram/API read is a cached `WatchdogSnapshot`/
+  `get_latest()`-style lookup.
+- **No new provider calls**: Crypto/Macro Overview reuse
+  `MarketRepository.get_latest()`/`get_history()` (already-synced rows);
+  Provider Status reuses already-stored timestamps rather than live-pinging
+  external APIs (except the local `SELECT 1` for Database).
+- **Reused, not duplicated, windowing logic**: `compute_window_changes()`
+  is the same nearest-neighbor algorithm v5.1 already validated, extracted
+  into a shared function instead of being reimplemented for the hub.
+
+### 7. Tests Added
+
+45 new tests (14 detector unit tests, 11 provider-health tests, 16
+WatchdogEngine tests covering every section plus `run_cycle()`'s
+persistence/change-detection/Telegram-cooldown path, 3 for the extracted
+`compute_window_changes()`/`regime_direction_bucket()`, and the pinned
+bare-`/watchdog` Telegram test updated to `/watchdog events` plus a new
+default-dashboard test), **753 total, all passing**. `ruff check app
+tests` clean, `node --check app.js` clean, `alembic history` confirms
+`0023 -> 0024 (head)`.
+
+### 8. Deployment Verification
+
+Migration `0024` applies `watchdog_snapshots` + `watchdog_events`;
+`compute_watchdog_snapshot_job` runs on the existing `analysis_interval_minutes`
+cadence alongside Consensus/Committee/Scenario. Verified live: `GET
+/api/watchdog` (and every subcommand route), `/watchdog` and its six
+subcommands in Telegram, the rebuilt Watchdog Hub dashboard page, and a
+clean scheduler log line (`Watchdog snapshot computed: health=... regime=...
+scan_duration_ms=...`) confirming the cycle runs without errors.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

@@ -114,21 +114,83 @@ async def test_cmd_health_replies_without_touching_db():
     assert "Bot is running" in text
 
 
-async def test_cmd_watchdog_reports_no_detections_when_empty():
+async def test_cmd_watchdog_events_reports_no_detections_when_empty():
+    # v5.4 moved the original alert-history-only view from bare /watchdog
+    # to /watchdog events -- this test now exercises that subcommand,
+    # preserving the original behavior it used to pin at the top level.
     message = AsyncMock()
-    memory_engine = AsyncMock()
-    memory_engine.get_category.return_value = []
+    command = CommandObject(args="events")
+    watchdog_engine = AsyncMock()
+    watchdog_engine.get_alert_history.return_value = []
 
-    with (
-        patch("app.telegram.handlers.MemoryEngine", return_value=memory_engine),
-        patch("app.telegram.handlers.get_session_factory"),
-    ):
-        await cmd_watchdog(message)
+    with patch("app.telegram.handlers.build_watchdog_engine", return_value=watchdog_engine):
+        await cmd_watchdog(message, command)
 
-    memory_engine.get_category.assert_awaited_once_with("alerts", limit=10)
+    watchdog_engine.get_alert_history.assert_awaited_once_with(limit=10)
     message.answer.assert_awaited_once()
     (text,), kwargs = message.answer.call_args
     assert "No detections logged yet" in text
+
+
+def _watchdog_dashboard_stub() -> dict:
+    return {
+        "current_status": {
+            "current_time": "2026-01-01T00:00:00+00:00",
+            "last_update": None,
+            "scan_duration_ms": None,
+            "market_health": "Unknown",
+            "brain_status": "unavailable",
+            "replay_status": "unavailable",
+            "committee_status": "unavailable",
+            "consensus_status": "unavailable",
+        },
+        "market_overview": {
+            "regime": None,
+            "trend": None,
+            "trend_strength": None,
+            "momentum": None,
+            "volatility": None,
+            "confidence": None,
+            "risk_score": None,
+            "liquidity_score": None,
+            "market_intelligence_score": None,
+        },
+        "crypto_overview": [],
+        "macro_overview": [],
+        "onchain_overview": {"available": False, "reason": None},
+        "ai_status": {
+            "committee_opinion": None,
+            "consensus": None,
+            "prediction_confidence": None,
+            "expected_scenario": None,
+            "expected_scenario_pct": None,
+            "highest_risk": None,
+            "biggest_opportunity": None,
+            "computed_at": None,
+        },
+        "what_changed": {"available": False, "fields": [], "events": []},
+        "provider_status": [],
+        "alert_history": [],
+    }
+
+
+async def test_cmd_watchdog_no_args_returns_full_dashboard():
+    message = AsyncMock()
+    command = CommandObject(args=None)
+    watchdog_engine = AsyncMock()
+    watchdog_engine.get_dashboard.return_value = _watchdog_dashboard_stub()
+
+    with (
+        patch("app.telegram.handlers.build_watchdog_engine", return_value=watchdog_engine),
+        patch("app.telegram.handlers._watchdog_next_scan", AsyncMock(return_value=None)),
+    ):
+        await cmd_watchdog(message, command)
+
+    watchdog_engine.get_dashboard.assert_awaited_once()
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "CURRENT MARKET STATUS" in text
+    assert "MARKET OVERVIEW" in text
 
 
 async def test_handle_errors_notifies_user_instead_of_staying_silent():
