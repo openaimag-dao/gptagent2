@@ -47,6 +47,7 @@ from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import MarketReplayEngine
 from app.services.research.engine import ResearchEngine
 from app.services.research.impact import EventImpactEngine
+from app.services.scanner.engine import build_market_scanner_engine
 from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.shocks.engine import build_critical_alert_engine
@@ -98,6 +99,10 @@ from app.telegram.formatters import (
     format_report,
     format_research_result,
     format_risk,
+    format_scanner_dashboard,
+    format_scanner_detections,
+    format_scanner_movers,
+    format_scanner_sectors,
     format_scenarios,
     format_sentiment,
     format_signal,
@@ -213,6 +218,13 @@ HELP_TEXT = (
     "/watchdog ai -- committee/consensus/expected scenario/highest risk/biggest opportunity\n"
     "/watchdog changes -- what changed since the last Watchdog cycle\n"
     "/watchdog performance -- cycle timing, memory, CPU load, scheduled job count\n"
+    "/scanner -- v5.5 Autonomous Market Scanner: top movers, sector leaders, pending "
+    "alerts (no configuration -- the AI decides what's significant across the top ~500 "
+    "cryptocurrencies by market cap)\n"
+    "/scanner movers -- top 20 gainers/losers\n"
+    "/scanner sectors -- sector rotation leaders (Layer 1/2, AI, DeFi, Gaming, Meme, ...)\n"
+    "/scanner detections -- latest scanner detections\n"
+    "/scanner pending -- currently active (unresolved) scanner alerts\n"
     "/replay -- latest consolidated market snapshot (regime, scores, consensus, "
     "portfolio advice, alerts since the previous snapshot)\n"
     "/shocks -- v5.1 Autonomous Critical Alert System: currently active price-shock "
@@ -283,6 +295,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("status", "Last-computed timestamps for core engines"),
     ("health", "Bot liveness check"),
     ("watchdog", "Market Monitoring Hub -- complete real-time dashboard"),
+    ("scanner", "Autonomous Market Scanner -- top movers, sector leaders, alerts"),
     ("replay", "Latest consolidated market snapshot"),
     ("shocks", "Active Autonomous Critical Alert System episodes"),
     ("technical", "AI-interpreted technical analysis (TradingView MCP provider)"),
@@ -1196,6 +1209,55 @@ async def cmd_watchdog(message: Message, command: CommandObject) -> None:
     dashboard = await engine.get_dashboard()
     dashboard["current_status"]["next_scan"] = await _watchdog_next_scan()
     await _answer(message, format_watchdog_dashboard(dashboard))
+
+
+def _serialize_scanner_alert(row) -> dict:
+    return {
+        "alert_key": row.alert_key,
+        "category": row.category,
+        "tier": row.tier,
+        "symbols": row.symbols,
+        "message": row.message,
+        "active": row.active,
+        "last_updated_at": row.last_updated_at.isoformat(),
+    }
+
+
+@router.message(Command("scanner"))
+async def cmd_scanner(message: Message, command: CommandObject) -> None:
+    sub = (command.args or "").strip().lower()
+    engine = build_market_scanner_engine()
+
+    if sub == "movers":
+        breadth = await engine.get_latest_breadth()
+        await _answer(message, format_scanner_movers(breadth))
+        return
+    if sub == "sectors":
+        sectors = await engine.get_latest_sector_breadth()
+        await _answer(message, format_scanner_sectors(sectors))
+        return
+    if sub == "detections":
+        alerts = await engine.list_recent_alerts(limit=20)
+        serialized = [_serialize_scanner_alert(a) for a in alerts]
+        await _answer(message, format_scanner_detections(serialized))
+        return
+    if sub == "pending":
+        alerts = await engine.list_active_alerts()
+        serialized = [_serialize_scanner_alert(a) for a in alerts]
+        await _answer(message, format_scanner_detections(serialized))
+        return
+
+    breadth = await engine.get_latest_breadth()
+    sector_breadth = await engine.get_latest_sector_breadth()
+    pending = await engine.list_active_alerts()
+    suppressed = await engine.list_suppressed_alerts(limit=50)
+    dashboard = {
+        "top_movers": breadth,
+        "sector_leaders": sector_breadth,
+        "pending_alerts": pending,
+        "suppressed_alerts": suppressed,
+    }
+    await _answer(message, format_scanner_dashboard(dashboard))
 
 
 @router.message(Command("shocks"))

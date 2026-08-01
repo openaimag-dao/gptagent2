@@ -35,6 +35,11 @@ from app.telegram.formatters import (
     format_regime,
     format_replay,
     format_risk,
+    format_scanner_alert,
+    format_scanner_dashboard,
+    format_scanner_detections,
+    format_scanner_movers,
+    format_scanner_sectors,
     format_signal,
     format_single_asset,
     format_status,
@@ -863,3 +868,155 @@ def test_format_technical_includes_high_confidence_alignment():
     text = format_technical("BTC", result)
     assert "HIGH CONFIDENCE BUY" in text
     assert "RSI oversold" in text
+
+
+def _scanner_detection():
+    return {
+        "category": "price_event",
+        "symbols": ["BTC"],
+        "tier": "high",
+        "title": "BTC SURGE",
+        "direction": "up",
+        "message": "BTC +9.00% (24h)",
+        "readings": [
+            {
+                "symbol": "BTC",
+                "price": 65000.123456,
+                "change_pct_24h": 9.0,
+                "volume_24h": 45_000_000.0,
+            }
+        ],
+        "context": {
+            "regime": "risk_on",
+            "risk_score": 30,
+            "confidence_score": 70,
+            "committee_decision": "BUY",
+            "committee_majority_pct": 80.0,
+        },
+    }
+
+
+def test_format_scanner_alert_includes_mission_required_fields():
+    text = format_scanner_alert(_scanner_detection())
+    assert "BTC SURGE" in text
+    assert "Asset: BTC" in text
+    assert "Current Price:" in text
+    assert "Price Change:" in text
+    assert "Volume Change:" in text
+    assert "Market Regime:" in text
+    assert "Trend:" in text
+    assert "Risk:" in text
+    assert "Confidence:" in text
+    assert "Committee Opinion: BUY (80.0%)" in text
+    assert "Explanation:" in text
+    assert "BTC +9.00% (24h)" in text
+    assert "Recommendation:" in text
+
+
+def test_format_scanner_alert_multi_asset_shock_lists_all_symbols():
+    detection = {
+        "category": "crypto_market_shock",
+        "symbols": ["BTC", "ETH", "SOL"],
+        "tier": "critical",
+        "title": "CRYPTO MARKET SHOCK",
+        "direction": "down",
+        "message": "3 major assets moved together.",
+        "readings": [
+            {"symbol": "BTC", "pct_change": -6.0, "window": "24h"},
+            {"symbol": "ETH", "pct_change": -7.0, "window": "24h"},
+            {"symbol": "SOL", "pct_change": -8.0, "window": "24h"},
+        ],
+        "context": {},
+    }
+    text = format_scanner_alert(detection)
+    assert "CRYPTO MARKET SHOCK" in text
+    assert "BTC: -6.00%" in text
+    assert "ETH: -7.00%" in text
+    assert "SOL: -8.00%" in text
+
+
+def test_format_scanner_dashboard_empty():
+    assert "No scan data yet" in format_scanner_dashboard({})
+
+
+def test_format_scanner_dashboard_populated():
+    dashboard = {
+        "top_movers": {
+            "total_scanned": 500,
+            "rising_count": 300,
+            "falling_count": 200,
+            "top_gainers": [{"symbol": "PEPE", "change_pct_24h": 12.0}],
+            "top_losers": [{"symbol": "XYZ", "change_pct_24h": -9.0}],
+        },
+        "sector_leaders": [{"sector": "AI", "avg_change_pct_24h": 6.5, "coin_count": 5}],
+        "pending_alerts": [{"id": 1}],
+        "suppressed_alerts": [],
+    }
+    text = format_scanner_dashboard(dashboard)
+    assert "Scanned 500 symbols" in text
+    assert "PEPE" in text
+    assert "XYZ" in text
+    assert "AI:" in text
+    assert "Pending alerts: 1" in text
+
+
+def test_format_scanner_movers_empty():
+    assert "No scan data yet" in format_scanner_movers(None)
+    assert "No scan data yet" in format_scanner_movers({"total_scanned": 0})
+
+
+def test_format_scanner_movers_populated():
+    breadth = {
+        "total_scanned": 500,
+        "rising_count": 300,
+        "falling_count": 190,
+        "unchanged_count": 10,
+        "top_gainers": [{"symbol": "PEPE", "change_pct_24h": 12.0, "price": 0.00001}],
+        "top_losers": [{"symbol": "XYZ", "change_pct_24h": -9.0, "price": 1.5}],
+    }
+    text = format_scanner_movers(breadth)
+    assert "TOP MOVERS" in text
+    assert "PEPE" in text
+    assert "XYZ" in text
+    assert "300 rising" in text
+
+
+def test_format_scanner_sectors_empty():
+    assert "No sector data yet" in format_scanner_sectors([])
+
+
+def test_format_scanner_sectors_populated():
+    sectors = [
+        {
+            "sector": "AI",
+            "avg_change_pct_24h": 6.5,
+            "coin_count": 5,
+            "top_mover": "FET",
+            "top_mover_change_pct_24h": 9.0,
+        }
+    ]
+    text = format_scanner_sectors(sectors)
+    assert "SECTOR LEADERS" in text
+    assert "AI: +6.50% avg, 5 coins (top: FET +9.00%)" in text
+
+
+def test_format_scanner_detections_empty():
+    assert "No detections logged yet" in format_scanner_detections([])
+
+
+def test_format_scanner_detections_populated():
+    detections = [
+        {
+            "last_updated_at": "2026-01-01T00:05:00+00:00",
+            "tier": "high",
+            "symbols": ["BTC"],
+            "active": True,
+            "message": "BTC +9.00% (24h)",
+        }
+    ]
+    text = format_scanner_detections(detections)
+    assert "LATEST DETECTIONS" in text
+    assert "[HIGH]" in text
+    assert "BTC" in text
+    assert "active" in text
+    assert "BTC +9.00% (24h)" in text

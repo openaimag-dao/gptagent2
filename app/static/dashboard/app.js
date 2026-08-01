@@ -979,6 +979,138 @@ async function renderTechnical() {
   return nodes;
 }
 
+// v5.5 Autonomous Market Scanner -- top ~500 cryptocurrencies by market
+// cap, scanned every scanner_interval_minutes. Never sends Telegram
+// directly (see app.services.scanner.engine's module docstring); this
+// page is a read-only view of the same /api/scanner data the Telegram
+// /scanner command and the notifier both draw from.
+async function renderScanner() {
+  const nodes = [el("h2", {}, "Market Scanner")];
+  const d = await safe("/api/scanner");
+  if (!d) {
+    nodes.push(el("p", { class: "error" }, "Market Scanner dashboard unavailable."));
+    return nodes;
+  }
+
+  const breadth = d.top_movers;
+  nodes.push(el("h2", {}, "Current Scans"));
+  if (breadth && breadth.total_scanned) {
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Scanned", breadth.total_scanned),
+        card("Rising", breadth.rising_count, null, "up"),
+        card("Falling", breadth.falling_count, null, "down"),
+        card("Unchanged", breadth.unchanged_count, null, "neutral"),
+        card("Pending Alerts", d.pending_alerts.length),
+        card("Suppressed (last 50)", d.suppressed_alerts.length),
+      ])
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No scan data yet -- check back after the next cycle."));
+  }
+
+  nodes.push(el("h2", {}, "Top Movers"));
+  if (breadth && (breadth.top_gainers.length || breadth.top_losers.length)) {
+    nodes.push(el("h2", {}, "Top Gainers"));
+    nodes.push(
+      table(
+        ["Symbol", "Price", "24h %"],
+        breadth.top_gainers.map((r) => [
+          r.symbol,
+          fmtNum(r.price, 6),
+          el("span", { class: changeClass(r.change_pct_24h) }, fmtPct(r.change_pct_24h)),
+        ])
+      )
+    );
+    nodes.push(el("h2", {}, "Top Losers"));
+    nodes.push(
+      table(
+        ["Symbol", "Price", "24h %"],
+        breadth.top_losers.map((r) => [
+          r.symbol,
+          fmtNum(r.price, 6),
+          el("span", { class: changeClass(r.change_pct_24h) }, fmtPct(r.change_pct_24h)),
+        ])
+      )
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No mover data yet."));
+  }
+
+  nodes.push(el("h2", {}, "Sector Leaders"));
+  if (d.sector_leaders.length) {
+    nodes.push(
+      table(
+        ["Sector", "Avg 24h %", "Coins", "Top Mover"],
+        d.sector_leaders.map((s) => [
+          s.sector,
+          el("span", { class: changeClass(s.avg_change_pct_24h) }, fmtPct(s.avg_change_pct_24h)),
+          s.coin_count,
+          s.top_mover ? `${s.top_mover} (${fmtPct(s.top_mover_change_pct_24h)})` : "n/a",
+        ])
+      )
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No sector data yet."));
+  }
+
+  nodes.push(el("h2", {}, "Latest Detections"));
+  if (d.latest_detections.length) {
+    nodes.push(
+      table(
+        ["Time", "Tier", "Category", "Assets", "State", "Message"],
+        d.latest_detections.map((a) => [
+          a.last_updated_at.slice(0, 16).replace("T", " "),
+          el("span", { class: a.tier === "critical" || a.tier === "high" ? "down" : "neutral" }, a.tier.toUpperCase()),
+          a.category.replace(/_/g, " "),
+          a.symbols.join(", "),
+          a.active ? el("span", { class: "up" }, "active") : el("span", { class: "sub" }, "resolved"),
+          a.message,
+        ])
+      )
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No detections logged yet."));
+  }
+
+  nodes.push(el("h2", {}, "Pending Alerts"));
+  if (d.pending_alerts.length) {
+    nodes.push(
+      table(
+        ["Tier", "Category", "Assets", "Since", "Message"],
+        d.pending_alerts.map((a) => [
+          a.tier.toUpperCase(),
+          a.category.replace(/_/g, " "),
+          a.symbols.join(", "),
+          a.first_triggered_at.slice(0, 16).replace("T", " "),
+          a.message,
+        ])
+      )
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No active scanner episodes right now."));
+  }
+
+  nodes.push(el("h2", {}, "Suppressed Alerts"));
+  if (d.suppressed_alerts.length) {
+    nodes.push(
+      table(
+        ["Time", "Tier", "Type", "Message"],
+        d.suppressed_alerts.map((a) => [
+          a.triggered_at.slice(0, 16).replace("T", " "),
+          a.conviction_tier,
+          a.alert_type,
+          a.message,
+        ])
+      )
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No suppressed detections in the last 50."));
+  }
+
+  return nodes;
+}
+
 async function renderExplanation() {
   const nodes = [el("h2", {}, "Why")];
   const input = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
@@ -2192,7 +2324,7 @@ const PAGES = {
   signals: renderSignals, reports: renderReports, portfolio: renderPortfolio, advice: renderAdvice,
   alerts: renderAlerts,
   risk: renderRisk, why: renderExplanation, watchdog: renderWatchdog, status: renderStatus,
-  replay: renderReplay, shocks: renderShocks, technical: renderTechnical,
+  replay: renderReplay, shocks: renderShocks, technical: renderTechnical, scanner: renderScanner,
   settings: renderSettings,
 };
 

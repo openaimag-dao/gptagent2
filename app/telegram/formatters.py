@@ -15,6 +15,7 @@ from app.database.models import (
     SignalSnapshot,
 )
 from app.services.consensus.engine import ConsensusResult
+from app.services.shocks.detectors import regime_direction_bucket
 
 _CLASS_LABELS: dict[AssetClass, str] = {
     AssetClass.CRYPTO: "Crypto",
@@ -1259,6 +1260,154 @@ def format_critical_alert(envelope: dict, tier: str, quality_score: float | None
         lines.append("Related Markets: " + ", ".join(r["symbol"] for r in envelope["readings"]))
 
     return "\n".join(lines)
+
+
+def format_scanner_alert(detection: dict) -> str:
+    """v5.5 Market Scanner Telegram alert -- the mission's required field
+    list: Title, Asset, Current Price, Price Change, Volume Change, Market
+    Regime, Trend, Risk, Confidence, Committee Opinion, Explanation,
+    Recommendation. `detection` is one MarketScannerEngine.run_cycle()
+    processed-detection dict; only ever called for tier in (high,
+    critical), per the mission's "Only HIGH and CRITICAL events should
+    notify users"."""
+    tier = detection["tier"]
+    emoji = _SHOCK_TIER_EMOJI.get(tier, "")
+    title = detection.get("title") or detection["category"].replace("_", " ").upper()
+    lines = [f"{emoji} *{title}* ({tier.upper()})", ""]
+
+    lines.append("Asset: " + ", ".join(detection["symbols"]))
+
+    readings = detection.get("readings") or []
+    if detection["category"] == "price_event" and readings:
+        r = readings[0]
+        lines.append(f"Current Price: {r['price']:,.6f}")
+        change = r.get("change_pct_24h")
+        lines.append(
+            f"Price Change: {change:+.2f}% (24h)" if change is not None else "Price Change: n/a"
+        )
+        volume = r.get("volume_24h")
+        lines.append(
+            f"Volume Change: {volume:,.0f} (24h volume)"
+            if volume is not None
+            else "Volume Change: n/a"
+        )
+    elif readings:
+        for r in readings:
+            window = r.get("window", "24h")
+            lines.append(f"{r['symbol']}: {r['pct_change']:+.2f}% ({window})")
+    lines.append("")
+
+    ctx = detection.get("context") or {}
+    if ctx.get("regime"):
+        lines.append(f"Market Regime: {ctx['regime'].replace('_', ' ').title()}")
+        lines.append(f"Trend: {regime_direction_bucket(ctx['regime']).title()}")
+    if ctx.get("risk_score") is not None:
+        lines.append(f"Risk: {ctx['risk_score']}/100")
+    if ctx.get("confidence_score") is not None:
+        lines.append(f"Confidence: {ctx['confidence_score']}/100")
+    if ctx.get("committee_decision"):
+        majority = ctx.get("committee_majority_pct")
+        majority_str = f" ({majority}%)" if majority is not None else ""
+        lines.append(f"Committee Opinion: {ctx['committee_decision']}{majority_str}")
+    lines.append("")
+
+    lines.append("Explanation:")
+    lines.append(detection["message"])
+    lines.append("")
+
+    lines.append("Recommendation:")
+    lines.append(_shock_recommendation(detection.get("direction") or "up", tier))
+
+    return "\n".join(lines)
+
+
+def format_scanner_dashboard(dashboard: dict) -> str:
+    lines = ["*MARKET SCANNER*", ""]
+    breadth = dashboard.get("top_movers")
+    if breadth and breadth.get("total_scanned"):
+        lines.append(
+            f"Scanned {breadth['total_scanned']} symbols -- "
+            f"{breadth['rising_count']} rising / {breadth['falling_count']} falling"
+        )
+    else:
+        lines.append("No scan data yet -- check back after the next cycle.")
+    pending = dashboard.get("pending_alerts") or []
+    suppressed = dashboard.get("suppressed_alerts") or []
+    lines.append(f"Pending alerts: {len(pending)} | Suppressed (last 50): {len(suppressed)}")
+    lines.append("")
+
+    if breadth and breadth.get("top_gainers"):
+        lines.append("*Top Gainers*")
+        for r in breadth["top_gainers"][:5]:
+            lines.append(f"{r['symbol']}: {r['change_pct_24h']:+.2f}%")
+        lines.append("")
+    if breadth and breadth.get("top_losers"):
+        lines.append("*Top Losers*")
+        for r in breadth["top_losers"][:5]:
+            lines.append(f"{r['symbol']}: {r['change_pct_24h']:+.2f}%")
+        lines.append("")
+
+    sectors = dashboard.get("sector_leaders") or []
+    if sectors:
+        lines.append("*Sector Leaders*")
+        for s in sectors[:5]:
+            lines.append(
+                f"{s['sector']}: {s['avg_change_pct_24h']:+.2f}% ({s['coin_count']} coins)"
+            )
+        lines.append("")
+
+    lines.append("Use /scanner movers | sectors | detections | pending for more detail.")
+    return "\n".join(lines)
+
+
+def format_scanner_movers(breadth: dict | None) -> str:
+    if not breadth or not breadth.get("total_scanned"):
+        return "*TOP MOVERS*\n\nNo scan data yet -- check back after the next cycle."
+    lines = [
+        "*TOP MOVERS*",
+        "",
+        f"Scanned {breadth['total_scanned']} symbols -- {breadth['rising_count']} rising / "
+        f"{breadth['falling_count']} falling / {breadth['unchanged_count']} unchanged",
+        "",
+        "*Top Gainers*",
+    ]
+    for r in breadth["top_gainers"][:20]:
+        lines.append(f"{r['symbol']}: {r['change_pct_24h']:+.2f}% -- {r['price']:,.4f}")
+    lines.append("")
+    lines.append("*Top Losers*")
+    for r in breadth["top_losers"][:20]:
+        lines.append(f"{r['symbol']}: {r['change_pct_24h']:+.2f}% -- {r['price']:,.4f}")
+    return "\n".join(lines)
+
+
+def format_scanner_sectors(sectors: list[dict]) -> str:
+    if not sectors:
+        return "*SECTOR LEADERS*\n\nNo sector data yet -- check back after the next cycle."
+    lines = ["*SECTOR LEADERS*", ""]
+    for s in sectors:
+        top_mover = (
+            f" (top: {s['top_mover']} {s['top_mover_change_pct_24h']:+.2f}%)"
+            if s.get("top_mover")
+            else ""
+        )
+        avg_change = s["avg_change_pct_24h"]
+        lines.append(f"{s['sector']}: {avg_change:+.2f}% avg, {s['coin_count']} coins{top_mover}")
+    return "\n".join(lines)
+
+
+def format_scanner_detections(detections: list[dict]) -> str:
+    if not detections:
+        return "*LATEST DETECTIONS*\n\nNo detections logged yet."
+    lines = ["*LATEST DETECTIONS*", ""]
+    for d in detections[:20]:
+        state = "active" if d["active"] else "resolved"
+        lines.append(
+            f"{d['last_updated_at'][:16].replace('T', ' ')} [{d['tier'].upper()}] "
+            f"{', '.join(d['symbols'])} ({state})"
+        )
+        lines.append(d["message"])
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 def format_active_shocks(rows: list) -> str:
