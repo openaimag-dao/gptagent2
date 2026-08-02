@@ -706,6 +706,30 @@ async function renderWatchdog() {
     return nodes;
   }
 
+  // v8.0 "Market Control Center" -- composed from the same sections below
+  // (Current Status / AI Status / What Changed), shown first so a reader
+  // gets direct verdicts before the raw data.
+  const mb = d.market_brief;
+  if (mb) {
+    nodes.push(el("h2", {}, "Market Control Center"));
+    const healthWord = mb.is_market_healthy === true ? "Yes" : mb.is_market_healthy === false ? "No" : "Mixed";
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Is the market healthy?", `${healthWord} (${mb.market_health_label})`),
+        card("Is risk increasing?", mb.risk_direction, mb.risk_reason),
+        card("Did AI change its opinion?", mb.ai_opinion_changed ? "Yes" : "No", mb.ai_opinion_reason),
+      ])
+    );
+    nodes.push(el("h2", {}, "Today's Biggest Changes"));
+    if (mb.biggest_changes_today.length) {
+      nodes.push(el("ul", {}, mb.biggest_changes_today.map((m) => el("li", {}, m))));
+    } else {
+      nodes.push(el("p", { class: "sub" }, "None since the last cycle."));
+    }
+    nodes.push(el("h2", {}, "Needs Attention Now"));
+    nodes.push(el("ul", {}, mb.needs_attention.map((m) => el("li", {}, m))));
+  }
+
   const cs = d.current_status;
   nodes.push(el("h2", {}, "Current Market Status"));
   nodes.push(

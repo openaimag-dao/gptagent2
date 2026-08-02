@@ -65,6 +65,16 @@ async def get_ai_status() -> dict:
     return await engine.get_ai_status()
 
 
+@router.get("/brief")
+async def get_market_brief() -> dict:
+    """v8.0 "Market Control Center" -- direct verdicts (is the market
+    healthy, is risk increasing, did AI change opinion, today's biggest
+    changes, what needs attention now), composed from the same sections
+    /ai and /changes already serve."""
+    engine = build_watchdog_engine()
+    return await engine.get_market_brief()
+
+
 @router.get("/changes")
 async def get_changes() -> dict:
     engine = build_watchdog_engine()

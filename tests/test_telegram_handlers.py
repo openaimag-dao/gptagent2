@@ -145,6 +145,19 @@ def _watchdog_dashboard_stub() -> dict:
             "committee_status": "unavailable",
             "consensus_status": "unavailable",
         },
+        "market_brief": {
+            "is_market_healthy": None,
+            "market_health_label": "Unknown",
+            "risk_direction": "stable",
+            "risk_reason": "No material risk-score change since the last cycle.",
+            "ai_opinion_changed": False,
+            "ai_opinion_reason": "Committee opinion unchanged: no verdict yet.",
+            "biggest_changes_today": [],
+            "needs_attention": [
+                "No urgent items -- market conditions are stable since the last cycle."
+            ],
+            "computed_at": None,
+        },
         "market_overview": {
             "regime": None,
             "trend": None,
