@@ -183,6 +183,26 @@ def test_build_institutional_report_composes_from_analysis_and_scenarios():
     assert ir["what_to_watch_next"] == "FOMC minutes at 14:00 ET."
     assert ir["main_risks"] == "Overleveraged futures market."
     assert ir["institutional_behavior"] == "Whale accumulation observed."
+    # No global_score in institutional_summary -- honestly None, not fabricated.
+    assert ir["risk_detail"] is None
+
+
+def test_build_institutional_report_surfaces_risk_detail_from_global_score():
+    report = _report(
+        institutional_summary={
+            "scenarios": [],
+            "global_score": {
+                "risk_on_score": 65,
+                "risk_off_score": 35,
+                "liquidity_score": 70,
+                "macro_pressure_score": 50,
+            },
+        }
+    )
+
+    ir = build_institutional_report(report, sector_breadth=None)
+
+    assert ir["risk_detail"] == "Risk-On 65 / Risk-Off 35 | Liquidity 70 | Macro pressure 50"
 
 
 def test_build_institutional_report_is_honest_when_scenarios_and_breadth_are_missing():
