@@ -41,6 +41,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import AlertLog, BreakoutEvent, ScannerAlert, ScannerSnapshot
+from app.services.explanation.engine import ExplanationEngine, condense_explanation
 from app.services.history.schemas import Timeframe
 from app.services.scanner.breadth import compute_market_breadth
 from app.services.scanner.detectors import (
@@ -104,6 +105,7 @@ class MarketScannerEngine:
         technical_engine: TechnicalAnalysisEngine,
         redis_client: Redis | None = None,
         top_n: int = 500,
+        explanation_engine: ExplanationEngine | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._universe = universe
@@ -112,6 +114,7 @@ class MarketScannerEngine:
         self._technical_engine = technical_engine
         self._redis = redis_client
         self._top_n = top_n
+        self._explanation_engine = explanation_engine
 
     # ------------------------------------------------------------- fetching
 
@@ -442,6 +445,29 @@ class MarketScannerEngine:
             action = "new"
             existing = None
 
+        # v12.0 P1 -- ExplanationEngine's evidence pack was never referenced
+        # from Scanner's own alerts (only /why ever showed it). Attached
+        # only for HIGH/CRITICAL alerts that will actually reach a user
+        # (never for suppressed/info-tier detections, so this never runs
+        # per-symbol across a full scan cycle) -- a few cheap already-
+        # computed reads, not a new computation, and never allowed to break
+        # the core alert pipeline if it fails.
+        if (
+            self._explanation_engine is not None
+            and tier in ("high", "critical")
+            and action != "suppress"
+            and envelope.get("symbols")
+        ):
+            try:
+                evidence = await self._explanation_engine.build(envelope["symbols"][0])
+                why = condense_explanation(evidence)
+                if why:
+                    envelope["message"] = f"{envelope['message']}\n{why}"
+            except Exception:
+                logger.exception(
+                    "Explanation evidence pack failed for %s", envelope["symbols"][0]
+                )
+
         if action == "new":
             async with self._session_factory() as session:
                 session.add(
@@ -763,6 +789,12 @@ class MarketScannerEngine:
 def build_market_scanner_engine() -> MarketScannerEngine:
     from app.database.redis import get_redis
     from app.database.session import get_session_factory
+    from app.services.analysis.regime import RegimeDetector
+    from app.services.global_score.engine import GlobalScoreEngine
+    from app.services.market.repository import MarketRepository
+    from app.services.news.repository import NewsRepository
+    from app.services.scenarios.engine import ScenarioEngine
+    from app.services.signals.engine import SignalEngine
     from app.services.technical.provider import TechnicalAnalysisProvider
     from app.services.watchdog.engine import build_watchdog_engine
 
@@ -773,6 +805,21 @@ def build_market_scanner_engine() -> MarketScannerEngine:
     technical_engine = TechnicalAnalysisEngine(
         session_factory, TechnicalAnalysisProvider(session_factory)
     )
+    market_repository = MarketRepository(session_factory, redis_client)
+    news_repository = NewsRepository(session_factory)
+    regime_detector = RegimeDetector(session_factory, market_repository)
+    signal_engine = SignalEngine(session_factory, market_repository, news_repository)
+    global_score_engine = GlobalScoreEngine(
+        session_factory, market_repository, regime_detector, signal_engine
+    )
+    explanation_engine = ExplanationEngine(
+        session_factory,
+        signal_engine,
+        regime_detector,
+        news_repository,
+        global_score_engine,
+        ScenarioEngine(session_factory, global_score_engine),
+    )
     return MarketScannerEngine(
         session_factory,
         universe,
@@ -780,4 +827,5 @@ def build_market_scanner_engine() -> MarketScannerEngine:
         build_watchdog_engine(),
         technical_engine,
         redis_client,
+        explanation_engine=explanation_engine,
     )

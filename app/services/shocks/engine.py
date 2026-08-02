@@ -39,6 +39,7 @@ from app.services.agents.orchestrator import AgentOrchestrator, build_agent_orch
 from app.services.analysis.regime import RegimeDetector
 from app.services.committee.engine import convene_committee
 from app.services.consensus.engine import ConsensusResult, compute_consensus
+from app.services.explanation.engine import ExplanationEngine, condense_explanation
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.schemas import Timeframe
 from app.services.market.repository import MarketRepository
@@ -85,6 +86,7 @@ class CriticalAlertEngine:
         agent_orchestrator: AgentOrchestrator,
         reliability_engine: AgentReliabilityEngine,
         similar_market_engine: SimilarMarketEngine,
+        explanation_engine: ExplanationEngine | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._market_repository = market_repository
@@ -94,6 +96,7 @@ class CriticalAlertEngine:
         self._agent_orchestrator = agent_orchestrator
         self._reliability_engine = reliability_engine
         self._similar_market_engine = similar_market_engine
+        self._explanation_engine = explanation_engine
 
     async def _safe_reliability(self) -> dict[str, float] | None:
         try:
@@ -385,6 +388,28 @@ class CriticalAlertEngine:
         previous_tier = existing.tier if (action == "escalate" and existing is not None) else None
         message = format_critical_alert(envelope, tier, quality_score, previous_tier)
 
+        # v12.0 P1 -- same evidence-pack attachment as MarketScannerEngine's
+        # _process_detection(): ExplanationEngine's assembly of triggered
+        # indicators/historical examples/supporting news was never referenced
+        # by this engine's own Telegram alerts either. Gated to HIGH/CRITICAL,
+        # non-suppressed detections only -- MONITORED_SYMBOLS is a short fixed
+        # list already filtered down to a live detection by this point, so
+        # this never runs per-symbol across an idle cycle.
+        if (
+            self._explanation_engine is not None
+            and tier in ("high", "critical")
+            and action != "suppress"
+        ):
+            try:
+                evidence = await self._explanation_engine.build(envelope["symbols"][0])
+                why = condense_explanation(evidence)
+                if why:
+                    message = f"{message}\n\n{why}"
+            except Exception:
+                logger.exception(
+                    "Explanation evidence pack failed for %s", envelope["symbols"][0]
+                )
+
         if action == "resolve_then_new":
             async with self._session_factory() as session:
                 row = await session.get(CriticalAlert, existing.id)
@@ -525,13 +550,23 @@ def build_critical_alert_engine() -> CriticalAlertEngine:
     global_score_engine = GlobalScoreEngine(
         session_factory, market_repository, regime_detector, signal_engine
     )
+    scenario_engine = ScenarioEngine(session_factory, global_score_engine)
+    explanation_engine = ExplanationEngine(
+        session_factory,
+        signal_engine,
+        regime_detector,
+        news_repository,
+        global_score_engine,
+        scenario_engine,
+    )
     return CriticalAlertEngine(
         session_factory,
         market_repository,
         regime_detector,
         global_score_engine,
-        ScenarioEngine(session_factory, global_score_engine),
+        scenario_engine,
         build_agent_orchestrator(),
         AgentReliabilityEngine(session_factory),
         SimilarMarketEngine(session_factory),
+        explanation_engine=explanation_engine,
     )
