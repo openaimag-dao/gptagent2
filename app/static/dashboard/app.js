@@ -269,12 +269,20 @@ async function renderCommittee() {
     ])
   );
   nodes.push(el("p", {}, data.reasoning));
+  if (data.most_influential_agent) {
+    nodes.push(el("p", { class: "sub" }, `Final influence: ${data.most_influential_agent}`));
+  }
   if (data.supporting_evidence.length) {
     nodes.push(el("h2", {}, "Supporting Evidence"));
     nodes.push(
       table(
-        ["Agent", "Evidence"],
-        data.supporting_evidence.map((e) => [e.agent, e.evidence])
+        ["Agent", "Confidence", "Weight", "Evidence"],
+        data.supporting_evidence.map((e) => [
+          e.agent,
+          e.confidence != null ? `${e.confidence}%` : "n/a",
+          e.weight != null ? `${e.weight}%` : "n/a",
+          e.evidence,
+        ])
       )
     );
   }
@@ -282,10 +290,19 @@ async function renderCommittee() {
     nodes.push(el("h2", {}, "Opposing Evidence (Minority)"));
     nodes.push(
       table(
-        ["Agent", "Evidence"],
-        data.opposing_evidence.map((e) => [e.agent, e.evidence])
+        ["Agent", "Confidence", "Weight", "Evidence"],
+        data.opposing_evidence.map((e) => [
+          e.agent,
+          e.confidence != null ? `${e.confidence}%` : "n/a",
+          e.weight != null ? `${e.weight}%` : "n/a",
+          e.evidence,
+        ])
       )
     );
+  }
+  if (data.invalidation_risk) {
+    nodes.push(el("h2", {}, "Invalidation Risk"));
+    nodes.push(el("p", {}, data.invalidation_risk));
   }
   return nodes;
 }

@@ -501,6 +501,16 @@ def format_consensus(
     return "\n".join(lines)
 
 
+def _committee_evidence_line(e: dict) -> str:
+    parts = []
+    if e.get("confidence") is not None:
+        parts.append(f"{e['confidence']}% confidence")
+    if e.get("weight") is not None:
+        parts.append(f"{e['weight']}% vote weight")
+    prefix = f" ({', '.join(parts)})" if parts else ""
+    return f"- {e['agent']}{prefix}: {e['evidence']}"
+
+
 def format_committee(verdict: dict | None) -> str:
     if verdict is None:
         return "No agent reported a direction this cycle -- the committee has nothing to vote on."
@@ -518,21 +528,14 @@ def format_committee(verdict: dict | None) -> str:
     if verdict["supporting_evidence"]:
         lines.append("")
         lines.append("Supporting evidence:")
-        lines.extend(
-            f"- {e['agent']} ({e['confidence']}% confidence): {e['evidence']}"
-            if e.get("confidence") is not None
-            else f"- {e['agent']}: {e['evidence']}"
-            for e in verdict["supporting_evidence"]
-        )
+        lines.extend(_committee_evidence_line(e) for e in verdict["supporting_evidence"])
     if verdict["opposing_evidence"]:
         lines.append("")
         lines.append("Opposing evidence (minority):")
-        lines.extend(
-            f"- {e['agent']} ({e['confidence']}% confidence): {e['evidence']}"
-            if e.get("confidence") is not None
-            else f"- {e['agent']}: {e['evidence']}"
-            for e in verdict["opposing_evidence"]
-        )
+        lines.extend(_committee_evidence_line(e) for e in verdict["opposing_evidence"])
+    if verdict.get("most_influential_agent"):
+        lines.append("")
+        lines.append(f"Final influence: {verdict['most_influential_agent']}")
     if verdict.get("invalidation_risk"):
         lines.append("")
         lines.append(f"Invalidation risk: {verdict['invalidation_risk']}")

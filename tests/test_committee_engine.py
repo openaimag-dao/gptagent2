@@ -218,8 +218,40 @@ def test_to_dict_serializes_all_fields():
         "final_recommendation",
         "reasoning",
         "invalidation_risk",
+        "most_influential_agent",
         "computed_at",
     }
+
+
+def test_evidence_items_carry_vote_weight_and_final_influence():
+    agent_outputs = {
+        "macro": _output("macro", "bearish", 40.0, "DXY strength is bearish for risk assets."),
+        "equity": _output("equity", "bearish", 10.0, "Weak breadth, low conviction bearish read."),
+        "news": _output("news", "bullish", 50.0, "Positive earnings surprises broadly."),
+    }
+    consensus = ConsensusResult(
+        bullish_pct=45.0,
+        bearish_pct=55.0,
+        neutral_pct=0.0,
+        agreement_score=55.0,
+        conflict_pct=45.0,
+        bullish_agents=["news"],
+        bearish_agents=["macro", "equity"],
+        neutral_agents=[],
+        unavailable_agents=[],
+        agent_weights={"macro": 40.0, "equity": 15.0, "news": 45.0},
+    )
+
+    verdict = convene_committee(agent_outputs, consensus)
+
+    supporting_by_agent = {e["agent"]: e for e in verdict.supporting_evidence}
+    assert supporting_by_agent["macro"]["weight"] == 40.0
+    assert supporting_by_agent["equity"]["weight"] == 15.0
+    opposing_by_agent = {e["agent"]: e for e in verdict.opposing_evidence}
+    assert opposing_by_agent["news"]["weight"] == 45.0
+    # news carries the most vote weight overall (45.0), even though it's on
+    # the minority (bullish) side of this SELL-majority vote.
+    assert verdict.most_influential_agent == "news"
 
 
 async def test_committee_engine_convenes_from_orchestrator_output():
