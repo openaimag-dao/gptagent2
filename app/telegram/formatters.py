@@ -853,6 +853,31 @@ def format_watchdog_changes(changes: dict) -> str:
     return "\n".join(lines)
 
 
+def format_watchdog_brief(brief: dict) -> str:
+    """v8.0 "Market Control Center" -- direct verdicts composed from the
+    same data /watchdog ai and /watchdog changes already show, so a reader
+    doesn't have to cross-reference sections themselves."""
+    health_word = {True: "Yes", False: "No", None: "Mixed"}[brief["is_market_healthy"]]
+    lines = [
+        "*MARKET CONTROL CENTER*",
+        "",
+        f"Is the market healthy? {health_word} ({brief['market_health_label']})",
+        f"Is risk increasing? {brief['risk_direction'].capitalize()} -- {brief['risk_reason']}",
+        f"Did AI change its opinion? {'Yes' if brief['ai_opinion_changed'] else 'No'} -- "
+        f"{brief['ai_opinion_reason']}",
+    ]
+    lines.append("")
+    lines.append("Today's biggest changes:")
+    if brief["biggest_changes_today"]:
+        lines.extend(f"- {m}" for m in brief["biggest_changes_today"])
+    else:
+        lines.append("- None since the last cycle.")
+    lines.append("")
+    lines.append("Needs attention now:")
+    lines.extend(f"- {m}" for m in brief["needs_attention"])
+    return "\n".join(lines)
+
+
 def format_watchdog_providers(providers: list[dict]) -> str:
     lines = ["*PROVIDER STATUS*", ""]
     for p in providers:
@@ -897,6 +922,8 @@ def format_watchdog_dashboard(dashboard: dict) -> str:
     Provider Status); the per-section subcommands (/watchdog market,
     /watchdog ai, ...) give the fuller read of each."""
     sections = [
+        format_watchdog_brief(dashboard["market_brief"]),
+        "",
         format_watchdog_current_status(dashboard["current_status"]),
         "",
         format_watchdog_market(

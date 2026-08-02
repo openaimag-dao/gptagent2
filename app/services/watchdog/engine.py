@@ -38,7 +38,7 @@ from app.services.memory.engine import MemoryEngine
 from app.services.onchain.engine import OnChainIntelligenceEngine
 from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import MarketReplayEngine
-from app.services.scenarios.engine import ScenarioEngine
+from app.services.scenarios.engine import ScenarioEngine, scenario_extremes
 from app.services.shocks.detectors import compute_window_changes, regime_direction_bucket
 from app.services.technical.engine import TechnicalAnalysisEngine
 from app.services.watchdog.detectors import (
@@ -405,6 +405,71 @@ class WatchdogEngine:
             "events": events,
         }
 
+    async def get_market_brief(self) -> dict:
+        """v8.0 "Market Control Center" -- synthesizes get_current_status()/
+        get_what_changed()/get_ai_status() (already-computed sections) into
+        direct answers to: is the market healthy, is risk increasing, did
+        AI change its opinion, what are today's biggest changes, what
+        needs attention now. No new data is fetched or computed -- this is
+        purely a composition layer over three existing cheap reads."""
+        current_status, what_changed, ai_status = await asyncio.gather(
+            self.get_current_status(), self.get_what_changed(), self.get_ai_status()
+        )
+        return self._compose_market_brief(current_status, what_changed, ai_status)
+
+    @staticmethod
+    def _compose_market_brief(current_status: dict, what_changed: dict, ai_status: dict) -> dict:
+        events_by_type = {e["event_type"]: e for e in what_changed["events"]}
+
+        market_health = current_status["market_health"]
+        is_healthy = {"Healthy": True, "Watch": None, "Stressed": False}.get(market_health)
+
+        risk_event = events_by_type.get("RiskIncreased") or events_by_type.get("RiskReduced")
+        if risk_event is not None:
+            risk_direction = (
+                "increasing" if risk_event["event_type"] == "RiskIncreased" else "decreasing"
+            )
+            risk_reason = risk_event["message"]
+        else:
+            risk_direction = "stable"
+            risk_reason = "No material risk-score change since the last cycle."
+
+        committee_event = events_by_type.get("CommitteeChanged")
+        ai_opinion_changed = committee_event is not None
+        if committee_event is not None:
+            ai_opinion_reason = committee_event["message"]
+        else:
+            opinion = ai_status["committee_opinion"] or "no verdict yet"
+            ai_opinion_reason = f"Committee opinion unchanged: {opinion}."
+
+        biggest_changes_today = [e["message"] for e in what_changed["events"]]
+
+        needs_attention: list[str] = []
+        if risk_event is not None and risk_event["event_type"] == "RiskIncreased":
+            needs_attention.append(risk_event["message"])
+        if committee_event is not None:
+            needs_attention.append(committee_event["message"])
+        if market_health == "Stressed":
+            needs_attention.append("Market health classification is Stressed.")
+        if ai_status.get("highest_risk"):
+            needs_attention.append(f"Highest scenario risk: {ai_status['highest_risk']}")
+        if not needs_attention:
+            needs_attention.append(
+                "No urgent items -- market conditions are stable since the last cycle."
+            )
+
+        return {
+            "is_market_healthy": is_healthy,
+            "market_health_label": market_health,
+            "risk_direction": risk_direction,
+            "risk_reason": risk_reason,
+            "ai_opinion_changed": ai_opinion_changed,
+            "ai_opinion_reason": ai_opinion_reason,
+            "biggest_changes_today": biggest_changes_today,
+            "needs_attention": needs_attention,
+            "computed_at": current_status["last_update"],
+        }
+
     async def get_provider_status(self) -> list[dict]:
         from app.services.watchdog.provider_health import get_provider_status
 
@@ -442,6 +507,7 @@ class WatchdogEngine:
         )
         return {
             "current_status": current_status,
+            "market_brief": self._compose_market_brief(current_status, what_changed, ai_status),
             "market_overview": market_overview,
             "crypto_overview": crypto_overview,
             "macro_overview": macro_overview,
@@ -461,22 +527,6 @@ class WatchdogEngine:
             return await self._reliability_engine.evaluate_reliability()
         except Exception:
             return None
-
-    def _scenario_extremes(self, scenarios: list[dict] | None) -> tuple:
-        if not scenarios:
-            return None, None, None, None
-        top = max(scenarios, key=lambda s: s["probability_pct"])
-        bearish = [s for s in scenarios if s["key"] in ("risk_off", "black_swan")]
-        bullish = [s for s in scenarios if s["key"] in ("soft_landing", "liquidity_expansion")]
-        highest_risk = None
-        if bearish:
-            r = max(bearish, key=lambda s: s["probability_pct"])
-            highest_risk = f"{r['name']} ({r['probability_pct']}%) -- {r['rationale']}"
-        biggest_opportunity = None
-        if bullish:
-            o = max(bullish, key=lambda s: s["probability_pct"])
-            biggest_opportunity = f"{o['name']} ({o['probability_pct']}%) -- {o['rationale']}"
-        return top["name"], top["probability_pct"], highest_risk, biggest_opportunity
 
     async def _broadcast_event(self, event: dict) -> None:
         from app.telegram.broadcast import broadcast_text
@@ -558,7 +608,7 @@ class WatchdogEngine:
 
         scenarios = scenario_snapshot.scenarios if scenario_snapshot is not None else None
         expected_scenario, expected_scenario_pct, highest_risk, biggest_opportunity = (
-            self._scenario_extremes(scenarios)
+            scenario_extremes(scenarios)
         )
 
         global_score_value = global_score.global_score if global_score is not None else None

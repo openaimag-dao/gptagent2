@@ -360,3 +360,84 @@ async def test_run_cycle_notifies_telegram_for_eligible_change_only():
     broadcast_mock.assert_awaited_once()
     (message,), _ = broadcast_mock.call_args
     assert "MarketRegimeChanged" in message
+
+
+def _current_status(market_health="Watch") -> dict:
+    return {
+        "current_time": "2026-01-01T00:00:00+00:00",
+        "last_update": "2026-01-01T00:00:00+00:00",
+        "scan_duration_ms": 100.0,
+        "market_health": market_health,
+        "brain_status": "ok",
+        "replay_status": "ok",
+        "committee_status": "ok",
+        "consensus_status": "ok",
+    }
+
+
+def _what_changed(events: list[dict] | None = None) -> dict:
+    return {
+        "available": True,
+        "previous_computed_at": "2025-12-31T23:00:00+00:00",
+        "current_computed_at": "2026-01-01T00:00:00+00:00",
+        "fields": [],
+        "events": events or [],
+    }
+
+
+def _ai_status(**overrides) -> dict:
+    base = {
+        "committee_opinion": "BUY (high conviction)",
+        "consensus": None,
+        "prediction_confidence": 70.0,
+        "expected_scenario": "Soft Landing",
+        "expected_scenario_pct": 40,
+        "highest_risk": None,
+        "biggest_opportunity": None,
+        "computed_at": "2026-01-01T00:00:00+00:00",
+    }
+    base.update(overrides)
+    return base
+
+
+def test_market_brief_reports_stable_conditions_when_nothing_changed():
+    brief = WatchdogEngine._compose_market_brief(
+        _current_status("Healthy"), _what_changed(), _ai_status()
+    )
+
+    assert brief["is_market_healthy"] is True
+    assert brief["risk_direction"] == "stable"
+    assert brief["ai_opinion_changed"] is False
+    assert brief["biggest_changes_today"] == []
+    assert "No urgent items" in brief["needs_attention"][0]
+
+
+def test_market_brief_flags_rising_risk_and_committee_change():
+    events = [
+        {
+            "event_type": "RiskIncreased",
+            "message": "Risk score rose from 30 to 60.",
+            "data": {"prev": 30, "curr": 60, "delta": 30},
+        },
+        {
+            "event_type": "CommitteeChanged",
+            "message": "AI Investment Committee decision changed: HOLD -> SELL.",
+            "data": {"prev": "HOLD", "curr": "SELL"},
+        },
+    ]
+
+    brief = WatchdogEngine._compose_market_brief(
+        _current_status("Stressed"),
+        _what_changed(events),
+        _ai_status(highest_risk="Risk Off (55%)"),
+    )
+
+    assert brief["is_market_healthy"] is False
+    assert brief["risk_direction"] == "increasing"
+    assert "Risk score rose" in brief["risk_reason"]
+    assert brief["ai_opinion_changed"] is True
+    assert "HOLD -> SELL" in brief["ai_opinion_reason"]
+    assert len(brief["biggest_changes_today"]) == 2
+    # Rising risk, the committee flip, the Stressed label, and the highest
+    # scenario risk should all surface as things needing attention.
+    assert len(brief["needs_attention"]) == 4

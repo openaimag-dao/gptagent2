@@ -45,6 +45,7 @@ from app.telegram.formatters import (
     format_status,
     format_technical,
     format_watchdog,
+    format_watchdog_brief,
     format_weekly_review,
     format_whatif,
 )
@@ -318,6 +319,27 @@ def test_format_risk_without_data():
     text = format_risk({"global_score": None, "signal_conviction": None})
     assert "not computed yet" in text
     assert "unavailable" in text
+
+
+def test_format_watchdog_brief_answers_the_control_center_questions():
+    brief = {
+        "is_market_healthy": False,
+        "market_health_label": "Stressed",
+        "risk_direction": "increasing",
+        "risk_reason": "Risk score rose from 30 to 60.",
+        "ai_opinion_changed": True,
+        "ai_opinion_reason": "AI Investment Committee decision changed: HOLD -> SELL.",
+        "biggest_changes_today": ["Risk score rose from 30 to 60.", "Committee changed to SELL."],
+        "needs_attention": ["Risk score rose from 30 to 60."],
+    }
+    text = format_watchdog_brief(brief)
+    assert "MARKET CONTROL CENTER" in text
+    assert "Is the market healthy? No (Stressed)" in text
+    assert "Is risk increasing? Increasing" in text
+    assert "Did AI change its opinion? Yes" in text
+    assert "HOLD -> SELL" in text
+    assert "Committee changed to SELL." in text
+    assert "Needs attention now:" in text
 
 
 def test_format_watchdog_empty():

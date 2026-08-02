@@ -30,6 +30,9 @@ _SCENARIO_LABELS: dict[str, str] = {
     "black_swan": "Black Swan",
 }
 
+_BEARISH_SCENARIO_KEYS = ("risk_off", "black_swan")
+_BULLISH_SCENARIO_KEYS = ("soft_landing", "liquidity_expansion")
+
 
 def _raw_weights(score: GlobalMarketScore) -> dict[str, float]:
     soft_landing = (
@@ -101,6 +104,35 @@ def compute_scenarios(score: GlobalMarketScore) -> list[dict]:
         }
         for name in _SCENARIOS
     ]
+
+
+def scenario_extremes(scenarios: list[dict] | None) -> tuple:
+    """Pure function: the 4-scenario list -> (top_name, top_pct,
+    highest_risk, biggest_opportunity). `highest_risk`/`biggest_opportunity`
+    are one-line "{name} ({pct}%) -- {rationale}" strings built from the
+    highest-probability member of the bearish (risk_off/black_swan) and
+    bullish (soft_landing/liquidity_expansion) buckets respectively.
+
+    Originally private to WatchdogEngine (`_scenario_extremes`); lifted out
+    here so any caller that already has a scenarios list -- Report
+    Generator, ExplanationEngine's alternative_view, Market Scanner --
+    reuses this exact opportunity/threat framing instead of picking a
+    plain 2nd-ranked scenario or reimplementing the bearish/bullish split.
+    """
+    if not scenarios:
+        return None, None, None, None
+    top = max(scenarios, key=lambda s: s["probability_pct"])
+    bearish = [s for s in scenarios if s["key"] in _BEARISH_SCENARIO_KEYS]
+    bullish = [s for s in scenarios if s["key"] in _BULLISH_SCENARIO_KEYS]
+    highest_risk = None
+    if bearish:
+        r = max(bearish, key=lambda s: s["probability_pct"])
+        highest_risk = f"{r['name']} ({r['probability_pct']}%) -- {r['rationale']}"
+    biggest_opportunity = None
+    if bullish:
+        o = max(bullish, key=lambda s: s["probability_pct"])
+        biggest_opportunity = f"{o['name']} ({o['probability_pct']}%) -- {o['rationale']}"
+    return top["name"], top["probability_pct"], highest_risk, biggest_opportunity
 
 
 class ScenarioEngine:
