@@ -10,6 +10,7 @@ from app.database.models import (
 )
 from app.services.analysis.regime import MarketRegime
 from app.services.analysis.report import (
+    _format_replay_comparison,
     build_institutional_report,
     build_user_prompt,
     derive_risk_level,
@@ -193,3 +194,51 @@ def test_build_institutional_report_is_honest_when_scenarios_and_breadth_are_mis
     assert ir["biggest_opportunity"] == "No bullish scenario currently dominant."
     assert ir["biggest_risk"] == "No bearish scenario currently dominant."
     assert "unavailable" in ir["sector_rotation"]
+
+
+def _diff(regime_changed=False, health_delta=None, risk_delta=None):
+    return {
+        "regime": {
+            "from": "bull",
+            "to": "bear" if regime_changed else "bull",
+            "changed": regime_changed,
+        },
+        "health_score": {"from": 60, "to": 60 + (health_delta or 0), "delta": health_delta},
+        "risk_score": {"from": 40, "to": 40 + (risk_delta or 0), "delta": risk_delta},
+    }
+
+
+def test_format_replay_comparison_returns_none_without_data():
+    assert _format_replay_comparison(None) is None
+
+
+def test_format_replay_comparison_reports_regime_and_score_changes():
+    comparison = {"hours_ago": 24, "diff": _diff(regime_changed=True, health_delta=-10)}
+
+    text = _format_replay_comparison(comparison)
+
+    assert "Vs. 24h ago (Replay):" in text
+    assert "regime shifted bull -> bear" in text
+    assert "health -10" in text
+
+
+def test_format_replay_comparison_reports_no_material_change():
+    comparison = {"hours_ago": 24, "diff": _diff()}
+
+    text = _format_replay_comparison(comparison)
+
+    assert text == "No material change vs. 24h ago (Replay)."
+
+
+def test_build_institutional_report_appends_replay_comparison_to_historical_comparison():
+    report = _report()
+    replay_comparison = {"hours_ago": 24, "diff": _diff(regime_changed=True, risk_delta=5)}
+
+    ir = build_institutional_report(
+        report, sector_breadth=None, replay_comparison=replay_comparison
+    )
+
+    assert ir["historical_comparison"].startswith("Similar to March 2024.")
+    assert (
+        "Vs. 24h ago (Replay): regime shifted bull -> bear; risk +5." in ir["historical_comparison"]
+    )

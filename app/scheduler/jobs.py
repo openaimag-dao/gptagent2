@@ -33,7 +33,7 @@ from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.ranking.engine import RankingEngine
 from app.services.reliability.engine import AgentReliabilityEngine
-from app.services.replay.engine import MarketReplayEngine
+from app.services.replay.engine import MarketReplayEngine, get_replay_comparison
 from app.services.research.researcher import AIResearcherEngine
 from app.services.scanner.engine import build_market_scanner_engine
 from app.services.scanner.notifier import send_scanner_notifications
@@ -562,8 +562,10 @@ async def generate_report_job(report_type: str) -> None:
         return
 
     try:
+        session_factory = get_session_factory()
         sector_breadth = await build_market_scanner_engine().get_latest_sector_breadth()
-        institutional_report = build_institutional_report(report, sector_breadth)
+        replay_comparison = await get_replay_comparison(session_factory)
+        institutional_report = build_institutional_report(report, sector_breadth, replay_comparison)
         await broadcast_report(report, institutional_report)
     except Exception:
         logger.exception("Report broadcast failed (type=%s)", report_type)
