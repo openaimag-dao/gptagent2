@@ -28,6 +28,7 @@ from app.telegram.formatters import (
     format_explanation,
     format_global_score,
     format_historical_comparison,
+    format_knowledge,
     format_learning,
     format_market_summary,
     format_monthly_performance,
@@ -314,6 +315,7 @@ def test_format_explanation_full():
     assert "82% similar" in text
     assert "Fear 30" in text
     assert "Bear case (25%)" in text
+    assert "*Historical Similarity*" in text
 
 
 def test_format_explanation_shows_risk_and_confidence_score_when_present():
@@ -953,6 +955,27 @@ def test_format_similar_periods_includes_lesson_and_matches():
     assert "Typical duration: The upward move tended to hold for at least 7 day(s)" in text
     assert "Lesson: In similar setups" in text
     assert "2025-06-01" in text  # underlying match list is still rendered
+    assert "*BTC HISTORICAL SIMILARITY*" in text
+
+
+def test_format_knowledge_no_analogs():
+    text = format_knowledge("BTC", [])
+    assert "No similar historical episodes found" in text
+    assert "BTC" in text
+
+
+def test_format_knowledge_uses_consistent_historical_similarity_header():
+    analogs = [
+        {
+            "timestamp": datetime(2025, 6, 1, tzinfo=UTC),
+            "rsi": 72.5,
+            "forward_return_pct": 3.2,
+            "nearby_events": [],
+        }
+    ]
+    text = format_knowledge("BTC", analogs)
+    assert "*BTC HISTORICAL SIMILARITY*" in text
+    assert "2025-06-01" in text
 
 
 def test_format_weekly_review():

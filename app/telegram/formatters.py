@@ -352,7 +352,7 @@ def format_breakout(symbol: str, event: BreakoutEvent | None) -> str:
 def format_knowledge(symbol: str, analogs: list[dict]) -> str:
     if not analogs:
         return f"No similar historical episodes found yet for {symbol}."
-    lines = [f"*{symbol} SIMILAR HISTORICAL EPISODES*", ""]
+    lines = [f"*{symbol} HISTORICAL SIMILARITY*", ""]
     for analog in analogs:
         date_str = analog["timestamp"].date().isoformat()
         forward = analog["forward_return_pct"]
@@ -401,7 +401,7 @@ def format_similar_periods(
 ) -> str:
     if not matches:
         return f"Not enough synced history for {symbol} to find similar periods yet."
-    lines = [f"*{symbol} SIMILAR HISTORICAL PERIODS*", ""]
+    lines = [f"*{symbol} HISTORICAL SIMILARITY*", ""]
     if lesson is not None:
         lines.extend(
             [
@@ -701,7 +701,7 @@ def format_explanation(data: dict) -> str:
         lines.append("")
 
     if data["historical_examples"]:
-        lines.append("*Historical examples*")
+        lines.append("*Historical Similarity*")
         for ex in data["historical_examples"]:
             forward = (
                 f"{ex['forward_return_7d_pct']:+.2f}%"
