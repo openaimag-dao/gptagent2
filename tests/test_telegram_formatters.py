@@ -158,6 +158,23 @@ def test_format_consensus_present():
     assert "Headlines skew risk-on." in text
 
 
+def test_format_consensus_shows_confidence_evolution_when_provided():
+    result = ConsensusResult(
+        bullish_pct=70.0,
+        bearish_pct=30.0,
+        neutral_pct=0.0,
+        agreement_score=70.0,
+        bullish_agents=["news"],
+        bearish_agents=["macro"],
+    )
+    confidence_evolution = {
+        "summary": "Consensus agreement rose +10.0pts (from 60.0% to 70.0%). "
+        "news remains the strongest influence."
+    }
+    text = format_consensus(result, confidence_evolution)
+    assert "Confidence evolution: Consensus agreement rose +10.0pts" in text
+
+
 def test_format_learning_none():
     text = format_learning(None, "BTC", "1d")
     assert "No graded predictions" in text
@@ -794,6 +811,24 @@ def test_format_historical_comparison_present():
     assert "bull -> bear (changed)" in text
     assert "Health Score: 60 -> 40 (-20)" in text
     assert "Risk Score: 30 -> 50 (+20)" in text
+
+
+def test_format_historical_comparison_shows_consensus_evolution_when_present():
+    result = {
+        "days_ago": 7,
+        "diff": {
+            "regime": {"from": "bull", "to": "bear", "changed": True},
+            "health_score": {"from": None, "to": None, "delta": None},
+            "trend_strength_score": {"from": None, "to": None, "delta": None},
+            "risk_score": {"from": None, "to": None, "delta": None},
+            "confidence_score": {"from": None, "to": None, "delta": None},
+            "consensus_evolution": {
+                "summary": "Consensus agreement fell -20.0pts (from 80.0% to 60.0%)."
+            },
+        },
+    }
+    text = format_historical_comparison(result)
+    assert "Consensus: Consensus agreement fell -20.0pts" in text
 
 
 def test_format_similar_periods_no_matches():

@@ -226,6 +226,15 @@ async function renderConsensus() {
       scoreBar("Conflict", data.conflict_pct),
     ])
   );
+  if (data.strongest_agent) {
+    const weight = data.agent_weights[data.strongest_agent];
+    nodes.push(
+      el("p", { class: "sub" }, `Strongest influence: ${data.strongest_agent} (${weight}% of vote weight)`)
+    );
+  }
+  if (data.confidence_evolution) {
+    nodes.push(el("p", { class: "sub" }, `Confidence evolution: ${data.confidence_evolution.summary}`));
+  }
   nodes.push(
     table(
       ["Direction", "Agents"],

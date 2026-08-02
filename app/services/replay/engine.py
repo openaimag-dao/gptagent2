@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database.models import AssetPrice, MarketSnapshot, NewsItem
 from app.services.agents.orchestrator import AgentOrchestrator
 from app.services.analysis.regime import RegimeDetector
-from app.services.consensus.engine import compute_consensus
+from app.services.consensus.engine import compute_consensus, consensus_evolution
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.schemas import Timeframe
@@ -93,8 +93,22 @@ def diff_snapshots(earlier: MarketSnapshot, later: MarketSnapshot) -> dict:
             "delta": _delta(earlier.confidence_score, later.confidence_score),
         },
         "consensus": {"from": earlier.consensus, "to": later.consensus},
+        "consensus_evolution": consensus_evolution(earlier.consensus, later.consensus),
         "portfolio_advice": {"from": earlier.portfolio_advice, "to": later.portfolio_advice},
     }
+
+
+async def get_latest_consensus(session_factory: async_sessionmaker[AsyncSession]) -> dict | None:
+    """The consensus dict from the most recently stored MarketSnapshot,
+    without constructing a full MarketReplayEngine (whose constructor needs
+    ~10 dependencies unrelated to this one read) -- used by callers that
+    only want "what did consensus look like last cycle" for a confidence-
+    evolution comparison, e.g. GET /api/consensus."""
+    async with session_factory() as session:
+        row = await session.scalar(
+            select(MarketSnapshot).order_by(MarketSnapshot.computed_at.desc()).limit(1)
+        )
+    return row.consensus if row is not None else None
 
 
 class MarketReplayEngine:

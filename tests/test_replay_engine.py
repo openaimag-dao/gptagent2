@@ -79,6 +79,35 @@ def test_diff_snapshots_includes_consensus_and_portfolio_advice_raw():
     assert result["consensus"]["from"]["bullish_pct"] == 30.0
     assert result["consensus"]["to"]["bullish_pct"] == 70.0
     assert result["portfolio_advice"]["to"]["recommendation"] == "BUY"
+    # Partial fixture consensus dicts (missing agreement_score) -- honestly
+    # None rather than crashing or guessing a trend.
+    assert result["consensus_evolution"] is None
+
+
+def test_diff_snapshots_derives_consensus_evolution_when_both_sides_are_full_dicts():
+    earlier = _snapshot(
+        consensus={
+            "agreement_score": 60.0,
+            "bullish_pct": 60.0,
+            "bearish_pct": 40.0,
+            "strongest_agent": "macro",
+        }
+    )
+    later = _snapshot(
+        consensus={
+            "agreement_score": 75.0,
+            "bullish_pct": 75.0,
+            "bearish_pct": 25.0,
+            "strongest_agent": "sentiment",
+        }
+    )
+
+    result = diff_snapshots(earlier, later)
+
+    evolution = result["consensus_evolution"]
+    assert evolution["agreement_score_delta"] == 15.0
+    assert evolution["strongest_agent_changed"] is True
+    assert "macro to sentiment" in evolution["summary"]
 
 
 def test_diff_snapshots_includes_both_timestamps():

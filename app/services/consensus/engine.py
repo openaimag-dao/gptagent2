@@ -162,6 +162,50 @@ def compute_consensus(
     )
 
 
+def consensus_evolution(earlier: dict | None, later: dict | None) -> dict | None:
+    """Pure function: two ConsensusResult.to_dict()-shaped dicts (e.g. the
+    latest live tally and the consensus column of the most recent
+    MarketSnapshot Replay already persisted) -> what changed between them.
+    v9.0's "Consensus should explain ... confidence evolution." Returns
+    None when either side is missing rather than guessing a trend.
+    """
+    if earlier is None or later is None:
+        return None
+    earlier_agreement = earlier.get("agreement_score")
+    later_agreement = later.get("agreement_score")
+    if earlier_agreement is None or later_agreement is None:
+        return None
+
+    agreement_delta = round(later_agreement - earlier_agreement, 1)
+    bullish_delta = round(later.get("bullish_pct", 0.0) - earlier.get("bullish_pct", 0.0), 1)
+    bearish_delta = round(later.get("bearish_pct", 0.0) - earlier.get("bearish_pct", 0.0), 1)
+    strongest_from = earlier.get("strongest_agent")
+    strongest_to = later.get("strongest_agent")
+    strongest_changed = strongest_from != strongest_to
+
+    if agreement_delta > 0:
+        trend = f"Consensus agreement rose {agreement_delta:+.1f}pts"
+    elif agreement_delta < 0:
+        trend = f"Consensus agreement fell {agreement_delta:+.1f}pts"
+    else:
+        trend = "Consensus agreement is unchanged"
+    summary = f"{trend} (from {earlier_agreement}% to {later_agreement}%)."
+    if strongest_changed and strongest_from is not None and strongest_to is not None:
+        summary += f" Strongest influence shifted from {strongest_from} to {strongest_to}."
+    elif strongest_to is not None:
+        summary += f" {strongest_to} remains the strongest influence."
+
+    return {
+        "agreement_score_delta": agreement_delta,
+        "bullish_pct_delta": bullish_delta,
+        "bearish_pct_delta": bearish_delta,
+        "strongest_agent_from": strongest_from,
+        "strongest_agent_to": strongest_to,
+        "strongest_agent_changed": strongest_changed,
+        "summary": summary,
+    }
+
+
 class ConsensusEngine:
     """Runs every specialist agent and tallies their votes -- the thin
     orchestration wrapper around compute_consensus(), same shape as
