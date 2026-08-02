@@ -700,7 +700,7 @@ def test_format_report_without_institutional_report_falls_back_to_analysis_field
     text = format_report(_sample_report())
     assert "*Executive Summary*" in text
     assert "BTC broke above 65k." in text
-    assert "*Biggest Opportunity*" in text
+    assert "*Main Opportunity*" in text
     assert "Also: Overleveraged futures market." in text
     assert "Whale accumulation observed." in text
     assert "Bullish 60% | Bearish 20% | Neutral 20%" in text
@@ -1048,8 +1048,8 @@ def test_format_critical_alert_single_symbol():
     assert "BTC" in text
     assert "-9.50%" in text
     assert "Market Regime: Risk Off" in text
-    assert "AI Confidence: 82%" in text
-    assert "Committee Verdict: SELL (moderate conviction)" in text
+    assert "Confidence: 82%" in text
+    assert "Committee Opinion: SELL (moderate conviction)" in text
     assert "Recommendation:" in text
     assert "Expected Scenarios:" in text
     assert "Risk Off (40%)" in text
@@ -1220,7 +1220,7 @@ def test_format_scanner_alert_includes_scenario_opportunity_and_threat():
     text = format_scanner_alert(detection)
     assert "Expected Scenario: Soft Landing (40%)" in text
     assert "Main Opportunity: Soft Landing (40%) -- risk-on continuation." in text
-    assert "Main Threat: Risk Off (25%) -- broad de-risking." in text
+    assert "Main Risk: Risk Off (25%) -- broad de-risking." in text
 
 
 def test_format_scanner_alert_multi_asset_shock_lists_all_symbols():

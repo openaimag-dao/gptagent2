@@ -903,7 +903,7 @@ async function renderWatchdog() {
     nodes.push(
       el("div", { class: "grid" }, [
         card("Committee Opinion", ai.committee_opinion || "n/a"),
-        card("Prediction Confidence", fmtNum(ai.prediction_confidence, 0)),
+        card("Confidence", fmtNum(ai.prediction_confidence, 0)),
         card(
           "Expected Scenario",
           ai.expected_scenario ? `${ai.expected_scenario} (${ai.expected_scenario_pct}%)` : "n/a"
@@ -920,8 +920,8 @@ async function renderWatchdog() {
         )
       );
     }
-    if (ai.highest_risk) nodes.push(el("p", {}, `Highest Risk: ${ai.highest_risk}`));
-    if (ai.biggest_opportunity) nodes.push(el("p", {}, `Biggest Opportunity: ${ai.biggest_opportunity}`));
+    if (ai.highest_risk) nodes.push(el("p", {}, `Main Risk: ${ai.highest_risk}`));
+    if (ai.biggest_opportunity) nodes.push(el("p", {}, `Main Opportunity: ${ai.biggest_opportunity}`));
   }
 
   const wc = d.what_changed;
@@ -2082,8 +2082,8 @@ async function renderReports() {
   if (ir) {
     const section = (title, text) => [el("h2", {}, title), el("p", {}, text)];
     nodes.push(...section("Executive Summary", ir.executive_summary));
-    nodes.push(el("p", { class: "up" }, `Biggest Opportunity: ${ir.biggest_opportunity}`));
-    nodes.push(el("p", { class: "down" }, `Biggest Risk: ${ir.biggest_risk}`));
+    nodes.push(el("p", { class: "up" }, `Main Opportunity: ${ir.biggest_opportunity}`));
+    nodes.push(el("p", { class: "down" }, `Main Risk: ${ir.biggest_risk}`));
     nodes.push(...section("Market Drivers", ir.market_drivers));
     nodes.push(...section("Sector Rotation", ir.sector_rotation));
     nodes.push(...section("Historical Comparison", ir.historical_comparison));

@@ -160,10 +160,10 @@ def format_report(report: Report | None, institutional_report: dict | None = Non
         "*Executive Summary*",
         ir.get("executive_summary") or analysis.get("what_changed", "n/a"),
         "",
-        "*Biggest Opportunity*",
+        "*Main Opportunity*",
         ir.get("biggest_opportunity", "n/a"),
         "",
-        "*Biggest Risk*",
+        "*Main Risk*",
         ir.get("biggest_risk", "n/a"),
     ]
     if analysis.get("main_risks"):
@@ -884,16 +884,16 @@ def format_watchdog_ai(ai_status: dict) -> str:
             f"Consensus: bullish {consensus['bullish_pct']}% / bearish {consensus['bearish_pct']}% "
             f"/ neutral {consensus['neutral_pct']}%"
         )
-    lines.append(f"Prediction Confidence: {_fmt_num(ai_status['prediction_confidence'])}%")
+    lines.append(f"Confidence: {_fmt_num(ai_status['prediction_confidence'])}%")
     if ai_status.get("expected_scenario"):
         lines.append(
             f"Expected Scenario: {ai_status['expected_scenario']} "
             f"({ai_status['expected_scenario_pct']}%)"
         )
     if ai_status.get("highest_risk"):
-        lines.append(f"Highest Risk: {ai_status['highest_risk']}")
+        lines.append(f"Main Risk: {ai_status['highest_risk']}")
     if ai_status.get("biggest_opportunity"):
-        lines.append(f"Biggest Opportunity: {ai_status['biggest_opportunity']}")
+        lines.append(f"Main Opportunity: {ai_status['biggest_opportunity']}")
     return "\n".join(lines)
 
 
@@ -1377,11 +1377,11 @@ def format_critical_alert(
     if ctx["risk_score"] is not None:
         lines.append(f"Risk Score: {ctx['risk_score']}/100")
     if quality_score is not None:
-        lines.append(f"AI Confidence: {round(quality_score)}%")
+        lines.append(f"Confidence: {round(quality_score)}%")
     lines.append("")
 
     if ctx["committee"] is not None:
-        lines.append(f"Committee Verdict: {ctx['committee']['final_recommendation']}")
+        lines.append(f"Committee Opinion: {ctx['committee']['final_recommendation']}")
         lines.append("")
 
     historical_similarity = envelope["quality_components"].get("historical_similarity")
@@ -1480,7 +1480,7 @@ def format_scanner_alert(detection: dict) -> str:
     if ctx.get("biggest_opportunity"):
         lines.append(f"Main Opportunity: {ctx['biggest_opportunity']}")
     if ctx.get("highest_risk"):
-        lines.append(f"Main Threat: {ctx['highest_risk']}")
+        lines.append(f"Main Risk: {ctx['highest_risk']}")
     lines.append("")
 
     lines.append("Explanation:")
