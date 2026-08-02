@@ -864,12 +864,21 @@ def test_format_brief_no_committee_no_opportunities():
         "portfolio": {"empty": True, "positions": []},
         "regime": "bull",
         "health_score": 60,
+        "consensus": None,
+        "watchdog": None,
+        "scanner": {"breadth": None, "active_alerts_count": 0, "active_alerts_by_tier": {}},
+        "historical_intelligence": None,
     }
     text = format_brief(brief)
     assert "DAILY TERMINAL BRIEF" in text
     assert "no agent reported a direction" in text
     assert "none computed this cycle" in text
     assert "no positions held" in text
+    # Honestly omitted -- nothing computed yet -- not fabricated placeholders.
+    assert "Consensus" not in text
+    assert "Watchdog" not in text
+    assert "Scanner" not in text
+    assert "Historical Intelligence" not in text
 
 
 def test_format_brief_full():
@@ -887,12 +896,38 @@ def test_format_brief_full():
         "portfolio": {"empty": False, "health_score": 72, "total_value": 10000.0},
         "regime": "bull",
         "health_score": 65,
+        "consensus": {
+            "bullish_pct": 60.0,
+            "bearish_pct": 20.0,
+            "neutral_pct": 20.0,
+            "conflict_pct": 10.0,
+        },
+        "watchdog": {
+            "market_health": "Healthy",
+            "committee_decision": "BUY",
+            "highest_risk": "Overextended rally",
+            "biggest_opportunity": "Breakout continuation",
+            "expected_scenario": "Continued Uptrend",
+        },
+        "scanner": {
+            "breadth": {"total_scanned": 500, "rising_count": 320, "falling_count": 150},
+            "active_alerts_count": 2,
+            "active_alerts_by_tier": {"high": 2},
+        },
+        "historical_intelligence": {
+            "summary": {"symbol": "ETH", "similarity_score": 91.0},
+        },
     }
     text = format_brief(brief)
     assert "Committee*: BUY (high conviction)" in text
     assert "Risk-off: 30/100" in text
     assert "BTC: bullish (78.0/100)" in text
     assert "health 72/100" in text
+    assert "Consensus*: bullish 60.0% / bearish 20.0%" in text
+    assert "Watchdog*: Healthy" in text
+    assert "Highest risk: Overextended rally" in text
+    assert "Scanner*: 320 rising / 150 falling of 500 scanned -- 2 active alert(s)" in text
+    assert "Historical Intelligence*: most similar setup ETH (91.0% similar)" in text
 
 
 def test_format_historical_comparison_none():

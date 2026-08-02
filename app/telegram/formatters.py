@@ -1280,6 +1280,41 @@ def format_brief(brief: dict) -> str:
             f"value {portfolio['total_value']:,.2f}"
         )
     lines.append("")
+
+    if brief["consensus"]:
+        c = brief["consensus"]
+        lines.append(
+            f"*Consensus*: bullish {c['bullish_pct']}% / bearish {c['bearish_pct']}% / "
+            f"neutral {c['neutral_pct']}% (conflict {c['conflict_pct']}%)"
+        )
+        lines.append("")
+
+    if brief["watchdog"]:
+        w = brief["watchdog"]
+        lines.append(f"*Watchdog*: {w['market_health'] or 'unknown'}")
+        if w["highest_risk"]:
+            lines.append(f"Highest risk: {w['highest_risk']}")
+        if w["biggest_opportunity"]:
+            lines.append(f"Biggest opportunity: {w['biggest_opportunity']}")
+        lines.append("")
+
+    scanner = brief["scanner"]
+    if scanner["breadth"]:
+        b = scanner["breadth"]
+        lines.append(
+            f"*Scanner*: {b['rising_count']} rising / {b['falling_count']} falling "
+            f"of {b['total_scanned']} scanned -- {scanner['active_alerts_count']} active alert(s)"
+        )
+        lines.append("")
+
+    if brief["historical_intelligence"]:
+        h = brief["historical_intelligence"]["summary"]
+        lines.append(
+            f"*Historical Intelligence*: most similar setup {h['symbol']} "
+            f"({h['similarity_score']}% similar)"
+        )
+        lines.append("")
+
     lines.append(nav_pointer("brief"))
     return "\n".join(lines)
 

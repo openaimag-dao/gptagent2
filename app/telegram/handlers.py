@@ -888,6 +888,8 @@ def _build_terminal_engine() -> TerminalEngine:
         global_score_engine,
         replay_engine,
         RankingEngine(session_factory),
+        build_watchdog_engine(),
+        build_market_scanner_engine(),
     )
 
 
