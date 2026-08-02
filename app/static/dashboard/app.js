@@ -1136,11 +1136,15 @@ async function renderScanner() {
         ),
       ])
     );
+    const insight = ctx.ai_insight || {};
+    if (insight.consensus) {
+      nodes.push(el("p", { class: "sub" }, `Consensus: ${insight.consensus}`));
+    }
     if (ctx.highest_risk || ctx.biggest_opportunity) {
       nodes.push(
         el("p", { class: "sub" }, [
-          ctx.highest_risk ? `Highest risk: ${ctx.highest_risk}. ` : "",
-          ctx.biggest_opportunity ? `Biggest opportunity: ${ctx.biggest_opportunity}.` : "",
+          ctx.biggest_opportunity ? `Main Opportunity: ${ctx.biggest_opportunity}. ` : "",
+          ctx.highest_risk ? `Main Risk: ${ctx.highest_risk}.` : "",
         ].join(""))
       );
     }

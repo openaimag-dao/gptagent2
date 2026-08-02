@@ -1530,6 +1530,13 @@ def format_scanner_dashboard(dashboard: dict) -> str:
             pct = ctx.get("expected_scenario_pct")
             pct_str = f" ({pct}%)" if pct is not None else ""
             lines.append(f"Expected Scenario: {ctx['expected_scenario']}{pct_str}")
+        insight = ctx.get("ai_insight") or {}
+        if insight.get("consensus"):
+            lines.append(f"Consensus: {insight['consensus']}")
+        if insight.get("main_opportunity"):
+            lines.append(f"Main Opportunity: {insight['main_opportunity']}")
+        if insight.get("main_risk"):
+            lines.append(f"Main Risk: {insight['main_risk']}")
         lines.append("")
 
     if breadth and breadth.get("top_gainers"):

@@ -8,6 +8,7 @@ from app.services.watchdog.engine import (
     WatchdogEngine,
     _is_on_cooldown,
     _trend_label,
+    build_watchdog_snapshot_insight,
     macro_impact_on_crypto,
 )
 
@@ -254,27 +255,69 @@ async def test_get_ai_status_before_any_cycle():
     assert status["committee_opinion"] is None
 
 
+def _snapshot_for_insight(**overrides) -> SimpleNamespace:
+    defaults = {
+        "regime": "risk_on",
+        "market_health": "Healthy",
+        "risk_score": 30,
+        "confidence_score": 72,
+        "committee_decision": "BUY",
+        "committee_confidence_pct": 72.5,
+        "committee_recommendation": "BUY (high conviction)",
+        "consensus": {
+            "bullish_pct": 60.0,
+            "bearish_pct": 20.0,
+            "neutral_pct": 20.0,
+            "agreement_score": 60.0,
+        },
+        "expected_scenario": "Soft Landing",
+        "expected_scenario_pct": 40,
+        "highest_risk": "Risk Off (25%) -- ...",
+        "biggest_opportunity": "Soft Landing (40%) -- ...",
+        "computed_at": datetime.now(UTC),
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
 async def test_get_ai_status_after_a_cycle():
     engine, _ = _engine()
-    now = datetime.now(UTC)
-    engine.get_latest_snapshot = AsyncMock(
-        return_value=SimpleNamespace(
-            committee_recommendation="BUY (high conviction)",
-            consensus={"bullish_pct": 60.0, "bearish_pct": 20.0, "neutral_pct": 20.0},
-            committee_confidence_pct=72.5,
-            expected_scenario="Soft Landing",
-            expected_scenario_pct=40,
-            highest_risk="Risk Off (25%) -- ...",
-            biggest_opportunity="Soft Landing (40%) -- ...",
-            computed_at=now,
-        )
-    )
+    engine.get_latest_snapshot = AsyncMock(return_value=_snapshot_for_insight())
 
     status = await engine.get_ai_status()
 
     assert status["committee_opinion"] == "BUY (high conviction)"
     assert status["prediction_confidence"] == 72.5
     assert status["expected_scenario"] == "Soft Landing"
+
+
+def test_build_watchdog_snapshot_insight_returns_empty_insight_for_none():
+    insight = build_watchdog_snapshot_insight(None)
+
+    assert insight["current_status"] is None
+    assert insight["ai_conclusion"] is None
+    assert insight["confidence"] is None
+
+
+def test_build_watchdog_snapshot_insight_composes_from_a_real_snapshot():
+    row = _snapshot_for_insight()
+
+    insight = build_watchdog_snapshot_insight(row)
+
+    assert "Risk On" in insight["current_status"]
+    assert "risk 30/100" in insight["current_status"]
+    assert insight["ai_conclusion"] == "BUY (high conviction)"
+    assert insight["committee_opinion"] == "BUY (72.5%)"
+    assert "Bullish 60.0%" in insight["consensus"]
+    assert insight["main_opportunity"] == "Soft Landing (40%) -- ..."
+    assert insight["main_risk"] == "Risk Off (25%) -- ..."
+    assert insight["expected_scenario"] == "Soft Landing (40%)"
+    assert insight["confidence"] == 72
+    # WatchdogSnapshot never stores per-agent reasoning/evidence or a
+    # similarity search -- these must stay honestly unset, not fabricated.
+    assert insight["why"] is None
+    assert insight["supporting_evidence"] == []
+    assert insight["historical_similarity"] is None
 
 
 async def test_run_cycle_persists_snapshot_and_detects_no_changes_on_first_cycle():

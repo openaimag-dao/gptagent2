@@ -1301,6 +1301,33 @@ def test_format_scanner_dashboard_includes_market_context_from_watchdog():
     assert "Expected Scenario: Deeper Correction (60%)" in text
 
 
+def test_format_scanner_dashboard_includes_consensus_opportunity_and_risk_from_ai_insight():
+    dashboard = {
+        "top_movers": None,
+        "sector_leaders": [],
+        "pending_alerts": [],
+        "suppressed_alerts": [],
+        "market_context": {
+            "regime": "risk_off",
+            "risk_score": 70,
+            "confidence_score": 40,
+            "committee_decision": "SELL",
+            "committee_majority_pct": 75.0,
+            "expected_scenario": "Deeper Correction",
+            "expected_scenario_pct": 60,
+            "ai_insight": build_ai_insight(
+                consensus="Bullish 20.0% / Bearish 70.0% / Neutral 10.0% (agreement 70.0%)",
+                main_opportunity="Oversold bounce in majors",
+                main_risk="Macro liquidity tightening",
+            ),
+        },
+    }
+    text = format_scanner_dashboard(dashboard)
+    assert "Consensus: Bullish 20.0% / Bearish 70.0%" in text
+    assert "Main Opportunity: Oversold bounce in majors" in text
+    assert "Main Risk: Macro liquidity tightening" in text
+
+
 def test_format_scanner_dashboard_omits_market_context_when_no_snapshot_yet():
     dashboard = {
         "top_movers": None,
