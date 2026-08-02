@@ -835,6 +835,27 @@ def test_format_opportunities_present():
     assert "advisor: BUY" in text
 
 
+def test_format_opportunities_includes_factor_context_when_provided():
+    opportunities = [
+        {
+            "symbol": "BTC",
+            "classification": "bullish",
+            "opportunity_score": 78.0,
+            "probability_edge_pct": 40.0,
+            "breakout": None,
+            "advisor_recommendation": None,
+        }
+    ]
+    top_factors = [
+        {"factor": "etf_inflow", "current_importance_pct": 12.5},
+        {"factor": "vix_up", "current_importance_pct": None},
+    ]
+    text = format_opportunities(opportunities, top_factors)
+    assert "*Factor Context*" in text
+    assert "etf inflow: +12.5% edge" in text
+    assert "vix up: edge unavailable" in text
+
+
 def test_format_brief_no_committee_no_opportunities():
     brief = {
         "committee": None,

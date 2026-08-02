@@ -36,6 +36,10 @@ def _advice(recommendation="BUY"):
     return type("FakeAdvice", (), {"recommendation": recommendation})()
 
 
+def _ranking_snapshot(rankings):
+    return type("FakeRankingSnapshot", (), {"rankings": rankings})()
+
+
 def _engine(
     probability_engine=None,
     breakout_engine=None,
@@ -44,6 +48,7 @@ def _engine(
     committee_engine=None,
     global_score_engine=None,
     replay_engine=None,
+    ranking_engine=None,
 ) -> TerminalEngine:
     return TerminalEngine(
         AsyncMock(),
@@ -54,6 +59,7 @@ def _engine(
         committee_engine or AsyncMock(),
         global_score_engine or AsyncMock(),
         replay_engine or AsyncMock(),
+        ranking_engine or AsyncMock(),
     )
 
 
@@ -262,3 +268,29 @@ async def test_compute_period_performance_assembles_accuracy_and_alerts():
     assert result["accuracy_pct"] == 50.0
     assert result["alerts_count"] == 1
     assert result["historical_comparison"] is None
+
+
+async def test_get_top_factors_returns_empty_when_no_ranking_computed_yet():
+    ranking_engine = AsyncMock()
+    ranking_engine.get_latest.return_value = None
+    engine = _engine(ranking_engine=ranking_engine)
+
+    result = await engine.get_top_factors()
+
+    assert result == []
+
+
+async def test_get_top_factors_returns_the_top_n_already_ranked_factors():
+    rankings = [
+        {"factor": "etf_inflow", "current_importance_pct": 12.5, "rank": 1},
+        {"factor": "nasdaq_up", "current_importance_pct": 8.0, "rank": 2},
+        {"factor": "fed_dovish", "current_importance_pct": 3.0, "rank": 3},
+        {"factor": "vix_up", "current_importance_pct": -1.0, "rank": 4},
+    ]
+    ranking_engine = AsyncMock()
+    ranking_engine.get_latest.return_value = _ranking_snapshot(rankings)
+    engine = _engine(ranking_engine=ranking_engine)
+
+    result = await engine.get_top_factors(limit=2)
+
+    assert result == rankings[:2]

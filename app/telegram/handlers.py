@@ -887,6 +887,7 @@ def _build_terminal_engine() -> TerminalEngine:
         committee_engine,
         global_score_engine,
         replay_engine,
+        RankingEngine(session_factory),
     )
 
 
@@ -901,7 +902,8 @@ async def cmd_brief(message: Message) -> None:
 async def cmd_opportunities(message: Message) -> None:
     engine = _build_terminal_engine()
     opportunities = await engine.compute_top_opportunities()
-    await _answer(message, format_opportunities(opportunities))
+    top_factors = await engine.get_top_factors()
+    await _answer(message, format_opportunities(opportunities, top_factors))
 
 
 @router.message(Command("compare"))

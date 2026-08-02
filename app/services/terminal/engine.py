@@ -30,6 +30,7 @@ from app.services.memory.engine import MemoryEngine
 from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
+from app.services.ranking.engine import RankingEngine
 from app.services.replay.engine import MarketReplayEngine, diff_snapshots
 from app.services.terminal.opportunities import classify_opportunity, score_opportunity
 
@@ -48,6 +49,7 @@ class TerminalEngine:
         committee_engine: CommitteeEngine,
         global_score_engine: GlobalScoreEngine,
         replay_engine: MarketReplayEngine,
+        ranking_engine: RankingEngine,
     ) -> None:
         self._session_factory = session_factory
         self._probability_engine = probability_engine
@@ -57,6 +59,7 @@ class TerminalEngine:
         self._committee_engine = committee_engine
         self._global_score_engine = global_score_engine
         self._replay_engine = replay_engine
+        self._ranking_engine = ranking_engine
 
     async def _symbol_opportunity(self, symbol: str) -> dict | None:
         # The three lookups below are independent reads (different engines,
@@ -113,6 +116,19 @@ class TerminalEngine:
         results = [r for r in per_symbol if r is not None]
         results.sort(key=lambda r: abs(r["opportunity_score"] - 50), reverse=True)
         return results
+
+    async def get_top_factors(self, limit: int = 3) -> list[dict]:
+        """v12.0 P1 -- RankingEngine already measures each Signal Engine
+        factor's real predictive edge via walk-forward backtest, on its own
+        schedule (compute_ranking_job); this was never referenced from
+        Opportunities, so a trader had no way to see whether a call rests
+        on a factor with real historical edge or near-zero edge unless
+        they separately ran /ranking. One cheap read of the latest already-
+        computed RankingSnapshot -- no new backtest, no new computation."""
+        snapshot = await self._ranking_engine.get_latest()
+        if snapshot is None:
+            return []
+        return snapshot.rankings[:limit]
 
     async def compute_brief(self) -> dict:
         committee_verdict = await self._committee_engine.convene()
