@@ -166,6 +166,8 @@ def format_report(report: Report | None, institutional_report: dict | None = Non
         "*Main Risk*",
         ir.get("biggest_risk", "n/a"),
     ]
+    if ir.get("risk_detail"):
+        lines.append(f"Risk Detail: {ir['risk_detail']}")
     if analysis.get("main_risks"):
         lines.append(f"Also: {analysis['main_risks']}")
     lines.extend(

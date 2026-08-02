@@ -2088,6 +2088,9 @@ async function renderReports() {
     nodes.push(...section("Executive Summary", ir.executive_summary));
     nodes.push(el("p", { class: "up" }, `Main Opportunity: ${ir.biggest_opportunity}`));
     nodes.push(el("p", { class: "down" }, `Main Risk: ${ir.biggest_risk}`));
+    if (ir.risk_detail) {
+      nodes.push(el("p", { class: "sub" }, `Risk Detail: ${ir.risk_detail}`));
+    }
     nodes.push(...section("Market Drivers", ir.market_drivers));
     nodes.push(...section("Sector Rotation", ir.sector_rotation));
     nodes.push(...section("Historical Comparison", ir.historical_comparison));

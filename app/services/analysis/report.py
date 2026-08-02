@@ -162,6 +162,25 @@ def _format_replay_comparison(replay_comparison: dict | None) -> str | None:
     return f"Vs. {hours_ago}h ago (Replay): " + "; ".join(parts) + "."
 
 
+def _format_risk_detail(global_score: dict | None) -> str | None:
+    """v12.0 "Reports should reference Risk Engine detail" -- GlobalScoreEngine
+    already computes risk-on/risk-off/liquidity/macro-pressure sub-scores for
+    this exact report cycle (stored in report.institutional_summary
+    ['global_score'] by generate_and_store(), see _format_global_score_lines()
+    which already renders these same fields for the LLM prompt) but
+    build_institutional_report() never surfaced them as their own field --
+    the institutional report only ever showed the LLM's narrative main_risks
+    text. Read-only composition of an already-computed dict, not a second
+    calculation."""
+    if not global_score:
+        return None
+    return (
+        f"Risk-On {global_score['risk_on_score']} / Risk-Off {global_score['risk_off_score']} | "
+        f"Liquidity {global_score['liquidity_score']} | "
+        f"Macro pressure {global_score['macro_pressure_score']}"
+    )
+
+
 def build_institutional_report(
     report: Report,
     sector_breadth: list[dict] | None = None,
@@ -217,10 +236,13 @@ def build_institutional_report(
     if replay_note:
         historical_comparison = f"{historical_comparison} {replay_note}"
 
+    risk_detail = _format_risk_detail((report.institutional_summary or {}).get("global_score"))
+
     return {
         "executive_summary": executive_summary or "No summary available.",
         "biggest_opportunity": biggest_opportunity or "No bullish scenario currently dominant.",
         "biggest_risk": highest_risk or "No bearish scenario currently dominant.",
+        "risk_detail": risk_detail,
         "main_risks": analysis.get("main_risks", "n/a"),
         "market_drivers": market_drivers,
         "institutional_behavior": analysis.get("institutional_behavior", "n/a"),
