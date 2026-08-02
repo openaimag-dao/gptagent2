@@ -134,10 +134,10 @@ async def edit_text(chat_id: int, message_id: int, text: str) -> bool:
         await bot.session.close()
 
 
-async def broadcast_report(report: Report) -> None:
+async def broadcast_report(report: Report, institutional_report: dict | None = None) -> None:
     """Sends a generated report to every configured Telegram chat.
 
     The report is already stored and available via the API/bot commands
     regardless of whether Telegram broadcast is configured.
     """
-    await broadcast_text(format_report(report))
+    await broadcast_text(format_report(report, institutional_report))

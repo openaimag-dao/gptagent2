@@ -1990,9 +1990,25 @@ async function renderReports() {
     el("div", { class: "grid" }, [
       card("Type", report.report_type),
       card("Regime", report.regime),
+      card("Risk Level", report.risk_level),
+      card("Confidence", `${report.confidence_pct}%`),
       card("Generated", report.generated_at.slice(0, 19).replace("T", " ")),
     ])
   );
+
+  const ir = report.institutional_report;
+  if (ir) {
+    const section = (title, text) => [el("h2", {}, title), el("p", {}, text)];
+    nodes.push(...section("Executive Summary", ir.executive_summary));
+    nodes.push(el("p", { class: "up" }, `Biggest Opportunity: ${ir.biggest_opportunity}`));
+    nodes.push(el("p", { class: "down" }, `Biggest Risk: ${ir.biggest_risk}`));
+    nodes.push(...section("Market Drivers", ir.market_drivers));
+    nodes.push(...section("Sector Rotation", ir.sector_rotation));
+    nodes.push(...section("Historical Comparison", ir.historical_comparison));
+    nodes.push(...section("AI Conclusion", ir.ai_conclusion));
+    nodes.push(...section("What to Watch Next", ir.what_to_watch_next));
+  }
+
   nodes.push(el("h2", {}, "Institutional Summary"));
   nodes.push(renderStructured(report.institutional_summary));
   return nodes;

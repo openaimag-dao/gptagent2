@@ -7,6 +7,7 @@ from app.database.models import (
     BreakoutEvent,
     GlobalMarketScore,
     MarketRegimeSnapshot,
+    Report,
     SignalSnapshot,
 )
 from app.services.analysis.regime import MarketRegime
@@ -34,6 +35,7 @@ from app.telegram.formatters import (
     format_quality,
     format_regime,
     format_replay,
+    format_report,
     format_risk,
     format_scanner_alert,
     format_scanner_dashboard,
@@ -580,6 +582,65 @@ def test_format_quality_present():
     assert "Macro precision: 75.0% | Macro recall: 72.0%" in text
     assert "60-80%" in text
     assert "1 period(s)" in text
+
+
+def test_format_report_none():
+    assert "No AI report has been generated yet" in format_report(None)
+
+
+def _sample_report() -> Report:
+    return Report(
+        report_type="scheduled",
+        regime="risk_on",
+        risk_level="low",
+        bull_score=5,
+        bear_score=1,
+        confidence_pct=80,
+        analysis={
+            "what_changed": "BTC broke above 65k.",
+            "who_is_driving": "Spot ETF inflows.",
+            "main_risks": "Overleveraged futures market.",
+            "institutional_behavior": "Whale accumulation observed.",
+            "historical_comparison": "Similar to March 2024.",
+            "probability_bullish_pct": 60,
+            "probability_bearish_pct": 20,
+            "probability_neutral_pct": 20,
+        },
+        institutional_summary={},
+        generated_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+def test_format_report_without_institutional_report_falls_back_to_analysis_fields():
+    text = format_report(_sample_report())
+    assert "*Executive Summary*" in text
+    assert "BTC broke above 65k." in text
+    assert "*Biggest Opportunity*" in text
+    assert "Also: Overleveraged futures market." in text
+    assert "Whale accumulation observed." in text
+    assert "Bullish 60% | Bearish 20% | Neutral 20%" in text
+
+
+def test_format_report_uses_institutional_report_when_provided():
+    institutional_report = {
+        "executive_summary": "Risk On regime, low risk.",
+        "biggest_opportunity": "Soft Landing (55%) -- growth continues.",
+        "biggest_risk": "Risk Off (20%) -- de-risking.",
+        "market_drivers": "Spot ETF inflows. DXY weakening.",
+        "sector_rotation": "Leading: Layer 1 (+5.00%). Lagging: Gaming (-4.00%).",
+        "historical_comparison": "Similar to March 2024.",
+        "ai_conclusion": "Consider scaling into strength.",
+        "what_to_watch_next": "FOMC minutes at 14:00 ET.",
+        "main_risks": "n/a",
+        "institutional_behavior": "n/a",
+    }
+    text = format_report(_sample_report(), institutional_report)
+    assert "Soft Landing (55%)" in text
+    assert "Risk Off (20%)" in text
+    assert "*Sector Rotation*" in text
+    assert "Leading: Layer 1" in text
+    assert "Consider scaling into strength." in text
+    assert "FOMC minutes at 14:00 ET." in text
 
 
 def test_format_replay_none():

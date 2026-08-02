@@ -5,10 +5,16 @@ from app.database.models import (
     NewsCategory,
     NewsItem,
     NewsSentiment,
+    Report,
     SignalSnapshot,
 )
 from app.services.analysis.regime import MarketRegime
-from app.services.analysis.report import build_user_prompt, derive_risk_level, strip_json_fence
+from app.services.analysis.report import (
+    build_institutional_report,
+    build_user_prompt,
+    derive_risk_level,
+    strip_json_fence,
+)
 
 
 def test_derive_risk_level_high_for_risk_off():
@@ -112,3 +118,78 @@ def test_build_user_prompt_includes_agent_summaries_when_provided():
     )
 
     assert "DXY down." in prompt
+
+
+def _scenario(key: str, name: str, probability_pct: int, rationale: str = "reason") -> dict:
+    return {"key": key, "name": name, "probability_pct": probability_pct, "rationale": rationale}
+
+
+def _report(**overrides) -> Report:
+    defaults = {
+        "report_type": "scheduled",
+        "regime": "risk_on",
+        "risk_level": "low",
+        "bull_score": 5,
+        "bear_score": 1,
+        "confidence_pct": 80,
+        "analysis": {
+            "what_changed": "BTC broke above 65k.",
+            "who_is_driving": "Spot ETF inflows.",
+            "macro_explanation": "DXY weakening.",
+            "historical_comparison": "Similar to March 2024.",
+            "main_risks": "Overleveraged futures market.",
+            "institutional_behavior": "Whale accumulation observed.",
+            "actionable_insights": "Consider scaling into strength.",
+            "key_events_today": "FOMC minutes at 14:00 ET.",
+            "probability_bullish_pct": 60,
+            "probability_bearish_pct": 20,
+            "probability_neutral_pct": 20,
+        },
+        "institutional_summary": {
+            "scenarios": [
+                _scenario("soft_landing", "Soft Landing", 55),
+                _scenario("risk_off", "Risk Off", 20),
+                _scenario("liquidity_expansion", "Liquidity Expansion", 15),
+                _scenario("black_swan", "Black Swan", 10),
+            ]
+        },
+    }
+    defaults.update(overrides)
+    return Report(**defaults)
+
+
+def test_build_institutional_report_composes_from_analysis_and_scenarios():
+    report = _report()
+    sector_breadth = [
+        {"sector": "Layer 1", "avg_change_pct_24h": 5.0, "coin_count": 3},
+        {"sector": "Meme", "avg_change_pct_24h": 2.0, "coin_count": 5},
+        {"sector": "DeFi", "avg_change_pct_24h": -1.0, "coin_count": 4},
+        {"sector": "Gaming", "avg_change_pct_24h": -4.0, "coin_count": 2},
+    ]
+
+    ir = build_institutional_report(report, sector_breadth)
+
+    assert "Risk On regime" in ir["executive_summary"]
+    assert "BTC broke above 65k." in ir["executive_summary"]
+    assert "Soft Landing" in ir["biggest_opportunity"]
+    assert "Risk Off" in ir["biggest_risk"]
+    assert "Spot ETF inflows." in ir["market_drivers"]
+    assert "DXY weakening." in ir["market_drivers"]
+    assert "Layer 1" in ir["sector_rotation"]
+    assert "Leading:" in ir["sector_rotation"]
+    assert "Lagging:" in ir["sector_rotation"]
+    assert ir["historical_comparison"] == "Similar to March 2024."
+    assert ir["ai_conclusion"] == "Consider scaling into strength."
+    assert ir["what_to_watch_next"] == "FOMC minutes at 14:00 ET."
+    assert ir["main_risks"] == "Overleveraged futures market."
+    assert ir["institutional_behavior"] == "Whale accumulation observed."
+
+
+def test_build_institutional_report_is_honest_when_scenarios_and_breadth_are_missing():
+    report = _report(institutional_summary={})
+
+    ir = build_institutional_report(report, sector_breadth=None)
+
+    assert ir["biggest_opportunity"] == "No bullish scenario currently dominant."
+    assert ir["biggest_risk"] == "No bearish scenario currently dominant."
+    assert "unavailable" in ir["sector_rotation"]
