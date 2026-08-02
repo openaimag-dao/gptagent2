@@ -14,6 +14,7 @@ from app.database.models import (
     SentimentSnapshot,
     SignalSnapshot,
 )
+from app.services.common.ai_insight import format_ai_insight_lines
 from app.services.consensus.engine import ConsensusResult
 from app.services.shocks.detectors import regime_direction_bucket
 
@@ -997,7 +998,14 @@ def format_watchdog_dashboard(dashboard: dict) -> str:
     return "\n".join(sections)
 
 
-def format_replay(snapshot: dict | None) -> str:
+def format_replay(snapshot: dict | None, insight: dict | None = None) -> str:
+    """v10.0: when `insight` (from build_replay_insight()) is supplied,
+    renders the shared AI Insight block -- committee decision at that time,
+    consensus, BTC-proxy historical similarity -- in place of the raw
+    consensus dict dump, so /replay stops being the platform's least-
+    enriched screen. Falls back to the old inline consensus line when no
+    insight is available (e.g. a snapshot predating agent/consensus
+    tracking)."""
     if snapshot is None:
         return "No market snapshot has been taken yet -- check back shortly."
     lines = [
@@ -1005,21 +1013,27 @@ def format_replay(snapshot: dict | None) -> str:
         "",
         f"Regime: {(snapshot['regime'] or 'unknown').replace('_', ' ').title()}",
         (
-            f"Health {snapshot['health_score']} | Trend {snapshot['trend_strength_score']} | "
-            f"Risk {snapshot['risk_score']} | Confidence {snapshot['confidence_score']}"
+            f"Health {snapshot['health_score']}/100 | "
+            f"Trend Strength {snapshot['trend_strength_score']}/100 | "
+            f"Risk {snapshot['risk_score']}/100 | Confidence {snapshot['confidence_score']}/100"
         ),
     ]
-    if snapshot["consensus"]:
-        c = snapshot["consensus"]
-        lines.append(
-            f"Consensus: bullish {c['bullish_pct']}% / bearish {c['bearish_pct']}% / "
-            f"neutral {c['neutral_pct']}% (conflict {c['conflict_pct']}%)"
-        )
     if snapshot["portfolio_advice"]:
         pa = snapshot["portfolio_advice"]
         lines.append(f"Portfolio advice ({pa['symbol']}): {pa['recommendation']}")
     if snapshot["alerts"]:
         lines.append(f"Alerts since previous snapshot: {len(snapshot['alerts'])}")
+
+    if insight:
+        lines.append("")
+        lines.append("*AI Insight*")
+        lines.extend(format_ai_insight_lines(insight))
+    elif snapshot["consensus"]:
+        c = snapshot["consensus"]
+        lines.append(
+            f"Consensus: bullish {c['bullish_pct']}% / bearish {c['bearish_pct']}% / "
+            f"neutral {c['neutral_pct']}% (conflict {c['conflict_pct']}%)"
+        )
     return "\n".join(lines)
 
 

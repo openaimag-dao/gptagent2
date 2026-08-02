@@ -8,7 +8,7 @@ from aiogram.types import ErrorEvent, Message
 from sqlalchemy import select
 
 from app.api.reports import build_report_generator
-from app.database.models import AssetClass, HistoricalEvent
+from app.database.models import AssetClass, CryptoHistory, HistoricalEvent
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.agents.orchestrator import build_agent_orchestrator
@@ -47,6 +47,8 @@ from app.services.ranking.engine import RankingEngine
 from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import (
     MarketReplayEngine,
+    build_replay_insight,
+    committee_from_snapshot,
     get_latest_consensus,
     get_replay_comparison,
 )
@@ -1381,6 +1383,11 @@ async def cmd_why(message: Message, command: CommandObject) -> None:
     await _answer(message, format_explanation(data))
 
 
+# BTC is the established codebase convention for "the symbol standing in for
+# overall market conditions" (see app/api/replay.py's _MARKET_PROXY_SYMBOL).
+_REPLAY_INSIGHT_SYMBOL = "BTC"
+
+
 @router.message(Command("replay"))
 async def cmd_replay(message: Message) -> None:
     session_factory = get_session_factory()
@@ -1409,19 +1416,30 @@ async def cmd_replay(message: Message) -> None:
         ProbabilityEngine(session_factory),
     )
     row = await engine.get_latest()
-    snapshot = (
-        {
-            "regime": row.regime,
-            "health_score": row.health_score,
-            "trend_strength_score": row.trend_strength_score,
-            "risk_score": row.risk_score,
-            "confidence_score": row.confidence_score,
-            "consensus": row.consensus,
-            "portfolio_advice": row.portfolio_advice,
-            "alerts": row.alerts,
-            "computed_at": row.computed_at.isoformat(),
-        }
-        if row is not None
-        else None
-    )
-    await _answer(message, format_replay(snapshot))
+    if row is None:
+        await _answer(message, format_replay(None))
+        return
+
+    snapshot = {
+        "regime": row.regime,
+        "health_score": row.health_score,
+        "trend_strength_score": row.trend_strength_score,
+        "risk_score": row.risk_score,
+        "confidence_score": row.confidence_score,
+        "consensus": row.consensus,
+        "portfolio_advice": row.portfolio_advice,
+        "alerts": row.alerts,
+        "computed_at": row.computed_at.isoformat(),
+    }
+
+    committee = committee_from_snapshot(row)
+    try:
+        matches = await SimilarMarketEngine(session_factory).find_similar_periods(
+            _REPLAY_INSIGHT_SYMBOL, CryptoHistory, Timeframe.DAILY
+        )
+    except Exception:
+        matches = []
+    historical_lesson = build_historical_lesson(_REPLAY_INSIGHT_SYMBOL, matches)
+    insight = build_replay_insight(row, committee, historical_lesson)
+
+    await _answer(message, format_replay(snapshot, insight))

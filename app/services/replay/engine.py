@@ -18,9 +18,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import AssetPrice, MarketSnapshot, NewsItem
+from app.services.agents.base import AgentOutput
 from app.services.agents.orchestrator import AgentOrchestrator
 from app.services.analysis.regime import RegimeDetector
-from app.services.consensus.engine import compute_consensus, consensus_evolution
+from app.services.committee.engine import CommitteeVerdict, convene_committee
+from app.services.common.ai_insight import build_ai_insight
+from app.services.consensus.engine import ConsensusResult, compute_consensus, consensus_evolution
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.schemas import Timeframe
@@ -109,6 +112,97 @@ async def get_latest_consensus(session_factory: async_sessionmaker[AsyncSession]
             select(MarketSnapshot).order_by(MarketSnapshot.computed_at.desc()).limit(1)
         )
     return row.consensus if row is not None else None
+
+
+def committee_from_snapshot(row: MarketSnapshot) -> CommitteeVerdict | None:
+    """v10.0 "Replay should reference Committee decision at that time" --
+    reconstructs the exact CommitteeVerdict the committee would have
+    reached at this snapshot's timestamp, from the same agent votes and
+    consensus tally the snapshot already persisted in its `agents`/
+    `consensus` JSON columns. No new column, no migration, no new engine:
+    just replaying convene_committee() (the same pure function
+    CriticalAlertEngine already calls fresh every cycle) against history
+    instead of a live agent run. Returns None when the snapshot predates
+    consensus/agent tracking.
+    """
+    if not row.agents or not row.consensus:
+        return None
+    agent_outputs = {
+        name: AgentOutput(
+            agent=d["agent"],
+            summary=d["summary"],
+            data=d.get("data", {}),
+            generated_at=datetime.fromisoformat(d["generated_at"]),
+            direction=d.get("direction"),
+            confidence=d.get("confidence"),
+        )
+        for name, d in row.agents.items()
+    }
+    c = row.consensus
+    consensus = ConsensusResult(
+        bullish_pct=c["bullish_pct"],
+        bearish_pct=c["bearish_pct"],
+        neutral_pct=c["neutral_pct"],
+        agreement_score=c["agreement_score"],
+        conflict_pct=c.get("conflict_pct", 0.0),
+        bullish_agents=c.get("bullish_agents", []),
+        bearish_agents=c.get("bearish_agents", []),
+        neutral_agents=c.get("neutral_agents", []),
+        unavailable_agents=c.get("unavailable_agents", []),
+        agent_weights=c.get("agent_weights", {}),
+        agent_evidence=c.get("agent_evidence", {}),
+        computed_at=datetime.fromisoformat(c["computed_at"]),
+    )
+    return convene_committee(agent_outputs, consensus)
+
+
+def build_replay_insight(
+    row: MarketSnapshot,
+    committee: CommitteeVerdict | None,
+    historical_lesson: dict | None,
+) -> dict:
+    """v10.0 "Unified Intelligence" -- composes this snapshot's already-
+    computed fields, committee_from_snapshot()'s reconstructed historical
+    verdict, and a BTC-proxy build_historical_lesson() into the shared
+    AI Insight shape (app.services.common.ai_insight). No new computation
+    beyond what those two functions already produce.
+    """
+    regime_label = (row.regime or "unknown").replace("_", " ").title()
+    current_status = (
+        f"{regime_label} regime -- health {row.health_score}/100, "
+        f"risk {row.risk_score}/100, confidence {row.confidence_score}/100."
+    )
+
+    consensus_summary = None
+    if row.consensus:
+        c = row.consensus
+        consensus_summary = (
+            f"Bullish {c['bullish_pct']}% / Bearish {c['bearish_pct']}% / "
+            f"Neutral {c['neutral_pct']}% (agreement {c['agreement_score']}%)"
+        )
+
+    ai_conclusion = None
+    why = None
+    committee_opinion = None
+    supporting_evidence: list[str] = []
+    if committee is not None:
+        ai_conclusion = committee.final_recommendation
+        why = committee.reasoning
+        committee_opinion = f"{committee.majority_decision} ({committee.majority_pct}%)"
+        supporting_evidence = [
+            f"{e['agent']}: {e['evidence']}" for e in committee.supporting_evidence
+        ]
+
+    return build_ai_insight(
+        current_status=current_status,
+        ai_conclusion=ai_conclusion,
+        why=why,
+        supporting_evidence=supporting_evidence,
+        committee_opinion=committee_opinion,
+        consensus=consensus_summary,
+        historical_similarity=historical_lesson["main_lesson"] if historical_lesson else None,
+        confidence=row.confidence_score,
+    )
 
 
 async def get_replay_comparison(
