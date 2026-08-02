@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 
 from app.services.agents.base import AgentOutput
 from app.services.agents.orchestrator import AgentOrchestrator
+from app.services.common.formatting import agent_evidence_excerpt
 from app.services.reliability.engine import AgentReliabilityEngine
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,25 @@ class ConsensusResult:
     bearish_agents: list[str] = field(default_factory=list)
     neutral_agents: list[str] = field(default_factory=list)
     unavailable_agents: list[str] = field(default_factory=list)
+    # {agent_name: pct of total vote weight this agent alone contributed} --
+    # the same per-agent weight compute_consensus() already calculates while
+    # building the bucket totals below, kept instead of discarded so
+    # "which engine has the strongest influence" (v8.0) is real reuse of an
+    # already-computed number, not a new calculation.
+    agent_weights: dict[str, float] = field(default_factory=dict)
+    # {agent_name: first substantive line of that agent's own summary} --
+    # the same evidence-excerpt CommitteeEngine already quotes (shared via
+    # agent_evidence_excerpt()), attached here too so "why agents agree/
+    # disagree" (v8.0) can quote each agent's real reasoning instead of
+    # just naming which bucket it landed in.
+    agent_evidence: dict[str, str] = field(default_factory=dict)
     computed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def strongest_agent(self) -> str | None:
+        if not self.agent_weights:
+            return None
+        return max(self.agent_weights, key=self.agent_weights.get)
 
     def to_dict(self) -> dict:
         return {
@@ -63,6 +82,9 @@ class ConsensusResult:
             "bearish_agents": self.bearish_agents,
             "neutral_agents": self.neutral_agents,
             "unavailable_agents": self.unavailable_agents,
+            "agent_weights": self.agent_weights,
+            "agent_evidence": self.agent_evidence,
+            "strongest_agent": self.strongest_agent,
             "computed_at": self.computed_at.isoformat(),
         }
 
@@ -90,6 +112,7 @@ def compute_consensus(
         "bearish": bearish_agents,
         "neutral": neutral_agents,
     }
+    per_agent_weight: dict[str, float] = {}
 
     for name, output in agent_outputs.items():
         if output.direction is None:
@@ -104,6 +127,7 @@ def compute_consensus(
             weight *= reliability[name] / 100.0
         weights[output.direction] += weight
         agents_by_direction[output.direction].append(name)
+        per_agent_weight[name] = weight
 
     total_weight = sum(weights.values())
     if total_weight == 0:
@@ -117,6 +141,12 @@ def compute_consensus(
         rounded[largest] = round(rounded[largest] + drift, 1)
 
     agreement_score = max(rounded.values())
+    agent_weights = {
+        name: round(100.0 * weight / total_weight, 1) for name, weight in per_agent_weight.items()
+    }
+    agent_evidence = {
+        name: agent_evidence_excerpt(agent_outputs[name].summary) for name in per_agent_weight
+    }
     return ConsensusResult(
         bullish_pct=rounded["bullish"],
         bearish_pct=rounded["bearish"],
@@ -127,6 +157,8 @@ def compute_consensus(
         bearish_agents=bearish_agents,
         neutral_agents=neutral_agents,
         unavailable_agents=unavailable_agents,
+        agent_weights=agent_weights,
+        agent_evidence=agent_evidence,
     )
 
 
