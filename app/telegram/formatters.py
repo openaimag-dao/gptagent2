@@ -810,7 +810,12 @@ def format_watchdog_market(
     lines = ["*MARKET OVERVIEW*", ""]
     m = market_overview
     regime_label = (m["regime"] or "unknown").replace("_", " ").title()
-    lines.append(f"Regime: {regime_label} | Trend: {m['trend'] or 'n/a'}")
+    # v9.0 noise pass: "Trend" is a pure 3-bucket derivation of "Regime"
+    # (regime_direction_bucket()) -- merged into one line as a parenthetical
+    # instead of a separate fact, matching format_scanner_dashboard's
+    # existing "Regime: X (bucket)" pattern.
+    trend_suffix = f" ({m['trend']})" if m["trend"] else ""
+    lines.append(f"Regime: {regime_label}{trend_suffix}")
     lines.append(
         f"Trend Strength: {_fmt_num(m['trend_strength'])} | "
         f"Momentum: {_fmt_num(m['momentum'], 1)} | Volatility: {_fmt_num(m['volatility'])}"
@@ -1431,8 +1436,11 @@ def format_scanner_alert(detection: dict) -> str:
 
     ctx = detection.get("context") or {}
     if ctx.get("regime"):
-        lines.append(f"Market Regime: {ctx['regime'].replace('_', ' ').title()}")
-        lines.append(f"Trend: {regime_direction_bucket(ctx['regime']).title()}")
+        # v9.0 noise pass: Trend is a pure 3-bucket derivation of Regime --
+        # merged into one line rather than shown as a separate fact.
+        regime_title = ctx["regime"].replace("_", " ").title()
+        trend_title = regime_direction_bucket(ctx["regime"]).title()
+        lines.append(f"Market Regime: {regime_title} ({trend_title})")
     if ctx.get("risk_score") is not None:
         lines.append(f"Risk: {ctx['risk_score']}/100")
     if ctx.get("confidence_score") is not None:
