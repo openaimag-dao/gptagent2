@@ -1,7 +1,7 @@
 from unittest.mock import AsyncMock
 
 from app.services.agents.base import AgentOutput
-from app.services.consensus.engine import ConsensusEngine, compute_consensus
+from app.services.consensus.engine import ConsensusEngine, compute_consensus, consensus_evolution
 
 
 def _output(agent: str, direction: str | None, confidence: float | None) -> AgentOutput:
@@ -192,3 +192,56 @@ async def test_consensus_engine_survives_reliability_engine_failure():
     result = await ConsensusEngine(orchestrator, reliability_engine).compute()
 
     assert result.bullish_pct == 100.0
+
+
+def _consensus_dict(agreement_score, bullish_pct, bearish_pct, strongest_agent):
+    return {
+        "agreement_score": agreement_score,
+        "bullish_pct": bullish_pct,
+        "bearish_pct": bearish_pct,
+        "strongest_agent": strongest_agent,
+    }
+
+
+def test_consensus_evolution_returns_none_when_either_side_missing():
+    later = _consensus_dict(70.0, 70.0, 30.0, "macro")
+    assert consensus_evolution(None, later) is None
+    assert consensus_evolution(later, None) is None
+
+
+def test_consensus_evolution_reports_rising_agreement_and_stable_strongest_agent():
+    earlier = _consensus_dict(60.0, 60.0, 40.0, "macro")
+    later = _consensus_dict(75.0, 75.0, 25.0, "macro")
+
+    evolution = consensus_evolution(earlier, later)
+
+    assert evolution["agreement_score_delta"] == 15.0
+    assert evolution["bullish_pct_delta"] == 15.0
+    assert evolution["bearish_pct_delta"] == -15.0
+    assert evolution["strongest_agent_changed"] is False
+    assert "rose +15.0pts" in evolution["summary"]
+    assert "macro remains the strongest influence" in evolution["summary"]
+
+
+def test_consensus_evolution_reports_falling_agreement_and_strongest_agent_shift():
+    earlier = _consensus_dict(80.0, 80.0, 20.0, "macro")
+    later = _consensus_dict(55.0, 55.0, 45.0, "sentiment")
+
+    evolution = consensus_evolution(earlier, later)
+
+    assert evolution["agreement_score_delta"] == -25.0
+    assert evolution["strongest_agent_from"] == "macro"
+    assert evolution["strongest_agent_to"] == "sentiment"
+    assert evolution["strongest_agent_changed"] is True
+    assert "fell -25.0pts" in evolution["summary"]
+    assert "shifted from macro to sentiment" in evolution["summary"]
+
+
+def test_consensus_evolution_reports_unchanged_agreement():
+    earlier = _consensus_dict(60.0, 60.0, 40.0, "news")
+    later = _consensus_dict(60.0, 60.0, 40.0, "news")
+
+    evolution = consensus_evolution(earlier, later)
+
+    assert evolution["agreement_score_delta"] == 0.0
+    assert "unchanged" in evolution["summary"]

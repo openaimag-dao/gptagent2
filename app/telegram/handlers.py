@@ -21,7 +21,7 @@ from app.services.backtest.engine import BacktestEngine
 from app.services.backtest.strategy_engine import StrategyLabEngine
 from app.services.breakout.engine import BreakoutEngine
 from app.services.committee.engine import CommitteeEngine
-from app.services.consensus.engine import ConsensusEngine
+from app.services.consensus.engine import ConsensusEngine, consensus_evolution
 from app.services.conviction.engine import ConvictionEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.explanation.engine import ExplanationEngine
@@ -45,7 +45,7 @@ from app.services.probability.engine import ProbabilityEngine
 from app.services.quality.engine import PredictionQualityEngine
 from app.services.ranking.engine import RankingEngine
 from app.services.reliability.engine import AgentReliabilityEngine
-from app.services.replay.engine import MarketReplayEngine
+from app.services.replay.engine import MarketReplayEngine, get_latest_consensus
 from app.services.research.engine import ResearchEngine
 from app.services.research.impact import EventImpactEngine
 from app.services.scanner.engine import build_market_scanner_engine
@@ -819,11 +819,14 @@ async def cmd_agents(message: Message) -> None:
 
 @router.message(Command("consensus"))
 async def cmd_consensus(message: Message) -> None:
-    engine = ConsensusEngine(
-        build_agent_orchestrator(), AgentReliabilityEngine(get_session_factory())
-    )
+    session_factory = get_session_factory()
+    engine = ConsensusEngine(build_agent_orchestrator(), AgentReliabilityEngine(session_factory))
     result = await engine.compute()
-    await _answer(message, format_consensus(result))
+    confidence_evolution = None
+    if result is not None:
+        previous_consensus = await get_latest_consensus(session_factory)
+        confidence_evolution = consensus_evolution(previous_consensus, result.to_dict())
+    await _answer(message, format_consensus(result, confidence_evolution))
 
 
 @router.message(Command("committee"))

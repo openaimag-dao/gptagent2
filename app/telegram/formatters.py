@@ -462,7 +462,9 @@ def format_agent_outputs(outputs: dict) -> str:
     return "\n\n".join(output.summary for output in outputs.values())
 
 
-def format_consensus(result: ConsensusResult | None) -> str:
+def format_consensus(
+    result: ConsensusResult | None, confidence_evolution: dict | None = None
+) -> str:
     if result is None:
         return "No agent reported a direction this cycle -- nothing to tally yet."
     lines = [
@@ -477,6 +479,8 @@ def format_consensus(result: ConsensusResult | None) -> str:
             f"Strongest influence: {result.strongest_agent} "
             f"({result.agent_weights[result.strongest_agent]}% of vote weight)"
         )
+    if confidence_evolution is not None:
+        lines.append(f"Confidence evolution: {confidence_evolution['summary']}")
     lines.append("")
 
     def _bucket_lines(label: str, agents: list[str]) -> list[str]:
@@ -1248,6 +1252,8 @@ def format_historical_comparison(result: dict | None) -> str:
         if entry["delta"] is not None:
             label = field.replace("_", " ").title()
             lines.append(f"{label}: {entry['from']} -> {entry['to']} ({entry['delta']:+d})")
+    if diff.get("consensus_evolution") is not None:
+        lines.append(f"Consensus: {diff['consensus_evolution']['summary']}")
     return "\n".join(lines)
 
 
