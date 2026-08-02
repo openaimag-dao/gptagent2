@@ -537,13 +537,16 @@ def test_format_committee_present():
         "dissent_pct": 30.0,
         "confidence_pct": 70.0,
         "supporting_evidence": [
-            {"agent": "macro", "confidence": 80.0, "evidence": "Bullish backdrop."}
+            {"agent": "macro", "confidence": 80.0, "weight": 70.0, "evidence": "Bullish backdrop."}
         ],
-        "opposing_evidence": [{"agent": "equity", "confidence": 55.0, "evidence": "Weak breadth."}],
+        "opposing_evidence": [
+            {"agent": "equity", "confidence": 55.0, "weight": 30.0, "evidence": "Weak breadth."}
+        ],
         "minority_opinion": "equity (bearish): Weak breadth.",
         "final_recommendation": "BUY (high conviction)",
         "reasoning": "Majority decision: BUY with 70.0% of weighted committee votes (macro).",
         "invalidation_risk": "macro contributes the least weight to the BUY majority (70.0%).",
+        "most_influential_agent": "macro",
     }
     text = format_committee(verdict)
     assert "AI INVESTMENT COMMITTEE" in text
@@ -551,8 +554,10 @@ def test_format_committee_present():
     assert "Dissent: 30.0%" in text
     assert "Supporting evidence" in text
     assert "80.0% confidence" in text
+    assert "70.0% vote weight" in text
     assert "Opposing evidence (minority)" in text
     assert "Weak breadth." in text
+    assert "Final influence: macro" in text
     assert "Invalidation risk:" in text
 
 

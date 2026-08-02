@@ -44,6 +44,10 @@ class CommitteeVerdict:
     # names the majority's weakest supporter and what dissent would rise to
     # if it flipped, rather than inventing a new signal.
     invalidation_risk: str | None = None
+    # v9.0 "Final influence" -- the same strongest_agent ConsensusResult
+    # already derives from agent_weights, restated here so a Committee
+    # consumer doesn't have to separately fetch Consensus for it.
+    most_influential_agent: str | None = None
     computed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def to_dict(self) -> dict:
@@ -58,6 +62,7 @@ class CommitteeVerdict:
             "final_recommendation": self.final_recommendation,
             "reasoning": self.reasoning,
             "invalidation_risk": self.invalidation_risk,
+            "most_influential_agent": self.most_influential_agent,
             "computed_at": self.computed_at.isoformat(),
         }
 
@@ -96,6 +101,7 @@ def convene_committee(
             "agent": name,
             "direction": majority_direction,
             "confidence": agent_outputs[name].confidence,
+            "weight": consensus.agent_weights.get(name),
             "evidence": agent_evidence_excerpt(agent_outputs[name].summary),
         }
         for name in supporting_names
@@ -106,6 +112,7 @@ def convene_committee(
             "agent": name,
             "direction": direction,
             "confidence": agent_outputs[name].confidence,
+            "weight": consensus.agent_weights.get(name),
             "evidence": agent_evidence_excerpt(agent_outputs[name].summary),
         }
         for name, direction in opposing_names_by_direction.items()
@@ -170,6 +177,7 @@ def convene_committee(
         final_recommendation=final_recommendation,
         reasoning=reasoning,
         invalidation_risk=invalidation_risk,
+        most_influential_agent=consensus.strongest_agent,
     )
 
 
