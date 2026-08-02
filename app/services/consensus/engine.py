@@ -71,6 +71,34 @@ class ConsensusResult:
             return None
         return max(self.agent_weights, key=self.agent_weights.get)
 
+    @property
+    def invalidation_risk(self) -> str | None:
+        """v9.0 "What could invalidate this view" -- names the dominant
+        bucket's weakest-weight agent and what agreement would fall to if
+        it reversed. Same derivation CommitteeVerdict.invalidation_risk
+        already uses (the weakest supporter of a majority), applied here
+        directly to Consensus's own buckets so /consensus can answer this
+        without a Committee convene()."""
+        buckets = {
+            "bullish": (self.bullish_pct, self.bullish_agents),
+            "bearish": (self.bearish_pct, self.bearish_agents),
+            "neutral": (self.neutral_pct, self.neutral_agents),
+        }
+        dominant_direction, (_, dominant_agents) = max(buckets.items(), key=lambda kv: kv[1][0])
+        weakest = min(
+            (a for a in dominant_agents if a in self.agent_weights),
+            key=lambda a: self.agent_weights[a],
+            default=None,
+        )
+        if weakest is None:
+            return None
+        weight = self.agent_weights[weakest]
+        return (
+            f"{weakest} contributes the least weight to the {dominant_direction} lean "
+            f"({weight}%) -- if it reverses, agreement would fall toward "
+            f"{round(self.agreement_score - weight, 1)}%."
+        )
+
     def to_dict(self) -> dict:
         return {
             "bullish_pct": self.bullish_pct,
@@ -85,6 +113,7 @@ class ConsensusResult:
             "agent_weights": self.agent_weights,
             "agent_evidence": self.agent_evidence,
             "strongest_agent": self.strongest_agent,
+            "invalidation_risk": self.invalidation_risk,
             "computed_at": self.computed_at.isoformat(),
         }
 

@@ -498,6 +498,9 @@ def format_consensus(
         lines.append(f"Neutral: {', '.join(result.neutral_agents)}")
     if result.unavailable_agents:
         lines.append(f"No data this cycle: {', '.join(result.unavailable_agents)}")
+    if result.invalidation_risk:
+        lines.append("")
+        lines.append(f"Invalidation risk: {result.invalidation_risk}")
     return "\n".join(lines)
 
 

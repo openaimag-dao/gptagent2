@@ -248,6 +248,10 @@ async function renderConsensus() {
   if (data.unavailable_agents.length) {
     nodes.push(el("p", { class: "sub" }, `No data this cycle: ${data.unavailable_agents.join(", ")}`));
   }
+  if (data.invalidation_risk) {
+    nodes.push(el("h2", {}, "Invalidation Risk"));
+    nodes.push(el("p", {}, data.invalidation_risk));
+  }
   return nodes;
 }
 

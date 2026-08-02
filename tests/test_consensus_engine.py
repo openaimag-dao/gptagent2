@@ -1,7 +1,12 @@
 from unittest.mock import AsyncMock
 
 from app.services.agents.base import AgentOutput
-from app.services.consensus.engine import ConsensusEngine, compute_consensus, consensus_evolution
+from app.services.consensus.engine import (
+    ConsensusEngine,
+    ConsensusResult,
+    compute_consensus,
+    consensus_evolution,
+)
 
 
 def _output(agent: str, direction: str | None, confidence: float | None) -> AgentOutput:
@@ -78,6 +83,11 @@ def test_compute_consensus_exposes_strongest_agent_and_evidence():
     assert result.agent_weights["news"] == 50.0
     assert result.agent_evidence["news"] == "Headlines skew risk-on."
     assert result.agent_evidence["macro"] == "DXY strength is bearish for risk assets."
+    # v9.0 "what could invalidate this view": equity is the weakest-weight
+    # (20%) supporter of the dominant bullish lean (news + equity, 70%).
+    assert "equity" in result.invalidation_risk
+    assert "20.0%" in result.invalidation_risk
+    assert "50.0%" in result.invalidation_risk  # 70% agreement - 20% = 50%
 
 
 def test_compute_consensus_excludes_unavailable_agents_from_the_tally():
@@ -245,3 +255,16 @@ def test_consensus_evolution_reports_unchanged_agreement():
 
     assert evolution["agreement_score_delta"] == 0.0
     assert "unchanged" in evolution["summary"]
+
+
+def test_consensus_result_invalidation_risk_is_none_without_agent_weights():
+    result = ConsensusResult(
+        bullish_pct=70.0,
+        bearish_pct=30.0,
+        neutral_pct=0.0,
+        agreement_score=70.0,
+        bullish_agents=["news", "equity"],
+        bearish_agents=["macro"],
+    )
+
+    assert result.invalidation_risk is None
