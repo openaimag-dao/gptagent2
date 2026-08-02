@@ -103,6 +103,25 @@ async def test_run_cycle_detects_standalone_price_event():
     session.commit.assert_awaited()
 
 
+async def test_run_cycle_message_includes_key_change_since_previous_scan():
+    engine, deps, session = _engine()
+    deps["universe"].get_universe.return_value = [_universe_entry("PEPE", "pepe", 200)]
+    deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 0.000011, 12.0)]
+    prior_snapshot = SimpleNamespace(
+        symbol="PEPE",
+        price=0.00001,
+        volume_24h=1_000_000.0,
+        recorded_at=datetime(2026, 1, 1, 11, 45, tzinfo=UTC),
+    )
+    session.scalars = AsyncMock(return_value=[prior_snapshot])
+
+    result = await engine.run_cycle()
+
+    detection = result["processed"][0]
+    # (0.000011 - 0.00001) / 0.00001 * 100 == +10.00%
+    assert "Since last scan (11:45 UTC): +10.00%." in detection["message"]
+
+
 async def test_run_cycle_ignores_symbols_with_no_signal():
     engine, deps, _ = _engine()
     deps["universe"].get_universe.return_value = [_universe_entry("BTC", "bitcoin", 1)]

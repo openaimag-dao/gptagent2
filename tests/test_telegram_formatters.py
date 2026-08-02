@@ -947,6 +947,22 @@ def test_format_scanner_alert_includes_mission_required_fields():
     assert "Recommendation:" in text
 
 
+def test_format_scanner_alert_includes_scenario_opportunity_and_threat():
+    detection = _scanner_detection()
+    detection["context"].update(
+        {
+            "expected_scenario": "Soft Landing",
+            "expected_scenario_pct": 40,
+            "biggest_opportunity": "Soft Landing (40%) -- risk-on continuation.",
+            "highest_risk": "Risk Off (25%) -- broad de-risking.",
+        }
+    )
+    text = format_scanner_alert(detection)
+    assert "Expected Scenario: Soft Landing (40%)" in text
+    assert "Main Opportunity: Soft Landing (40%) -- risk-on continuation." in text
+    assert "Main Threat: Risk Off (25%) -- broad de-risking." in text
+
+
 def test_format_scanner_alert_multi_asset_shock_lists_all_symbols():
     detection = {
         "category": "crypto_market_shock",

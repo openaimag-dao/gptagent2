@@ -206,17 +206,18 @@ class MarketScannerEngine:
         already-computed regime/risk/confidence/committee/consensus AND
         Scenario Engine's expected_scenario/highest_risk/
         biggest_opportunity, all persisted once per Watchdog cycle) into a
-        plain dict. Two consumers share this exact same shaping logic
-        instead of each re-deriving it: `_ai_context()` below (a subset,
-        for the AI-filter alignment-scoring functions) and the dashboard/
-        API/Telegram-facing reads (app/api/scanner.py, format_scanner_
-        dashboard()) that previously had no visibility into this context
-        at all outside of an actually-fired alert. get_latest_snapshot()
-        is a single cached-row SELECT, not a fresh agent-orchestrator run,
-        so calling this on every dashboard/API/Telegram request is cheap
-        and introduces no duplicate computation -- the expensive part (the
-        6-agent orchestrator cycle) still runs exactly once, on Watchdog's
-        own schedule."""
+        plain dict. Every consumer shares this exact same shaping logic
+        instead of re-deriving it: run_cycle()'s AI-filter alignment
+        scoring (_alignment_components() only reads a subset of these
+        keys), each detection's attached context (so a fired Telegram
+        alert can show Expected Scenario/Highest Risk/Biggest Opportunity,
+        not just regime/risk/committee), and the dashboard/API/Telegram-
+        facing reads (app/api/scanner.py, format_scanner_dashboard()).
+        get_latest_snapshot() is a single cached-row SELECT, not a fresh
+        agent-orchestrator run, so calling this on every dashboard/API/
+        Telegram request is cheap and introduces no duplicate computation
+        -- the expensive part (the 6-agent orchestrator cycle) still runs
+        exactly once, on Watchdog's own schedule."""
         snapshot = await self._watchdog_engine.get_latest_snapshot()
         if snapshot is None:
             return {
@@ -259,19 +260,6 @@ class MarketScannerEngine:
             "highest_risk": snapshot.highest_risk,
             "biggest_opportunity": snapshot.biggest_opportunity,
             "computed_at": snapshot.computed_at.isoformat() if snapshot.computed_at else None,
-        }
-
-    async def _ai_context(self) -> dict:
-        """Subset of get_market_context() shaped for _alignment_components()
-        -- same underlying WatchdogSnapshot read, not a second one."""
-        ctx = await self.get_market_context()
-        return {
-            "regime": ctx["regime"],
-            "risk_score": ctx["risk_score"],
-            "confidence_score": ctx["confidence_score"],
-            "committee_decision": ctx["committee_decision"],
-            "committee_majority_pct": ctx["committee_majority_pct"],
-            "consensus": ctx["consensus"],
         }
 
     def _alignment_components(self, ctx: dict, move_direction: str) -> dict:
@@ -494,7 +482,7 @@ class MarketScannerEngine:
         for reading in readings:
             symbols_by_sector.setdefault(reading["sector"], []).append(reading["symbol"])
 
-        ctx = await self._ai_context()
+        ctx = await self.get_market_context()
 
         processed: list[dict] = []
         handled_symbols: set[str] = set()
@@ -591,6 +579,27 @@ class MarketScannerEngine:
                 if reading["change_pct_24h"] is not None
                 else "n/a"
             )
+            # v8.0 AI Market Brief: fold in signals already computed by
+            # this same scan (volatility_label from _scan_symbol()) and
+            # the most recent prior ScannerSnapshot row (already fetched
+            # into history_by_symbol above for the tier detectors) instead
+            # of only ever showing the bare 24h price move.
+            message_parts = [
+                f"{symbol} {change_str} (24h) -- now {reading['price']:,.4f}.",
+                f"Signals: {', '.join(tags) if tags else 'price move'}.",
+            ]
+            if scan["volatility_label"]:
+                message_parts.append(f"Volatility: {scan['volatility_label']}.")
+            prior_history = history_by_symbol[symbol]
+            if prior_history:
+                prev_price = float(prior_history[-1].price)
+                if prev_price:
+                    pct_since_prev = (reading["price"] - prev_price) / prev_price * 100
+                    prev_time = prior_history[-1].recorded_at.strftime("%H:%M UTC")
+                    message_parts.append(
+                        f"Since last scan ({prev_time}): {pct_since_prev:+.2f}%."
+                    )
+
             envelope = {
                 "alert_key": f"scanner:price_event:{symbol}:{direction}",
                 "category": "price_event",
@@ -608,10 +617,7 @@ class MarketScannerEngine:
                     }
                 ],
                 "quality_components": components,
-                "message": (
-                    f"{symbol} {change_str} (24h) -- now {reading['price']:,.4f}. "
-                    f"Signals: {', '.join(tags) if tags else 'price move'}."
-                ),
+                "message": " ".join(message_parts),
                 "data": {"tags": tags, "sector": reading["sector"]},
                 "context_summary": ctx,
             }
