@@ -1331,6 +1331,24 @@ async function renderSimilarity() {
         fetchJSON(`/api/knowledge/${encodeURIComponent(input.value)}`),
       ]);
       results.innerHTML = "";
+      if (similar.lesson) {
+        const lesson = similar.lesson;
+        results.appendChild(el("h2", {}, "Historical Lesson"));
+        results.appendChild(el("p", {}, lesson.what_happened));
+        const lessonGrid = el("div", { class: "grid" }, [
+          card("How Similar", `${lesson.how_similar_pct}%`, "avg match"),
+          card(
+            `Average Outcome (${lesson.horizon_days}d)`,
+            fmtPct(lesson.average_outcome_pct),
+            null,
+            changeClass(lesson.average_outcome_pct)
+          ),
+          card("Probability", `${lesson.probability_pct}%`, "moved the same direction"),
+          card("Typical Duration", lesson.typical_duration.match(/\d+/)?.[0] ?? "n/a", "days, in similar cases"),
+        ]);
+        results.appendChild(lessonGrid);
+        results.appendChild(el("p", { class: "sub" }, lesson.main_lesson));
+      }
       results.appendChild(el("h2", {}, `${similar.symbol}: 25 Most Similar Periods`));
       results.appendChild(
         table(

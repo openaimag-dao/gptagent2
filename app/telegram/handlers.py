@@ -52,7 +52,7 @@ from app.services.scenarios.engine import ScenarioEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.shocks.engine import build_critical_alert_engine
 from app.services.signals.engine import SignalEngine
-from app.services.similar_market.engine import SimilarMarketEngine
+from app.services.similar_market.engine import SimilarMarketEngine, build_historical_lesson
 from app.services.technical.engine import build_technical_analysis_engine
 from app.services.terminal.engine import TerminalEngine
 from app.services.watchdog.engine import build_watchdog_engine
@@ -619,7 +619,8 @@ async def cmd_similar(message: Message, command: CommandObject) -> None:
 
     engine = SimilarMarketEngine(get_session_factory())
     matches = await engine.find_and_store(config.symbol, config.model, timeframe)
-    await _answer(message, format_similar_periods(config.symbol, matches))
+    lesson = build_historical_lesson(config.symbol, matches)
+    await _answer(message, format_similar_periods(config.symbol, matches, lesson=lesson))
 
 
 @router.message(Command("whales"))

@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -11,6 +12,7 @@ from app.database.models import (
     SimilarMarketMatch,
 )
 from app.services.analysis.regime import MarketRegime, detect_regime
+from app.services.backtest.metrics import compute_backtest_metrics, compute_win_rate_pct
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
 from app.services.knowledge.analysis import find_similar_episodes
@@ -88,6 +90,93 @@ def _reconstruct_regime_at(regime_index: dict[str, dict], timestamp) -> MarketRe
         return None
     regime, _ = detect_regime(assets)
     return regime
+
+
+# The forward horizon "Average outcome"/"Probability" answer -- 7 trading
+# periods balances enough matches surviving (30d often thins out near the
+# end of a history series) against being a meaningful holding period.
+_LESSON_HORIZON = 7
+
+
+def build_historical_lesson(symbol: str, matches: list[dict]) -> dict | None:
+    """Composes find_similar_periods()/find_and_store() output into a
+    plain-language lesson -- what happened, how similar, average outcome,
+    probability, typical duration, main lesson -- for v8.0's "Replay should
+    explain history, not just store it." Every field is derived from the K
+    matches already computed by SimilarMarketEngine; no new external calls,
+    no fabricated numbers. Returns None when there isn't enough data to say
+    anything trustworthy.
+    """
+    if not matches:
+        return None
+
+    primary_key = f"{_LESSON_HORIZON}d"
+    primary_returns = [
+        m["forward_returns_pct"][primary_key] / 100
+        for m in matches
+        if m["forward_returns_pct"].get(primary_key) is not None
+    ]
+    metrics = compute_backtest_metrics(primary_returns)
+    if metrics is None:
+        return None
+
+    avg_similarity = round(sum(m["similarity"] for m in matches) / len(matches), 1)
+    direction = "up" if metrics["avg_return_pct"] >= 0 else "down"
+
+    regimes = [m["market_regime"] for m in matches if m["market_regime"] is not None]
+    dominant_regime = Counter(regimes).most_common(1)[0][0] if regimes else None
+
+    # "Typical duration": the longest tested horizon (1d/3d/7d/30d) across
+    # which a majority of matches kept moving in the same direction as the
+    # primary-horizon average -- a persistence read derived from the same
+    # forward-return data, not a new signal.
+    persistence_days = None
+    for horizon in _FORWARD_HORIZONS:
+        horizon_returns = [
+            m["forward_returns_pct"][f"{horizon}d"] / 100
+            for m in matches
+            if m["forward_returns_pct"].get(f"{horizon}d") is not None
+        ]
+        if not horizon_returns:
+            break
+        agreement = [r if direction == "up" else -r for r in horizon_returns]
+        win_rate = compute_win_rate_pct(agreement)
+        if win_rate is None or win_rate < 50.0:
+            break
+        persistence_days = horizon
+
+    what_happened = f"{metrics['occurrences']} similar historical setups found for {symbol}"
+    if dominant_regime is not None:
+        what_happened += f", most often during a {dominant_regime.replace('_', ' ')} regime"
+    what_happened += "."
+
+    if persistence_days is not None:
+        typical_duration = (
+            f"The {direction}ward move tended to hold for at least {persistence_days} "
+            "day(s) in similar past cases."
+        )
+    else:
+        typical_duration = "No consistent persistence pattern across the tested horizons."
+
+    main_lesson = (
+        f"In similar setups (avg similarity {avg_similarity}%), {symbol} moved {direction} "
+        f"{abs(metrics['avg_return_pct'])}% on average over the next {_LESSON_HORIZON} days, "
+        f"with a {metrics['win_rate_pct']}% historical win rate across {metrics['occurrences']} "
+        "occurrences."
+    )
+
+    return {
+        "symbol": symbol,
+        "occurrences": metrics["occurrences"],
+        "horizon_days": _LESSON_HORIZON,
+        "what_happened": what_happened,
+        "how_similar_pct": avg_similarity,
+        "average_outcome_pct": metrics["avg_return_pct"],
+        "probability_pct": metrics["win_rate_pct"],
+        "typical_duration": typical_duration,
+        "dominant_regime": dominant_regime,
+        "main_lesson": main_lesson,
+    }
 
 
 class SimilarMarketEngine:

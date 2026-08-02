@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.database.session import get_session_factory
 from app.services.history.registry import find_symbol_config
 from app.services.history.schemas import Timeframe
-from app.services.similar_market.engine import SimilarMarketEngine
+from app.services.similar_market.engine import SimilarMarketEngine, build_historical_lesson
 
 router = APIRouter(prefix="/api/similar", tags=["brain"])
 
@@ -23,9 +23,7 @@ async def get_similar_periods(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid timeframe: {timeframe}") from exc
     if tf not in config.timeframes:
-        raise HTTPException(
-            status_code=400, detail=f"{config.symbol} has no {timeframe} data"
-        )
+        raise HTTPException(status_code=400, detail=f"{config.symbol} has no {timeframe} data")
 
     engine = SimilarMarketEngine(get_session_factory())
     matches = await engine.find_and_store(config.symbol, config.model, tf, k=k)
@@ -40,6 +38,7 @@ async def get_similar_periods(
         "symbol": config.symbol,
         "timeframe": timeframe,
         "count": len(matches),
+        "lesson": build_historical_lesson(config.symbol, matches),
         "matches": [
             {
                 "date": m["date"].isoformat(),
