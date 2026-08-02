@@ -14,6 +14,7 @@ from app.services.alerts.engine import build_alert_engine
 from app.services.alerts.rules import build_alert_rule_engine
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
+from app.services.analysis.report import build_institutional_report
 from app.services.breakout.engine import BreakoutEngine
 from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.committee.engine import CommitteeEngine
@@ -561,7 +562,9 @@ async def generate_report_job(report_type: str) -> None:
         return
 
     try:
-        await broadcast_report(report)
+        sector_breadth = await build_market_scanner_engine().get_latest_sector_breadth()
+        institutional_report = build_institutional_report(report, sector_breadth)
+        await broadcast_report(report, institutional_report)
     except Exception:
         logger.exception("Report broadcast failed (type=%s)", report_type)
 

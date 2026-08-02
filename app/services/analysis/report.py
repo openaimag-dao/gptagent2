@@ -34,7 +34,7 @@ from app.services.news.repository import NewsRepository
 from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
-from app.services.scenarios.engine import compute_scenarios
+from app.services.scenarios.engine import compute_scenarios, scenario_extremes
 from app.services.signals.engine import SignalEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
 
@@ -138,6 +138,63 @@ def derive_risk_level(regime: MarketRegime) -> str:
     if regime in _LOW_RISK_REGIMES:
         return "low"
     return "moderate"
+
+
+def build_institutional_report(report: Report, sector_breadth: list[dict] | None = None) -> dict:
+    """Restructures a persisted Report into the institutional-research shape
+    v8.0 calls for -- Executive Summary, Biggest Opportunity, Biggest Risk,
+    Market Drivers, Sector Rotation, Historical Comparison, AI Conclusion,
+    What to Watch Next. Every field is a direct read or template composition
+    of report.analysis/report.institutional_summary (both already produced
+    by generate_and_store()) plus, for sector rotation, the Market Scanner's
+    already-computed sector breadth -- no new LLM call, no fabricated
+    figures, no second computation of anything Scenario Engine already did.
+    """
+    analysis = report.analysis
+    scenarios = (report.institutional_summary or {}).get("scenarios")
+    _, _, highest_risk, biggest_opportunity = scenario_extremes(scenarios)
+
+    executive_summary = (
+        f"{report.regime.replace('_', ' ').title()} regime, {report.risk_level} risk "
+        f"(bull {report.bull_score} / bear {report.bear_score}, "
+        f"{report.confidence_pct}% confidence). {analysis.get('what_changed', '')}"
+    ).strip()
+
+    market_drivers = (
+        " ".join(
+            part
+            for part in (analysis.get("who_is_driving"), analysis.get("macro_explanation"))
+            if part
+        )
+        or "n/a"
+    )
+
+    if sector_breadth:
+        ranked = [s for s in sector_breadth if s.get("avg_change_pct_24h") is not None]
+        leaders = ranked[:3]
+        laggards = ranked[-3:] if len(ranked) > 3 else []
+        leader_str = ", ".join(f"{s['sector']} ({s['avg_change_pct_24h']:+.2f}%)" for s in leaders)
+        laggard_str = ", ".join(
+            f"{s['sector']} ({s['avg_change_pct_24h']:+.2f}%)" for s in laggards
+        )
+        sector_rotation = f"Leading: {leader_str or 'n/a'}. Lagging: {laggard_str or 'n/a'}."
+    else:
+        sector_rotation = (
+            "Sector breadth unavailable -- the Market Scanner has not completed a cycle yet."
+        )
+
+    return {
+        "executive_summary": executive_summary or "No summary available.",
+        "biggest_opportunity": biggest_opportunity or "No bullish scenario currently dominant.",
+        "biggest_risk": highest_risk or "No bearish scenario currently dominant.",
+        "main_risks": analysis.get("main_risks", "n/a"),
+        "market_drivers": market_drivers,
+        "institutional_behavior": analysis.get("institutional_behavior", "n/a"),
+        "sector_rotation": sector_rotation,
+        "historical_comparison": analysis.get("historical_comparison", "n/a"),
+        "ai_conclusion": analysis.get("actionable_insights", "n/a"),
+        "what_to_watch_next": analysis.get("key_events_today", "n/a"),
+    }
 
 
 def strip_json_fence(text: str) -> str:

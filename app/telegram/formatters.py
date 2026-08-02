@@ -133,7 +133,12 @@ def format_correlations(correlations: list[Correlation]) -> str:
     return "\n".join(lines)
 
 
-def format_report(report: Report | None) -> str:
+def format_report(report: Report | None, institutional_report: dict | None = None) -> str:
+    """v8.0: renders the institutional-research structure (Executive
+    Summary, Biggest Opportunity, Biggest Risk, Market Drivers, Sector
+    Rotation, Historical Comparison, AI Conclusion, What to Watch Next) when
+    `institutional_report` (from build_institutional_report()) is supplied,
+    falling back to the underlying analysis fields directly if not."""
     if report is None:
         return (
             "No AI report has been generated yet. Generate one with /report once market "
@@ -141,6 +146,7 @@ def format_report(report: Report | None) -> str:
         )
 
     analysis = report.analysis
+    ir = institutional_report or {}
     lines = [
         "*AI MARKET ANALYSIS*",
         "",
@@ -149,39 +155,48 @@ def format_report(report: Report | None) -> str:
         f"Bull Score: {report.bull_score} | Bear Score: {report.bear_score}",
         f"Confidence: {report.confidence_pct}%",
         "",
-        "*What Changed*",
-        analysis.get("what_changed", "n/a"),
+        "*Executive Summary*",
+        ir.get("executive_summary") or analysis.get("what_changed", "n/a"),
         "",
-        "*Why*",
-        analysis.get("why", "n/a"),
+        "*Biggest Opportunity*",
+        ir.get("biggest_opportunity", "n/a"),
         "",
-        "*Who Is Driving The Market*",
-        analysis.get("who_is_driving", "n/a"),
-        "",
-        "*Institutional Interpretation*",
-        analysis.get("institutional_behavior", "n/a"),
-        "",
-        "*Macro Explanation*",
-        analysis.get("macro_explanation", "n/a"),
-        "",
-        "*Historical Comparison*",
-        analysis.get("historical_comparison", "n/a"),
-        "",
-        "*Trading Risks*",
-        analysis.get("main_risks", "n/a"),
-        "",
-        "*Key Events Today*",
-        analysis.get("key_events_today", "n/a"),
-        "",
-        "*Today's Probability*",
-        (
-            f"Bullish {analysis.get('probability_bullish_pct', 0)}% | "
-            f"Bearish {analysis.get('probability_bearish_pct', 0)}% | "
-            f"Neutral {analysis.get('probability_neutral_pct', 0)}%"
-        ),
-        "",
-        f"_Generated at {report.generated_at.isoformat()}_",
+        "*Biggest Risk*",
+        ir.get("biggest_risk", "n/a"),
     ]
+    if analysis.get("main_risks"):
+        lines.append(f"Also: {analysis['main_risks']}")
+    lines.extend(
+        [
+            "",
+            "*Market Drivers*",
+            ir.get("market_drivers") or analysis.get("who_is_driving", "n/a"),
+            "",
+            "*Institutional Interpretation*",
+            analysis.get("institutional_behavior", "n/a"),
+            "",
+            "*Sector Rotation*",
+            ir.get("sector_rotation", "n/a"),
+            "",
+            "*Historical Comparison*",
+            analysis.get("historical_comparison", "n/a"),
+            "",
+            "*AI Conclusion*",
+            ir.get("ai_conclusion") or analysis.get("actionable_insights", "n/a"),
+            "",
+            "*What To Watch Next*",
+            ir.get("what_to_watch_next") or analysis.get("key_events_today", "n/a"),
+            "",
+            "*Today's Probability*",
+            (
+                f"Bullish {analysis.get('probability_bullish_pct', 0)}% | "
+                f"Bearish {analysis.get('probability_bearish_pct', 0)}% | "
+                f"Neutral {analysis.get('probability_neutral_pct', 0)}%"
+            ),
+            "",
+            f"_Generated at {report.generated_at.isoformat()}_",
+        ]
+    )
     return "\n".join(lines)
 
 

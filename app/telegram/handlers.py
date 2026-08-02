@@ -15,6 +15,7 @@ from app.services.agents.orchestrator import build_agent_orchestrator
 from app.services.alerts.rules import VALID_METRICS, VALID_OPERATORS, build_alert_rule_engine
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
+from app.services.analysis.report import build_institutional_report
 from app.services.backtest.conditions import Condition
 from app.services.backtest.engine import BacktestEngine
 from app.services.backtest.strategy_engine import StrategyLabEngine
@@ -470,7 +471,9 @@ async def cmd_report(message: Message) -> None:
         await _answer(message, format_report(None))
         return
 
-    await _answer(message, format_report(report))
+    sector_breadth = await build_market_scanner_engine().get_latest_sector_breadth()
+    institutional_report = build_institutional_report(report, sector_breadth)
+    await _answer(message, format_report(report, institutional_report))
 
 
 def _parse_symbol_and_timeframe(command: CommandObject, default_symbol: str = "BTC") -> tuple:
