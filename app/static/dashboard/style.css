@@ -147,6 +147,7 @@ pre.summary {
 }
 .pill.available { background: #113322; color: var(--green); }
 .pill.unavailable { background: #331313; color: var(--red); }
+.pill.warning { background: #332a10; color: var(--yellow); }
 
 .bar-track { background: var(--panel-2); border-radius: 4px; height: 8px; overflow: hidden; margin-top: 6px; }
 .bar-fill { background: var(--accent); height: 100%; }
