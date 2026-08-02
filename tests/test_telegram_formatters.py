@@ -11,6 +11,7 @@ from app.database.models import (
     SignalSnapshot,
 )
 from app.services.analysis.regime import MarketRegime
+from app.services.common.ai_insight import build_ai_insight
 from app.services.consensus.engine import ConsensusResult
 from app.telegram.formatters import (
     format_active_shocks,
@@ -753,6 +754,43 @@ def test_format_replay_present():
     assert "bullish 60.0%" in text
     assert "Portfolio advice (BTC): BUY" in text
     assert "Alerts since previous snapshot: 1" in text
+    assert "Health 70/100" in text
+    assert "Trend Strength 55/100" in text
+
+
+def test_format_replay_present_with_insight_renders_ai_insight_block_instead_of_raw_consensus():
+    snapshot = {
+        "computed_at": "2026-01-01T00:00:00+00:00",
+        "regime": "bull",
+        "health_score": 70,
+        "trend_strength_score": 55,
+        "risk_score": 40,
+        "confidence_score": 60,
+        "consensus": {
+            "bullish_pct": 60.0,
+            "bearish_pct": 30.0,
+            "neutral_pct": 10.0,
+            "conflict_pct": 40.0,
+        },
+        "portfolio_advice": None,
+        "alerts": [],
+    }
+    insight = build_ai_insight(
+        current_status="Bull regime -- health 70/100, risk 40/100, confidence 60/100.",
+        ai_conclusion="BUY",
+        committee_opinion="BUY (66.7%)",
+        consensus="Bullish 60.0% / Bearish 30.0% / Neutral 10.0% (agreement 60.0%)",
+        historical_similarity="Similar to 2024 rally.",
+        confidence=60,
+    )
+
+    text = format_replay(snapshot, insight)
+
+    assert "*AI Insight*" in text
+    assert "Committee Opinion: BUY (66.7%)" in text
+    assert "Historical Similarity: Similar to 2024 rally." in text
+    # The raw consensus dict line is dropped in favor of the unified block.
+    assert "Consensus: bullish 60.0%" not in text
 
 
 def test_format_opportunities_empty():

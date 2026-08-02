@@ -1,6 +1,11 @@
 from datetime import UTC, datetime
 
-from app.services.replay.engine import diff_snapshots
+from app.services.committee.engine import CommitteeVerdict
+from app.services.replay.engine import (
+    build_replay_insight,
+    committee_from_snapshot,
+    diff_snapshots,
+)
 
 
 def _snapshot(
@@ -12,6 +17,7 @@ def _snapshot(
     consensus=None,
     portfolio_advice=None,
     computed_at=None,
+    agents=None,
 ):
     return type(
         "FakeSnapshot",
@@ -25,8 +31,52 @@ def _snapshot(
             "consensus": consensus,
             "portfolio_advice": portfolio_advice,
             "computed_at": computed_at or datetime(2026, 1, 1, tzinfo=UTC),
+            "agents": agents,
         },
     )()
+
+
+def _agent_dict(agent, summary, direction, confidence):
+    return {
+        "agent": agent,
+        "summary": summary,
+        "data": {},
+        "generated_at": datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
+        "direction": direction,
+        "confidence": confidence,
+    }
+
+
+def _consensus_dict(**overrides):
+    base = {
+        "bullish_pct": 66.7,
+        "bearish_pct": 33.3,
+        "neutral_pct": 0.0,
+        "agreement_score": 66.7,
+        "conflict_pct": 33.3,
+        "bullish_agents": ["macro", "sentiment"],
+        "bearish_agents": ["technical"],
+        "neutral_agents": [],
+        "unavailable_agents": [],
+        "agent_weights": {"macro": 40.0, "sentiment": 26.7, "technical": 33.3},
+        "agent_evidence": {"macro": "macro evidence", "sentiment": "sentiment evidence"},
+        # to_dict() also emits these computed @property fields -- committee_
+        # from_snapshot() must tolerate and discard them, not pass them to
+        # the ConsensusResult constructor.
+        "strongest_agent": "macro",
+        "invalidation_risk": "If macro flips, agreement drops to 33.3%.",
+        "computed_at": datetime(2026, 1, 1, tzinfo=UTC).isoformat(),
+    }
+    base.update(overrides)
+    return base
+
+
+def _agents_dict():
+    return {
+        "macro": _agent_dict("macro", "Macro summary bullish.", "bullish", 80.0),
+        "sentiment": _agent_dict("sentiment", "Sentiment summary bullish.", "bullish", 60.0),
+        "technical": _agent_dict("technical", "Technical summary bearish.", "bearish", 55.0),
+    }
 
 
 def test_diff_snapshots_reports_regime_change():
@@ -120,3 +170,93 @@ def test_diff_snapshots_includes_both_timestamps():
 
     assert result["earlier_computed_at"] == t1.isoformat()
     assert result["later_computed_at"] == t2.isoformat()
+
+
+def test_committee_from_snapshot_returns_none_when_snapshot_predates_tracking():
+    row = _snapshot(agents=None, consensus=None)
+
+    assert committee_from_snapshot(row) is None
+
+
+def test_committee_from_snapshot_returns_none_when_only_agents_present():
+    row = _snapshot(agents=_agents_dict(), consensus=None)
+
+    assert committee_from_snapshot(row) is None
+
+
+def test_committee_from_snapshot_reconstructs_a_real_verdict():
+    row = _snapshot(agents=_agents_dict(), consensus=_consensus_dict())
+
+    verdict = committee_from_snapshot(row)
+
+    assert isinstance(verdict, CommitteeVerdict)
+    assert verdict.majority_decision == "BUY"
+    assert verdict.majority_pct == 66.7
+    assert {e["agent"] for e in verdict.supporting_evidence} == {"macro", "sentiment"}
+
+
+def test_committee_from_snapshot_tolerates_computed_property_fields_in_stored_dict():
+    # ConsensusResult.to_dict() includes strongest_agent/invalidation_risk as
+    # computed @property output -- committee_from_snapshot() must not pass
+    # them back into the ConsensusResult constructor.
+    row = _snapshot(
+        agents=_agents_dict(),
+        consensus=_consensus_dict(strongest_agent="macro", invalidation_risk="some risk text"),
+    )
+
+    verdict = committee_from_snapshot(row)
+
+    assert verdict is not None
+
+
+def test_build_replay_insight_composes_current_status_and_consensus():
+    row = _snapshot(regime="bull_market", agents=_agents_dict(), consensus=_consensus_dict())
+    committee = committee_from_snapshot(row)
+
+    insight = build_replay_insight(row, committee, historical_lesson=None)
+
+    assert "Bull Market" in insight["current_status"]
+    assert "health 60/100" in insight["current_status"]
+    assert "Bullish 66.7%" in insight["consensus"]
+    assert insight["confidence"] == 70
+
+
+def test_build_replay_insight_uses_committee_fields_when_committee_present():
+    row = _snapshot(agents=_agents_dict(), consensus=_consensus_dict())
+    committee = committee_from_snapshot(row)
+
+    insight = build_replay_insight(row, committee, historical_lesson=None)
+
+    assert insight["ai_conclusion"] == committee.final_recommendation
+    assert insight["why"] == committee.reasoning
+    assert "BUY" in insight["committee_opinion"]
+    assert len(insight["supporting_evidence"]) == len(committee.supporting_evidence)
+
+
+def test_build_replay_insight_never_fabricates_committee_fields_when_committee_is_none():
+    row = _snapshot(agents=None, consensus=None)
+
+    insight = build_replay_insight(row, committee=None, historical_lesson=None)
+
+    assert insight["ai_conclusion"] is None
+    assert insight["why"] is None
+    assert insight["committee_opinion"] is None
+    assert insight["supporting_evidence"] == []
+
+
+def test_build_replay_insight_uses_historical_lesson_main_lesson():
+    row = _snapshot(agents=None, consensus=None)
+
+    insight = build_replay_insight(
+        row, committee=None, historical_lesson={"main_lesson": "Similar to 2024 rally."}
+    )
+
+    assert insight["historical_similarity"] == "Similar to 2024 rally."
+
+
+def test_build_replay_insight_never_fabricates_historical_similarity_when_lesson_is_none():
+    row = _snapshot(agents=None, consensus=None)
+
+    insight = build_replay_insight(row, committee=None, historical_lesson=None)
+
+    assert insight["historical_similarity"] is None
