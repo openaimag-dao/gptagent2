@@ -156,6 +156,7 @@ def test_format_consensus_present():
     assert "macro" in text
     assert "Strongest influence: news" in text
     assert "Headlines skew risk-on." in text
+    assert "Invalidation risk: equity contributes the least weight" in text
 
 
 def test_format_consensus_shows_confidence_evolution_when_provided():
