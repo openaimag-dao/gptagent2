@@ -83,6 +83,24 @@ function table(headers, rows) {
   return t;
 }
 
+// v10.0 "Smart Navigation" -- one pointer per screen to the related
+// intelligence a trader would naturally check next. Mirrors
+// app/services/common/navigation.py's NAV_POINTERS wording; purely a link
+// to an already-existing page, no new endpoint.
+const NAV_POINTERS = {
+  replay: { label: "See current Committee opinion", page: "committee" },
+  committee: { label: "Compare with historical Replay", page: "replay" },
+  consensus: { label: "See Committee's structured verdict", page: "committee" },
+  scanner: { label: "View latest Watchdog events", page: "watchdog" },
+  watchdog: { label: "Open historical comparison", page: "replay" },
+};
+
+function navPointer(screen) {
+  const p = NAV_POINTERS[screen];
+  if (!p) return null;
+  return el("p", { class: "sub nav-pointer" }, ["Related: ", el("a", { href: `#${p.page}` }, p.label)]);
+}
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 function svgLineChart(values, { width = 600, height = 160 } = {}) {
@@ -252,6 +270,7 @@ async function renderConsensus() {
     nodes.push(el("h2", {}, "Invalidation Risk"));
     nodes.push(el("p", {}, data.invalidation_risk));
   }
+  nodes.push(navPointer("consensus"));
   return nodes;
 }
 
@@ -309,6 +328,7 @@ async function renderCommittee() {
     nodes.push(el("h2", {}, "Invalidation Risk"));
     nodes.push(el("p", {}, data.invalidation_risk));
   }
+  nodes.push(navPointer("committee"));
   return nodes;
 }
 
@@ -956,6 +976,7 @@ async function renderWatchdog() {
     );
   }
 
+  nodes.push(navPointer("watchdog"));
   return nodes;
 }
 
@@ -1226,6 +1247,7 @@ async function renderScanner() {
     nodes.push(el("p", { class: "sub" }, "No suppressed detections in the last 50."));
   }
 
+  nodes.push(navPointer("scanner"));
   return nodes;
 }
 
@@ -2236,6 +2258,7 @@ async function renderReplay() {
       results.appendChild(errorBox(err));
     }
   });
+  nodes.push(navPointer("replay"));
   return nodes;
 }
 
