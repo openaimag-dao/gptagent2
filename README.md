@@ -2059,6 +2059,108 @@ scanner-originated `AlertLog` entries (`scanner:*`) visible via
 `/api/watchdog/events`/`/api/memory?category=alerts` -- confirming
 "never bypass Watchdog" end-to-end in production.
 
+## V8.0: Become Indispensable
+
+The architecture reached feature-completeness with V5.5. V8.0 is not a new
+engine or a new package -- it is a composition pass across every existing
+screen, API response and Telegram message, turning already-computed numbers
+into explanations a trader can act on in under a minute. Every change below
+reuses another engine's existing output; nothing was fabricated, and no new
+external provider call or expensive recomputation was added anywhere.
+
+### 1. Market Scanner -> AI Market Brief
+
+`MarketScannerEngine.get_market_context()` is now the single source every
+scanner alert draws from (its former subset wrapper, `_ai_context()`, was
+deleted as dead code). Every price-event alert message now states the
+volatility label, the % change since the previous scan (from the symbol's
+own already-fetched history), and -- reusing `scenario_extremes()` -- the
+expected scenario, main opportunity and main threat. `format_scanner_alert()`
+renders all of it.
+
+### 2. Watchdog -> Market Control Center
+
+`WatchdogEngine.get_market_brief()` (new `GET /api/watchdog/brief`, and the
+first section of `/watchdog` in Telegram/dashboard) answers five questions
+directly from the same `current_status`/`what_changed`/`ai_status` sections
+`/watchdog` already computes: is the market healthy, is risk increasing, did
+AI change its opinion, what changed today, what needs attention now.
+
+### 3. Committee & Consensus explanations
+
+`ConsensusResult` now retains each agent's normalized vote weight
+(`agent_weights`) instead of discarding it after tallying, exposing a
+`strongest_agent` property. `CommitteeVerdict` gained `invalidation_risk`:
+the majority-side agent with the lowest weight, and what dissent percentage
+would result if it flipped -- a deterministic derivation from the same
+tally, not a new signal.
+
+### 4. Replay/Similar -> historical lesson narrative
+
+`build_historical_lesson()` (`app/services/similar_market/engine.py`)
+composes `SimilarMarketEngine.find_similar_periods()`'s K nearest analogs
+and forward returns with the existing backtest math
+(`compute_backtest_metrics()`, `compute_win_rate_pct()`) into a plain-
+language answer: what happened, how similar, average outcome, probability,
+typical duration (the longest forward horizon where a majority of matches
+kept moving the same direction), and a one-sentence lesson. Wired into
+`GET /api/similar/{symbol}` (`lesson` field), the `/similar` Telegram
+command, and the dashboard's Historical Similarity page.
+
+### 5. Institutional report structure
+
+`build_institutional_report()` restructures a generated `Report` into
+Executive Summary / Biggest Opportunity / Biggest Risk / Market Drivers /
+Sector Rotation / Historical Comparison / AI Conclusion / What to Watch
+Next -- template composition of the existing LLM narrative fields, plus
+`scenario_extremes()` for Opportunity/Risk and
+`MarketScannerEngine.get_latest_sector_breadth()` (already cached every scan
+cycle) for Sector Rotation. No LLM prompt or schema change. Wired into
+`GET /api/report` (`institutional_report` field), `/report` in Telegram,
+scheduled report broadcasts, and the dashboard's Reports page.
+
+### 6. Telegram alerts explain themselves
+
+`format_critical_alert()` now states **How Unusual** a move is --
+`historical_similarity_score()` was already computed into every critical
+shock alert's `quality_components` but previously only surfaced as a bare
+`>=60` threshold inside a generic "Reasons" bullet; it's now an explicit
+percentage ("X% of similar historical moves continued down afterward --
+what AI expects next"). On an escalation of an already-active alert it also
+states **What Changed** (e.g. "escalated from HIGH to CRITICAL"), from the
+same `CriticalAlert` row the engine already looks up to decide the
+escalate/suppress action. `format_watchdog()` -- the oldest, previously
+bare-bones AlertLog formatter -- now shows each entry's AI confidence
+(`AlertLog.confidence_pct`, persisted on every alert but silently dropped by
+`MemoryEngine`'s alerts-category summary until now).
+
+### 7. Data quality audit
+
+A systematic sweep for hardcoded "unavailable"/"n/a" placeholders where the
+real value was already computed elsewhere found two concrete wiring gaps
+(most existing honest-unavailable messages checked out as genuinely
+correct): `GlobalMarketScore.risk_score`/`confidence_score` were persisted
+on every row and already exposed by `/api/global-score`, but three sibling
+call sites (`/api/risk`, Telegram `/risk`, the Explanation Engine's
+`risk_factors`) built a subset dict from the same row and dropped them --
+now included in all three. `TerminalEngine.compute_brief()`'s `health_score`
+preferred a Market Replay snapshot value that is itself just a stale copy of
+an earlier Global Score reading -- it now prefers the Global Score already
+fetched in the same method call, falling back to the Replay snapshot only
+when no score exists yet.
+
+### 8. Test results & deployment verification
+
+830 -> 847 tests, all passing across the six PRs; `ruff check app tests`
+clean throughout (only pre-existing, unrelated findings untouched).
+Verified live in Railway production post-deploy: `/api/watchdog/brief`,
+`/api/report` (`institutional_report`), `/api/risk`
+(`risk_score`/`confidence_score`), `/api/similar/BTC` (`lesson`),
+`/api/scanner` (scenario/opportunity/threat context), `/api/consensus`
+(`strongest_agent`), and `/api/committee` (`invalidation_risk`) all
+returned real, non-fabricated data; the scheduled report-generation job ran
+cleanly with no errors immediately after deploy.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is
