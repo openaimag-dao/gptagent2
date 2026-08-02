@@ -67,7 +67,7 @@ from app.services.shocks.detectors import (
     should_notify,
 )
 from app.services.technical.engine import TechnicalAnalysisEngine
-from app.services.watchdog.engine import WatchdogEngine
+from app.services.watchdog.engine import WatchdogEngine, build_watchdog_snapshot_insight
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +234,7 @@ class MarketScannerEngine:
                 "highest_risk": None,
                 "biggest_opportunity": None,
                 "computed_at": None,
+                "ai_insight": build_watchdog_snapshot_insight(None),
             }
         consensus = snapshot.consensus or {}
         return {
@@ -260,6 +261,7 @@ class MarketScannerEngine:
             "highest_risk": snapshot.highest_risk,
             "biggest_opportunity": snapshot.biggest_opportunity,
             "computed_at": snapshot.computed_at.isoformat() if snapshot.computed_at else None,
+            "ai_insight": build_watchdog_snapshot_insight(snapshot),
         }
 
     def _alignment_components(self, ctx: dict, move_direction: str) -> dict:

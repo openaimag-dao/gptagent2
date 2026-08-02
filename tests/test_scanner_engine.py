@@ -48,7 +48,13 @@ def _watchdog_snapshot(**overrides) -> SimpleNamespace:
         "trend_strength_score": 55,
         "committee_decision": "SELL",
         "committee_confidence_pct": 75.0,
-        "consensus": {"bullish_pct": 20.0, "bearish_pct": 70.0, "agreement_score": 70.0},
+        "committee_recommendation": "SELL (moderate conviction)",
+        "consensus": {
+            "bullish_pct": 20.0,
+            "bearish_pct": 70.0,
+            "neutral_pct": 10.0,
+            "agreement_score": 70.0,
+        },
         "expected_scenario": "Deeper Correction",
         "expected_scenario_pct": 60,
         "highest_risk": "Macro liquidity tightening",
@@ -213,6 +219,22 @@ async def test_get_market_context_exposes_full_watchdog_snapshot():
     deps["watchdog_engine"].get_latest_snapshot.assert_awaited_once()
 
 
+async def test_get_market_context_composes_ai_insight_from_the_same_snapshot():
+    watchdog_snapshot = _watchdog_snapshot()
+    engine, _, _ = _engine(watchdog_snapshot=watchdog_snapshot)
+
+    ctx = await engine.get_market_context()
+
+    insight = ctx["ai_insight"]
+    assert insight["ai_conclusion"] == "SELL (moderate conviction)"
+    assert insight["committee_opinion"] == "SELL (75.0%)"
+    assert "Bullish 20.0%" in insight["consensus"]
+    assert insight["main_opportunity"] == "Oversold bounce in majors"
+    assert insight["main_risk"] == "Macro liquidity tightening"
+    assert insight["expected_scenario"] == "Deeper Correction (60%)"
+    assert insight["confidence"] == 40
+
+
 async def test_get_market_context_handles_no_snapshot_yet():
     engine, _, _ = _engine(watchdog_snapshot=None)
 
@@ -232,6 +254,20 @@ async def test_get_market_context_handles_no_snapshot_yet():
         "highest_risk": None,
         "biggest_opportunity": None,
         "computed_at": None,
+        "ai_insight": {
+            "current_status": None,
+            "ai_conclusion": None,
+            "why": None,
+            "supporting_evidence": [],
+            "committee_opinion": None,
+            "consensus": None,
+            "historical_similarity": None,
+            "main_opportunity": None,
+            "main_risk": None,
+            "expected_scenario": None,
+            "what_to_watch_next": None,
+            "confidence": None,
+        },
     }
 
 

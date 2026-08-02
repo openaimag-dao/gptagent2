@@ -31,6 +31,7 @@ from app.database.models import WatchdogEvent, WatchdogSnapshot
 from app.services.agents.orchestrator import AgentOrchestrator
 from app.services.analysis.regime import RegimeDetector
 from app.services.committee.engine import convene_committee
+from app.services.common.ai_insight import build_ai_insight
 from app.services.consensus.engine import compute_consensus
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.market.repository import MarketRepository
@@ -134,6 +135,61 @@ def _is_on_cooldown(last_sent_at: datetime | None, now: datetime, cooldown_minut
     if last_sent_at is None:
         return False
     return (now - last_sent_at).total_seconds() < cooldown_minutes * 60
+
+
+def build_watchdog_snapshot_insight(row: WatchdogSnapshot | None) -> dict:
+    """v12.0 "Unified Intelligence" -- composes the latest WatchdogSnapshot's
+    already-persisted regime/scores/consensus/committee/scenario fields into
+    the shared AI Insight shape (app.services.common.ai_insight), so other
+    screens that already read a WatchdogSnapshot (Scanner's
+    get_market_context(), Watchdog's own get_ai_status()) can offer the same
+    "what/why/opportunity/risk/scenario" summary Replay already has, with no
+    new query and no new engine. `why`/`supporting_evidence`/
+    `historical_similarity`/`what_to_watch_next` are honestly left unset --
+    WatchdogSnapshot doesn't persist per-agent evidence or a similarity
+    search (unlike MarketSnapshot), so fabricating them here would violate
+    "never fabricate market data"."""
+    if row is None:
+        return build_ai_insight()
+    regime_label = (row.regime or "unknown").replace("_", " ").title()
+    if row.risk_score is not None and row.confidence_score is not None:
+        current_status = (
+            f"{regime_label} regime -- {row.market_health}, "
+            f"risk {row.risk_score}/100, confidence {row.confidence_score}/100."
+        )
+    else:
+        current_status = f"{regime_label} regime -- {row.market_health}."
+    consensus_summary = None
+    if row.consensus:
+        c = row.consensus
+        consensus_summary = (
+            f"Bullish {c['bullish_pct']}% / Bearish {c['bearish_pct']}% / "
+            f"Neutral {c['neutral_pct']}% (agreement {c['agreement_score']}%)"
+        )
+    committee_opinion = None
+    if row.committee_decision is not None:
+        majority_str = (
+            f" ({row.committee_confidence_pct}%)"
+            if row.committee_confidence_pct is not None
+            else ""
+        )
+        committee_opinion = f"{row.committee_decision}{majority_str}"
+    expected_scenario = None
+    if row.expected_scenario:
+        pct_str = (
+            f" ({row.expected_scenario_pct}%)" if row.expected_scenario_pct is not None else ""
+        )
+        expected_scenario = f"{row.expected_scenario}{pct_str}"
+    return build_ai_insight(
+        current_status=current_status,
+        ai_conclusion=row.committee_recommendation,
+        committee_opinion=committee_opinion,
+        consensus=consensus_summary,
+        main_opportunity=row.biggest_opportunity,
+        main_risk=row.highest_risk,
+        expected_scenario=expected_scenario,
+        confidence=row.confidence_score,
+    )
 
 
 class WatchdogEngine:
