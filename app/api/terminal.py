@@ -14,6 +14,7 @@ from app.services.news.repository import NewsRepository
 from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
+from app.services.ranking.engine import RankingEngine
 from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import MarketReplayEngine
 from app.services.signals.engine import SignalEngine
@@ -64,6 +65,7 @@ def _build_engine() -> TerminalEngine:
         committee_engine,
         global_score_engine,
         replay_engine,
+        RankingEngine(session_factory),
     )
 
 
@@ -74,7 +76,10 @@ async def get_brief() -> dict:
 
 @router.get("/opportunities")
 async def get_opportunities() -> dict:
-    return {"opportunities": await _build_engine().compute_top_opportunities()}
+    engine = _build_engine()
+    opportunities = await engine.compute_top_opportunities()
+    top_factors = await engine.get_top_factors()
+    return {"opportunities": opportunities, "top_factors": top_factors}
 
 
 @router.get("/history")

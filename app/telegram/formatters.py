@@ -1203,7 +1203,7 @@ def format_backtest_result(result: dict | None) -> str:
     )
 
 
-def format_opportunities(opportunities: list[dict]) -> str:
+def format_opportunities(opportunities: list[dict], top_factors: list[dict] | None = None) -> str:
     if not opportunities:
         return (
             "No opportunities computed this cycle -- no signal has reported for any "
@@ -1224,6 +1224,16 @@ def format_opportunities(opportunities: list[dict]) -> str:
             details.append(f"advisor: {opp['advisor_recommendation']}")
         if details:
             lines.append("  " + " | ".join(details))
+        lines.append("")
+    if top_factors:
+        # v12.0 P1 -- RankingEngine's measured factor edge (walk-forward
+        # backtest, not opinion), so a reader can see whether the signals
+        # behind these calls currently have real predictive power.
+        lines.append("*Factor Context*")
+        for f in top_factors:
+            edge = f.get("current_importance_pct")
+            edge_str = f"{edge:+.1f}% edge" if edge is not None else "edge unavailable"
+            lines.append(f"{f['factor'].replace('_', ' ')}: {edge_str}")
         lines.append("")
     return "\n".join(lines).strip()
 
