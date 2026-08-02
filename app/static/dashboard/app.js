@@ -272,6 +272,7 @@ async function renderCommittee() {
       card("Confidence", `${data.confidence_pct}%`),
     ])
   );
+  nodes.push(decisionPill(data.final_recommendation, recommendationTone(data.final_recommendation)));
   nodes.push(el("p", {}, data.reasoning));
   if (data.most_influential_agent) {
     nodes.push(el("p", { class: "sub" }, `Final influence: ${data.most_influential_agent}`));
@@ -720,6 +721,30 @@ function healthClass(label) {
 
 function healthPill(healthy) {
   return el("span", { class: `pill ${healthy ? "available" : "unavailable"}` }, healthy ? "healthy" : "unhealthy");
+}
+
+// v9.0 visual indicator: a color-coded status badge for any already-computed
+// good/warning/bad classification (BUY/SELL/HOLD, risk level, health label)
+// -- reuses the existing .pill color system rather than inventing a new one.
+function decisionPill(text, tone) {
+  const cls = tone === "good" ? "available" : tone === "bad" ? "unavailable" : "warning";
+  return el("span", { class: `pill ${cls}` }, text);
+}
+
+function recommendationTone(text) {
+  if (!text) return "neutral";
+  const upper = text.toUpperCase();
+  if (upper.includes("BUY")) return "good";
+  if (upper.includes("SELL")) return "bad";
+  return "neutral";
+}
+
+function riskLevelTone(level) {
+  if (!level) return "neutral";
+  const lower = level.toLowerCase();
+  if (lower === "low") return "good";
+  if (lower === "high") return "bad";
+  return "neutral";
 }
 
 // v5.4 Next Generation Market Watchdog -- the central Market Monitoring Hub.
@@ -1436,6 +1461,7 @@ async function renderBrain() {
       card("Bullish Probability", `${a.probability_bullish_pct}%`),
     ])
   );
+  nodes.push(decisionPill(report.risk_level, riskLevelTone(report.risk_level)));
   for (const [label, key] of sections) {
     nodes.push(el("h2", {}, label));
     nodes.push(el("pre", { class: "summary" }, a[key] || "n/a"));
@@ -2029,6 +2055,7 @@ async function renderReports() {
       card("Generated", report.generated_at.slice(0, 19).replace("T", " ")),
     ])
   );
+  nodes.push(decisionPill(report.risk_level, riskLevelTone(report.risk_level)));
 
   const ir = report.institutional_report;
   if (ir) {
