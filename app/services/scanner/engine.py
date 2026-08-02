@@ -40,7 +40,8 @@ from redis.asyncio import Redis
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database.models import AlertLog, ScannerAlert, ScannerSnapshot
+from app.database.models import AlertLog, BreakoutEvent, ScannerAlert, ScannerSnapshot
+from app.services.history.schemas import Timeframe
 from app.services.scanner.breadth import compute_market_breadth
 from app.services.scanner.detectors import (
     classify_price_event,
@@ -199,6 +200,31 @@ class MarketScannerEngine:
             by_symbol[row.symbol].append(row)
         return by_symbol
 
+    async def _latest_breakout_events(self) -> dict[str, BreakoutEvent]:
+        """v12.0 P1 -- BreakoutEngine already runs a 6-signal-confirmed
+        breakout/breakdown/retest/liquidity-sweep detection (volume, ATR,
+        VWAP, regime, OI/funding, multi-timeframe) on its own schedule for
+        the curated crypto symbols it tracks (BTC/ETH/SOL -- the crypto
+        subset of app.scheduler.jobs.FEATURE_SYMBOLS), a materially
+        stronger signal than this engine's own bare
+        price-vs-period-extreme check (detect_new_high_low). One cheap
+        read of already-persisted rows -- no BreakoutEngine construction,
+        no new computation, no per-symbol query."""
+        cutoff = datetime.now(UTC) - timedelta(hours=48)
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(BreakoutEvent)
+                .where(
+                    BreakoutEvent.timeframe == Timeframe.DAILY.value,
+                    BreakoutEvent.computed_at >= cutoff,
+                )
+                .order_by(BreakoutEvent.computed_at.desc())
+            )
+            latest: dict[str, BreakoutEvent] = {}
+            for row in rows:
+                latest.setdefault(row.symbol, row)  # desc order -> first seen is most recent
+            return latest
+
     # ------------------------------------------------------------ AI filter
 
     async def get_market_context(self) -> dict:
@@ -291,7 +317,12 @@ class MarketScannerEngine:
 
     # -------------------------------------------------------- per-symbol scan
 
-    def _scan_symbol(self, reading: dict, history: list[ScannerSnapshot]) -> dict:
+    def _scan_symbol(
+        self,
+        reading: dict,
+        history: list[ScannerSnapshot],
+        breakout_event: BreakoutEvent | None = None,
+    ) -> dict:
         symbol = reading["symbol"]
         prices = [float(h.price) for h in history] + [reading["price"]]
         volumes = [float(h.volume_24h) for h in history if h.volume_24h is not None]
@@ -308,7 +339,16 @@ class MarketScannerEngine:
 
         period_high = max(prices[:-1]) if len(prices) > 1 else None
         period_low = min(prices[:-1]) if len(prices) > 1 else None
-        breakout_label = detect_new_high_low(reading["price"], period_high, period_low)
+        if breakout_event is not None:
+            # BreakoutEngine's 6-signal-confirmed read supersedes the bare
+            # price-vs-period-extreme check for the handful of symbols it
+            # tracks -- see _latest_breakout_events().
+            breakout_label = (
+                f"{breakout_event.event_type.replace('_', ' ').title()} "
+                f"({breakout_event.direction})"
+            )
+        else:
+            breakout_label = detect_new_high_low(reading["price"], period_high, period_low)
         sr_label = detect_support_resistance_break(reading["price"], period_low, period_high)
 
         return {
@@ -471,9 +511,13 @@ class MarketScannerEngine:
 
         await self._persist_snapshots(readings, now)
         history_by_symbol = await self._history_by_symbol([r["symbol"] for r in readings], now)
+        breakout_events = await self._latest_breakout_events()
 
         scans = {
-            r["symbol"]: self._scan_symbol(r, history_by_symbol[r["symbol"]]) for r in readings
+            r["symbol"]: self._scan_symbol(
+                r, history_by_symbol[r["symbol"]], breakout_events.get(r["symbol"])
+            )
+            for r in readings
         }
         price_events = {symbol: scan["price_event"] for symbol, scan in scans.items()}
 

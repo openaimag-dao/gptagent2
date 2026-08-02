@@ -101,6 +101,44 @@ function navPointer(screen) {
   return el("p", { class: "sub nav-pointer" }, ["Related: ", el("a", { href: `#${p.page}` }, p.label)]);
 }
 
+// v12.0 P1 -- dashboard counterpart of app.services.common.ai_insight's
+// format_ai_insight_lines(): renders whichever fields of a build_ai_insight()
+// dict are populated, in the same spec order, under the same labels Telegram
+// already uses. Returns [] (no section) when nothing is populated.
+const AI_INSIGHT_FIELD_LABELS = [
+  ["current_status", "Current Status"],
+  ["ai_conclusion", "AI Conclusion"],
+  ["why", "Why"],
+  ["committee_opinion", "Committee Opinion"],
+  ["consensus", "Consensus"],
+  ["historical_similarity", "Historical Similarity"],
+  ["main_opportunity", "Main Opportunity"],
+  ["main_risk", "Main Risk"],
+  ["expected_scenario", "Expected Scenario"],
+  ["what_to_watch_next", "What To Watch Next"],
+];
+
+function renderAiInsight(insight) {
+  if (!insight) return [];
+  const hasContent =
+    AI_INSIGHT_FIELD_LABELS.some(([key]) => insight[key]) ||
+    (insight.supporting_evidence && insight.supporting_evidence.length) ||
+    insight.confidence != null;
+  if (!hasContent) return [];
+  const nodes = [el("h2", {}, "AI Insight")];
+  for (const [key, label] of AI_INSIGHT_FIELD_LABELS) {
+    if (insight[key]) nodes.push(el("p", {}, [el("strong", {}, `${label}: `), insight[key]]));
+  }
+  if (insight.supporting_evidence && insight.supporting_evidence.length) {
+    nodes.push(el("p", {}, el("strong", {}, "Supporting Evidence:")));
+    nodes.push(el("ul", {}, insight.supporting_evidence.map((e) => el("li", {}, e))));
+  }
+  if (insight.confidence != null) {
+    nodes.push(el("p", {}, [el("strong", {}, "Confidence: "), `${insight.confidence}%`]));
+  }
+  return nodes;
+}
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 function svgLineChart(values, { width = 600, height = 160 } = {}) {
@@ -2200,7 +2238,7 @@ async function renderOnchain() {
 
 async function renderReplay() {
   const nodes = [el("h2", {}, "Market Replay")];
-  const data = await safe("/api/replay?limit=20");
+  const [data, insight] = await Promise.all([safe("/api/replay?limit=20"), safe("/api/replay/insight")]);
   if (!data || !data.snapshots.length) {
     nodes.push(el("p", { class: "error" }, "No market snapshot has been taken yet."));
     return nodes;
@@ -2215,6 +2253,7 @@ async function renderReplay() {
       card("Confidence", latest.confidence_score ?? "n/a"),
     ])
   );
+  nodes.push(...renderAiInsight(insight));
   if (latest.consensus) {
     nodes.push(el("h2", {}, "Consensus"));
     nodes.push(
