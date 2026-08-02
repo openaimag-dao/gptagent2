@@ -135,7 +135,15 @@ class TerminalEngine:
             "top_opportunities": opportunities,
             "portfolio": portfolio_health,
             "regime": replay.regime if replay is not None else None,
-            "health_score": replay.health_score if replay is not None else None,
+            # Prefer the Global Market Score just fetched above -- it's the
+            # same number Market Replay's health_score is itself copied from
+            # at snapshot time (see ReplayEngine.compute_and_store), but
+            # fresher whenever the Replay cycle hasn't run recently.
+            "health_score": (
+                global_score.global_score
+                if global_score is not None
+                else (replay.health_score if replay is not None else None)
+            ),
             "computed_at": datetime.now(UTC).isoformat(),
         }
 

@@ -703,6 +703,11 @@ def format_explanation(data: dict) -> str:
             f"Fear {rf['fear_score']} | Macro pressure {rf['macro_pressure_score']} | "
             f"Risk-off {rf['risk_off_score']}"
         )
+        if rf.get("risk_score") is not None or rf.get("confidence_score") is not None:
+            lines.append(
+                f"Risk score {rf.get('risk_score', 'n/a')} | "
+                f"Confidence {rf.get('confidence_score', 'n/a')}"
+            )
         lines.append("")
 
     if data["alternative_view"]:
@@ -732,6 +737,11 @@ def format_risk(data: dict) -> str:
         lines.append(
             f"Fear: {gs['fear_score']}/100 | Macro pressure: {gs['macro_pressure_score']}/100"
         )
+        if gs.get("risk_score") is not None or gs.get("confidence_score") is not None:
+            lines.append(
+                f"Risk score: {gs.get('risk_score', 'n/a')}/100 | "
+                f"Confidence: {gs.get('confidence_score', 'n/a')}/100"
+            )
     else:
         lines.append("Global Score not computed yet -- run /score first.")
     lines.append("")

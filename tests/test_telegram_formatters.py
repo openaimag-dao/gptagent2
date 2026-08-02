@@ -296,6 +296,27 @@ def test_format_explanation_full():
     assert "Bear case (25%)" in text
 
 
+def test_format_explanation_shows_risk_and_confidence_score_when_present():
+    data = {
+        "symbol": "BTC",
+        "indicators": [],
+        "macro_drivers": {},
+        "historical_examples": [],
+        "supporting_news": [],
+        "risk_factors": {
+            "fear_score": 30,
+            "macro_pressure_score": 40,
+            "risk_off_score": 20,
+            "risk_score": 55,
+            "confidence_score": 65,
+        },
+        "alternative_view": None,
+    }
+    text = format_explanation(data)
+    assert "Risk score 55" in text
+    assert "Confidence 65" in text
+
+
 def test_format_status():
     text = format_status({"Signal": datetime(2026, 1, 1, tzinfo=UTC), "Regime": None})
     assert "Signal: 2026-01-01T00:00:00+00:00" in text
@@ -322,6 +343,24 @@ def test_format_risk_without_data():
     text = format_risk({"global_score": None, "signal_conviction": None})
     assert "not computed yet" in text
     assert "unavailable" in text
+
+
+def test_format_risk_shows_risk_and_confidence_score_when_present():
+    text = format_risk(
+        {
+            "global_score": {
+                "risk_off_score": 60,
+                "risk_on_score": 40,
+                "fear_score": 55,
+                "macro_pressure_score": 45,
+                "risk_score": 65,
+                "confidence_score": 70,
+            },
+            "signal_conviction": None,
+        }
+    )
+    assert "Risk score: 65/100" in text
+    assert "Confidence: 70/100" in text
 
 
 def test_format_watchdog_brief_answers_the_control_center_questions():
