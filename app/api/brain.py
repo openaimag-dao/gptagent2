@@ -16,7 +16,7 @@ async def get_latest_brain_report() -> dict:
     report = await generator.get_latest()
     if report is None:
         raise HTTPException(status_code=404, detail="No report has been generated yet")
-    return _serialize(report)
+    return await _serialize(report)
 
 
 @router.post("/generate")
@@ -26,4 +26,4 @@ async def generate_brain_report() -> dict:
         report = await generator.generate_and_store(report_type="brain_on_demand")
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return _serialize(report)
+    return await _serialize(report)
