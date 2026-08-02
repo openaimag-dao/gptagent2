@@ -119,7 +119,10 @@ async def test_run_cycle_message_includes_key_change_since_previous_scan():
         volume_24h=1_000_000.0,
         recorded_at=datetime(2026, 1, 1, 11, 45, tzinfo=UTC),
     )
-    session.scalars = AsyncMock(return_value=[prior_snapshot])
+    # First session.scalars() call is the ScannerSnapshot history read,
+    # second is _latest_breakout_events() -- honestly empty here since this
+    # test isn't about breakout data.
+    session.scalars = AsyncMock(side_effect=[[prior_snapshot], []])
 
     result = await engine.run_cycle()
 
@@ -302,3 +305,74 @@ def test_engine_module_never_imports_telegram():
         stripped = line.strip()
         if stripped.startswith(("import app.telegram", "from app.telegram")):
             raise AssertionError(f"engine.py must never import app.telegram: {line}")
+
+
+def _breakout_event(**overrides) -> SimpleNamespace:
+    defaults = {
+        "symbol": "BTC",
+        "event_type": "breakout",
+        "direction": "bullish",
+        "computed_at": datetime(2026, 1, 1, 12, tzinfo=UTC),
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+async def test_latest_breakout_events_returns_empty_when_none_recorded():
+    engine, _, _ = _engine()
+
+    result = await engine._latest_breakout_events()
+
+    assert result == {}
+
+
+async def test_latest_breakout_events_keeps_only_the_most_recent_per_symbol():
+    session_factory, session = _session_factory()
+    older = _breakout_event(
+        symbol="BTC", event_type="retest", computed_at=datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    newer = _breakout_event(
+        symbol="BTC", event_type="breakout", computed_at=datetime(2026, 1, 1, 6, tzinfo=UTC)
+    )
+    # Query orders by computed_at desc -- newest first.
+    session.scalars = AsyncMock(return_value=[newer, older])
+    engine, _, _ = _engine(session_factory, session)
+
+    result = await engine._latest_breakout_events()
+
+    assert result == {"BTC": newer}
+
+
+def test_scan_symbol_uses_breakout_engine_label_when_available():
+    engine, _, _ = _engine()
+    reading = {
+        "symbol": "BTC",
+        "price": 65000.0,
+        "change_pct_1h": 0.1,
+        "change_pct_24h": 1.0,
+        "volume_24h": 1_000_000.0,
+    }
+    breakout_event = _breakout_event(event_type="false_breakout", direction="bearish")
+
+    scan = engine._scan_symbol(reading, [], breakout_event)
+
+    assert scan["breakout_label"] == "False Breakout (bearish)"
+
+
+def test_scan_symbol_falls_back_to_new_high_low_without_a_breakout_event():
+    engine, _, _ = _engine()
+    history = [
+        SimpleNamespace(price=100.0, volume_24h=1_000_000.0),
+        SimpleNamespace(price=101.0, volume_24h=1_000_000.0),
+    ]
+    reading = {
+        "symbol": "PEPE",
+        "price": 105.0,
+        "change_pct_1h": 0.1,
+        "change_pct_24h": 1.0,
+        "volume_24h": 1_000_000.0,
+    }
+
+    scan = engine._scan_symbol(reading, history, None)
+
+    assert scan["breakout_label"] == "New Daily High"
