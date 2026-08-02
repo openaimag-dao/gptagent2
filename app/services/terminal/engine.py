@@ -32,7 +32,9 @@ from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.ranking.engine import RankingEngine
 from app.services.replay.engine import MarketReplayEngine, diff_snapshots
+from app.services.scanner.engine import MarketScannerEngine
 from app.services.terminal.opportunities import classify_opportunity, score_opportunity
+from app.services.watchdog.engine import WatchdogEngine
 
 _OPPORTUNITY_SYMBOLS: tuple[str, ...] = ("BTC", "ETH", "SOL")
 _DEFAULT_HISTORY_DAYS = 7
@@ -50,6 +52,8 @@ class TerminalEngine:
         global_score_engine: GlobalScoreEngine,
         replay_engine: MarketReplayEngine,
         ranking_engine: RankingEngine,
+        watchdog_engine: WatchdogEngine,
+        market_scanner_engine: MarketScannerEngine,
     ) -> None:
         self._session_factory = session_factory
         self._probability_engine = probability_engine
@@ -60,6 +64,8 @@ class TerminalEngine:
         self._global_score_engine = global_score_engine
         self._replay_engine = replay_engine
         self._ranking_engine = ranking_engine
+        self._watchdog_engine = watchdog_engine
+        self._market_scanner_engine = market_scanner_engine
 
     async def _symbol_opportunity(self, symbol: str) -> dict | None:
         # The three lookups below are independent reads (different engines,
@@ -137,6 +143,25 @@ class TerminalEngine:
         portfolio = await self._portfolio_engine.get_or_create("main")
         portfolio_health = await self._portfolio_engine.compute_health(portfolio.id)
         replay = await self._replay_engine.get_latest()
+        # v12.0 P1 -- four already-computed views the Daily Brief never
+        # referenced: Watchdog's own snapshot (market_health/highest_risk/
+        # biggest_opportunity/expected_scenario -- a genuine verdict, not
+        # just the bare risk_off/liquidity numbers above), the same
+        # Consensus breakdown Watchdog persists every cycle, Market
+        # Scanner's cached breadth + active episode count, and the most
+        # recent Similar Market match Market Memory already indexes. All
+        # four are single cheap reads of data another engine's own
+        # schedule already maintains -- no new computation, no new engine.
+        watchdog_snapshot = await self._watchdog_engine.get_latest_snapshot()
+        breadth = await self._market_scanner_engine.get_latest_breadth()
+        active_scanner_alerts = await self._market_scanner_engine.list_active_alerts()
+        similarity = await MemoryEngine(self._session_factory).get_category(
+            "similarity", limit=1
+        )
+
+        alerts_by_tier: dict[str, int] = {}
+        for alert in active_scanner_alerts:
+            alerts_by_tier[alert.tier] = alerts_by_tier.get(alert.tier, 0) + 1
 
         return {
             "committee": committee_verdict.to_dict() if committee_verdict is not None else None,
@@ -160,6 +185,24 @@ class TerminalEngine:
                 if global_score is not None
                 else (replay.health_score if replay is not None else None)
             ),
+            "scanner": {
+                "breadth": breadth,
+                "active_alerts_count": len(active_scanner_alerts),
+                "active_alerts_by_tier": alerts_by_tier,
+            },
+            "consensus": watchdog_snapshot.consensus if watchdog_snapshot is not None else None,
+            "watchdog": (
+                {
+                    "market_health": watchdog_snapshot.market_health,
+                    "committee_decision": watchdog_snapshot.committee_decision,
+                    "highest_risk": watchdog_snapshot.highest_risk,
+                    "biggest_opportunity": watchdog_snapshot.biggest_opportunity,
+                    "expected_scenario": watchdog_snapshot.expected_scenario,
+                }
+                if watchdog_snapshot is not None
+                else None
+            ),
+            "historical_intelligence": similarity[0] if similarity else None,
             "computed_at": datetime.now(UTC).isoformat(),
         }
 

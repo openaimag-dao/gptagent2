@@ -40,6 +40,28 @@ def _ranking_snapshot(rankings):
     return type("FakeRankingSnapshot", (), {"rankings": rankings})()
 
 
+def _watchdog_snapshot_for_brief(**overrides):
+    defaults = dict(
+        market_health="Watch",
+        committee_decision="SELL",
+        highest_risk="Macro liquidity tightening",
+        biggest_opportunity="Oversold bounce in majors",
+        expected_scenario="Deeper Correction",
+        consensus={
+            "bullish_pct": 20.0,
+            "bearish_pct": 70.0,
+            "neutral_pct": 10.0,
+            "conflict_pct": 15.0,
+        },
+    )
+    defaults.update(overrides)
+    return type("FakeWatchdogSnapshot", (), defaults)()
+
+
+def _scanner_alert(tier="high"):
+    return type("FakeScannerAlert", (), {"tier": tier})()
+
+
 def _engine(
     probability_engine=None,
     breakout_engine=None,
@@ -49,9 +71,12 @@ def _engine(
     global_score_engine=None,
     replay_engine=None,
     ranking_engine=None,
+    watchdog_engine=None,
+    market_scanner_engine=None,
+    session_factory=None,
 ) -> TerminalEngine:
     return TerminalEngine(
-        AsyncMock(),
+        session_factory or AsyncMock(),
         probability_engine or AsyncMock(),
         breakout_engine or AsyncMock(),
         portfolio_advisor or AsyncMock(),
@@ -60,6 +85,8 @@ def _engine(
         global_score_engine or AsyncMock(),
         replay_engine or AsyncMock(),
         ranking_engine or AsyncMock(),
+        watchdog_engine or AsyncMock(),
+        market_scanner_engine or AsyncMock(),
     )
 
 
@@ -136,6 +163,21 @@ async def test_compute_brief_assembles_all_sections():
     portfolio_advisor = AsyncMock()
     portfolio_advisor.advise.return_value = None
 
+    watchdog_engine = AsyncMock()
+    watchdog_engine.get_latest_snapshot.return_value = _watchdog_snapshot_for_brief()
+    market_scanner_engine = AsyncMock()
+    market_scanner_engine.get_latest_breadth.return_value = {
+        "total_scanned": 500,
+        "rising_count": 300,
+        "falling_count": 180,
+        "unchanged_count": 20,
+    }
+    market_scanner_engine.list_active_alerts.return_value = [
+        _scanner_alert("high"),
+        _scanner_alert("high"),
+        _scanner_alert("critical"),
+    ]
+
     engine = _engine(
         probability_engine=probability_engine,
         breakout_engine=breakout_engine,
@@ -144,9 +186,25 @@ async def test_compute_brief_assembles_all_sections():
         committee_engine=committee_engine,
         global_score_engine=global_score_engine,
         replay_engine=replay_engine,
+        watchdog_engine=watchdog_engine,
+        market_scanner_engine=market_scanner_engine,
     )
 
-    brief = await engine.compute_brief()
+    fake_memory_engine = AsyncMock()
+    fake_memory_engine.get_category.return_value = [
+        {
+            "category": "similarity",
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "summary": {
+                "symbol": "BTC",
+                "match_timestamp": "2025-01-01T00:00:00+00:00",
+                "similarity_score": 88.0,
+            },
+        }
+    ]
+
+    with patch("app.services.terminal.engine.MemoryEngine", return_value=fake_memory_engine):
+        brief = await engine.compute_brief()
 
     assert brief["committee"] == {"final_recommendation": "BUY"}
     assert brief["risk"] == {"risk_off_score": 40, "liquidity_score": 60}
@@ -156,6 +214,13 @@ async def test_compute_brief_assembles_all_sections():
     # Prefers the freshly-fetched Global Market Score (65) over the possibly
     # stale Replay snapshot's copy of an earlier global_score (60).
     assert brief["health_score"] == 65
+    assert brief["consensus"]["bullish_pct"] == 20.0
+    assert brief["watchdog"]["market_health"] == "Watch"
+    assert brief["watchdog"]["highest_risk"] == "Macro liquidity tightening"
+    assert brief["scanner"]["breadth"]["rising_count"] == 300
+    assert brief["scanner"]["active_alerts_count"] == 3
+    assert brief["scanner"]["active_alerts_by_tier"] == {"high": 2, "critical": 1}
+    assert brief["historical_intelligence"]["summary"]["symbol"] == "BTC"
 
 
 async def test_compute_brief_falls_back_to_replay_health_score_without_global_score():
@@ -179,6 +244,12 @@ async def test_compute_brief_falls_back_to_replay_health_score_without_global_sc
     portfolio_advisor = AsyncMock()
     portfolio_advisor.advise.return_value = None
 
+    watchdog_engine = AsyncMock()
+    watchdog_engine.get_latest_snapshot.return_value = None
+    market_scanner_engine = AsyncMock()
+    market_scanner_engine.get_latest_breadth.return_value = None
+    market_scanner_engine.list_active_alerts.return_value = []
+
     engine = _engine(
         probability_engine=probability_engine,
         breakout_engine=breakout_engine,
@@ -187,12 +258,27 @@ async def test_compute_brief_falls_back_to_replay_health_score_without_global_sc
         committee_engine=committee_engine,
         global_score_engine=global_score_engine,
         replay_engine=replay_engine,
+        watchdog_engine=watchdog_engine,
+        market_scanner_engine=market_scanner_engine,
     )
 
-    brief = await engine.compute_brief()
+    fake_memory_engine = AsyncMock()
+    fake_memory_engine.get_category.return_value = []
+
+    with patch("app.services.terminal.engine.MemoryEngine", return_value=fake_memory_engine):
+        brief = await engine.compute_brief()
 
     assert brief["risk"] is None
     assert brief["health_score"] == 60
+    # Honestly omitted, not fabricated, when nothing has been computed yet.
+    assert brief["consensus"] is None
+    assert brief["watchdog"] is None
+    assert brief["scanner"] == {
+        "breadth": None,
+        "active_alerts_count": 0,
+        "active_alerts_by_tier": {},
+    }
+    assert brief["historical_intelligence"] is None
 
 
 async def test_compute_historical_comparison_none_when_no_replay_yet():

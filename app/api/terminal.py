@@ -17,8 +17,10 @@ from app.services.probability.engine import ProbabilityEngine
 from app.services.ranking.engine import RankingEngine
 from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import MarketReplayEngine
+from app.services.scanner.engine import build_market_scanner_engine
 from app.services.signals.engine import SignalEngine
 from app.services.terminal.engine import TerminalEngine
+from app.services.watchdog.engine import build_watchdog_engine
 from app.services.whales.engine import WhaleIntelligenceEngine
 
 router = APIRouter(prefix="/api/terminal", tags=["terminal"])
@@ -66,6 +68,8 @@ def _build_engine() -> TerminalEngine:
         global_score_engine,
         replay_engine,
         RankingEngine(session_factory),
+        build_watchdog_engine(),
+        build_market_scanner_engine(),
     )
 
 

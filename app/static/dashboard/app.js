@@ -411,6 +411,49 @@ async function renderTerminal() {
     nodes.push(
       el("p", { class: "sub" }, data.portfolio.empty ? "No positions held." : `Health ${data.portfolio.health_score}/100, value ${Number(data.portfolio.total_value).toLocaleString()}`)
     );
+
+    if (data.consensus) {
+      nodes.push(el("h2", {}, "Consensus"));
+      nodes.push(
+        el(
+          "p",
+          { class: "sub" },
+          `Bullish ${data.consensus.bullish_pct}% / Bearish ${data.consensus.bearish_pct}% / ` +
+            `Neutral ${data.consensus.neutral_pct}% (conflict ${data.consensus.conflict_pct}%)`
+        )
+      );
+    }
+
+    if (data.watchdog) {
+      nodes.push(el("h2", {}, "Watchdog"));
+      const sub = [
+        data.watchdog.highest_risk ? `Highest risk: ${data.watchdog.highest_risk}` : null,
+        data.watchdog.biggest_opportunity ? `Biggest opportunity: ${data.watchdog.biggest_opportunity}` : null,
+      ]
+        .filter(Boolean)
+        .join(" | ");
+      nodes.push(card("Market Health", data.watchdog.market_health || "unknown", sub));
+    }
+
+    if (data.scanner && data.scanner.breadth) {
+      nodes.push(el("h2", {}, "Scanner"));
+      nodes.push(
+        el("div", { class: "grid" }, [
+          card("Rising", data.scanner.breadth.rising_count),
+          card("Falling", data.scanner.breadth.falling_count),
+          card("Scanned", data.scanner.breadth.total_scanned),
+          card("Active Alerts", data.scanner.active_alerts_count),
+        ])
+      );
+    }
+
+    if (data.historical_intelligence) {
+      const h = data.historical_intelligence.summary;
+      nodes.push(el("h2", {}, "Historical Intelligence"));
+      nodes.push(
+        el("p", { class: "sub" }, `Most similar setup: ${h.symbol} (${h.similarity_score}% similar)`)
+      );
+    }
   }
 
   nodes.push(el("h2", {}, "Historical Comparison"));

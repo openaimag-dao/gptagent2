@@ -242,6 +242,9 @@ def build_terminal_engine() -> TerminalEngine:
         committee_engine,
         global_score_engine,
         replay_engine,
+        RankingEngine(session_factory),
+        build_watchdog_engine(),
+        build_market_scanner_engine(),
     )
 
 
