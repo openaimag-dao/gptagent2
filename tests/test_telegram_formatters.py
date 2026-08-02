@@ -41,6 +41,7 @@ from app.telegram.formatters import (
     format_scanner_movers,
     format_scanner_sectors,
     format_signal,
+    format_similar_periods,
     format_single_asset,
     format_status,
     format_technical,
@@ -477,9 +478,7 @@ def test_format_committee_present():
         "supporting_evidence": [
             {"agent": "macro", "confidence": 80.0, "evidence": "Bullish backdrop."}
         ],
-        "opposing_evidence": [
-            {"agent": "equity", "confidence": 55.0, "evidence": "Weak breadth."}
-        ],
+        "opposing_evidence": [{"agent": "equity", "confidence": 55.0, "evidence": "Weak breadth."}],
         "minority_opinion": "equity (bearish): Weak breadth.",
         "final_recommendation": "BUY (high conviction)",
         "reasoning": "Majority decision: BUY with 70.0% of weighted committee votes (macro).",
@@ -692,6 +691,49 @@ def test_format_historical_comparison_present():
     assert "bull -> bear (changed)" in text
     assert "Health Score: 60 -> 40 (-20)" in text
     assert "Risk Score: 30 -> 50 (+20)" in text
+
+
+def test_format_similar_periods_no_matches():
+    text = format_similar_periods("BTC", [])
+    assert "Not enough synced history" in text
+    assert "BTC" in text
+
+
+def test_format_similar_periods_includes_lesson_and_matches():
+    matches = [
+        {
+            "date": datetime(2025, 6, 1, tzinfo=UTC),
+            "similarity": 82.5,
+            "market_regime": "risk_on",
+            "forward_returns_pct": {"1d": 1.0, "3d": 2.0, "7d": 3.0, "30d": -5.0},
+        }
+    ]
+    lesson = {
+        "symbol": "BTC",
+        "occurrences": 3,
+        "horizon_days": 7,
+        "what_happened": "3 similar historical setups found for BTC, most often during "
+        "a risk on regime.",
+        "how_similar_pct": 80.0,
+        "average_outcome_pct": 1.0,
+        "probability_pct": 66.67,
+        "typical_duration": "The upward move tended to hold for at least 7 day(s) "
+        "in similar past cases.",
+        "dominant_regime": "risk_on",
+        "main_lesson": "In similar setups (avg similarity 80.0%), BTC moved up 1.0% on "
+        "average over the next 7 days, with a 66.67% historical win rate across "
+        "3 occurrences.",
+    }
+
+    text = format_similar_periods("BTC", matches, lesson=lesson)
+
+    assert "What happened: 3 similar historical setups found for BTC" in text
+    assert "How similar: 80.0% avg match" in text
+    assert "Average outcome (7d): +1.00%" in text
+    assert "Probability: 66.67% moved the same direction" in text
+    assert "Typical duration: The upward move tended to hold for at least 7 day(s)" in text
+    assert "Lesson: In similar setups" in text
+    assert "2025-06-01" in text  # underlying match list is still rendered
 
 
 def test_format_weekly_review():

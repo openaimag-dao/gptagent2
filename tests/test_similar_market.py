@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from app.services.analysis.regime import MarketRegime
-from app.services.similar_market.engine import _reconstruct_regime_at
+from app.services.similar_market.engine import _reconstruct_regime_at, build_historical_lesson
 
 _TS = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -63,3 +63,70 @@ def test_returns_neutral_when_signals_disagree():
         "FEDRATE": {},
     }
     assert _reconstruct_regime_at(regime_index, _TS) == MarketRegime.NEUTRAL
+
+
+def _match(similarity: float, regime: str | None, **forward_returns_pct: float | None) -> dict:
+    return {
+        "date": _TS,
+        "similarity": similarity,
+        "market_regime": regime,
+        "rsi": 50.0,
+        "volatility": 1.0,
+        "btc_result_pct": None,
+        "nasdaq_result_pct": None,
+        "forward_returns_pct": {
+            "1d": forward_returns_pct.get("d1"),
+            "3d": forward_returns_pct.get("d3"),
+            "7d": forward_returns_pct.get("d7"),
+            "30d": forward_returns_pct.get("d30"),
+        },
+    }
+
+
+def test_build_historical_lesson_returns_none_with_no_matches():
+    assert build_historical_lesson("BTC", []) is None
+
+
+def test_build_historical_lesson_returns_none_when_primary_horizon_unavailable():
+    matches = [_match(80.0, "risk_on", d1=1.0, d3=2.0, d7=None, d30=None)]
+    assert build_historical_lesson("BTC", matches) is None
+
+
+def test_build_historical_lesson_composes_from_forward_returns():
+    matches = [
+        _match(80.0, "risk_on", d1=1.0, d3=2.0, d7=3.0, d30=-5.0),
+        _match(90.0, "risk_on", d1=1.0, d3=2.0, d7=3.0, d30=-5.0),
+        _match(70.0, "risk_off", d1=-1.0, d3=-2.0, d7=-3.0, d30=5.0),
+    ]
+
+    lesson = build_historical_lesson("BTC", matches)
+
+    assert lesson["symbol"] == "BTC"
+    assert lesson["occurrences"] == 3
+    assert lesson["horizon_days"] == 7
+    assert lesson["how_similar_pct"] == 80.0  # avg(80, 90, 70)
+    assert lesson["average_outcome_pct"] == 1.0  # avg(3.0, 3.0, -3.0)
+    assert lesson["probability_pct"] == 66.67  # 2 of 3 matches moved up
+    assert lesson["dominant_regime"] == "risk_on"
+    assert "2/3" not in lesson["typical_duration"]  # a plain-language sentence, not raw fractions
+    assert "at least 7 day" in lesson["typical_duration"]
+    assert "BTC" in lesson["what_happened"]
+    assert "risk on" in lesson["what_happened"]
+    assert "66.67% historical win rate" in lesson["main_lesson"]
+
+
+def test_build_historical_lesson_reports_no_persistence_when_direction_flips_immediately():
+    matches = [
+        _match(80.0, "risk_on", d1=-1.0, d3=2.0, d7=3.0, d30=4.0),
+        _match(90.0, "risk_on", d1=-1.0, d3=2.0, d7=3.0, d30=4.0),
+        _match(70.0, "risk_off", d1=1.0, d3=-2.0, d7=-3.0, d30=-4.0),
+    ]
+
+    lesson = build_historical_lesson("BTC", matches)
+
+    # 7d direction is "up" (avg +1.0%), but the 1d horizon has only a 1/3
+    # win rate for "up" -- persistence breaks immediately.
+    assert (
+        lesson["typical_duration"]
+        == "No consistent persistence pattern across the tested horizons."
+    )

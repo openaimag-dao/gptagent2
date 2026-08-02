@@ -268,8 +268,7 @@ def format_quality(result: dict | None, symbol: str, timeframe: str) -> str:
         lines.append("*Accuracy by Horizon*")
         for row in result["time_horizon_accuracy"]:
             lines.append(
-                f"- {row['horizon_periods']} period(s) (n={row['count']}): "
-                f"{row['accuracy_pct']}%"
+                f"- {row['horizon_periods']} period(s) (n={row['count']}): {row['accuracy_pct']}%"
             )
     return "\n".join(lines)
 
@@ -278,8 +277,7 @@ def format_probability(snapshot: ProbabilitySnapshot | None) -> str:
     if snapshot is None:
         return "Not enough synced history to compute a probability yet."
     header = (
-        f"*{snapshot.symbol} PROBABILITY* "
-        f"({snapshot.timeframe}, {snapshot.horizon_periods}-period)"
+        f"*{snapshot.symbol} PROBABILITY* ({snapshot.timeframe}, {snapshot.horizon_periods}-period)"
     )
     up_down_flat = (
         f"Up: {snapshot.prob_up_pct}% | "
@@ -379,10 +377,25 @@ def format_global_score(row: GlobalMarketScore | None) -> str:
     return "\n".join(lines)
 
 
-def format_similar_periods(symbol: str, matches: list[dict], limit: int = 5) -> str:
+def format_similar_periods(
+    symbol: str, matches: list[dict], lesson: dict | None = None, limit: int = 5
+) -> str:
     if not matches:
         return f"Not enough synced history for {symbol} to find similar periods yet."
     lines = [f"*{symbol} SIMILAR HISTORICAL PERIODS*", ""]
+    if lesson is not None:
+        lines.extend(
+            [
+                f"What happened: {lesson['what_happened']}",
+                f"How similar: {lesson['how_similar_pct']}% avg match",
+                f"Average outcome ({lesson['horizon_days']}d): "
+                f"{lesson['average_outcome_pct']:+.2f}%",
+                f"Probability: {lesson['probability_pct']}% moved the same direction",
+                f"Typical duration: {lesson['typical_duration']}",
+                f"Lesson: {lesson['main_lesson']}",
+                "",
+            ]
+        )
     for m in matches[:limit]:
         date_str = m["date"].date().isoformat()
         regime = m["market_regime"] or "unknown"
@@ -391,7 +404,7 @@ def format_similar_periods(symbol: str, matches: list[dict], limit: int = 5) -> 
         f1 = f"{forward_1d:+.2f}%" if forward_1d is not None else "n/a"
         f30 = f"{forward_30d:+.2f}%" if forward_30d is not None else "n/a"
         lines.append(
-            f"{date_str} (similarity {m['similarity']}, regime {regime}): " f"1d {f1} | 30d {f30}"
+            f"{date_str} (similarity {m['similarity']}, regime {regime}): 1d {f1} | 30d {f30}"
         )
     return "\n".join(lines)
 
