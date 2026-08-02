@@ -132,6 +132,7 @@ def _alerts_summary(row: AlertLog) -> dict:
         "alert_type": row.alert_type,
         "message": row.message,
         "conviction_tier": row.conviction_tier,
+        "confidence_pct": row.confidence_pct,
         "broadcast": row.broadcast,
     }
 
