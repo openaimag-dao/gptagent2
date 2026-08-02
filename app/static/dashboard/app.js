@@ -1009,6 +1009,44 @@ async function renderScanner() {
     nodes.push(el("p", { class: "sub" }, "No scan data yet -- check back after the next cycle."));
   }
 
+  // Composed from the same WatchdogSnapshot the scanner's AI filter
+  // already reads every cycle (regime/risk/confidence/committee/consensus
+  // + Scenario Engine's expected scenario) -- not a new calculation, and
+  // previously only ever visible inside a fired HIGH/CRITICAL alert.
+  const ctx = d.market_context;
+  nodes.push(el("h2", {}, "Market Context"));
+  if (ctx && ctx.regime) {
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Regime", ctx.regime.replace(/_/g, " ")),
+        card("Risk", ctx.risk_score != null ? `${ctx.risk_score}/100` : "n/a"),
+        card("Confidence", ctx.confidence_score != null ? `${ctx.confidence_score}/100` : "n/a"),
+        card(
+          "Committee",
+          ctx.committee_decision
+            ? `${ctx.committee_decision}${ctx.committee_majority_pct != null ? ` (${ctx.committee_majority_pct}%)` : ""}`
+            : "n/a"
+        ),
+        card(
+          "Expected Scenario",
+          ctx.expected_scenario
+            ? `${ctx.expected_scenario}${ctx.expected_scenario_pct != null ? ` (${ctx.expected_scenario_pct}%)` : ""}`
+            : "n/a"
+        ),
+      ])
+    );
+    if (ctx.highest_risk || ctx.biggest_opportunity) {
+      nodes.push(
+        el("p", { class: "sub" }, [
+          ctx.highest_risk ? `Highest risk: ${ctx.highest_risk}. ` : "",
+          ctx.biggest_opportunity ? `Biggest opportunity: ${ctx.biggest_opportunity}.` : "",
+        ].join(""))
+      );
+    }
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No Watchdog cycle has run yet -- check back shortly."));
+  }
+
   nodes.push(el("h2", {}, "Top Movers"));
   if (breadth && (breadth.top_gainers.length || breadth.top_losers.length)) {
     nodes.push(el("h2", {}, "Top Gainers"));

@@ -201,22 +201,46 @@ class MarketScannerEngine:
 
     # ------------------------------------------------------------ AI filter
 
-    async def _ai_context(self) -> dict:
+    async def get_market_context(self) -> dict:
+        """The single place that turns the latest WatchdogSnapshot (v5.4 --
+        already-computed regime/risk/confidence/committee/consensus AND
+        Scenario Engine's expected_scenario/highest_risk/
+        biggest_opportunity, all persisted once per Watchdog cycle) into a
+        plain dict. Two consumers share this exact same shaping logic
+        instead of each re-deriving it: `_ai_context()` below (a subset,
+        for the AI-filter alignment-scoring functions) and the dashboard/
+        API/Telegram-facing reads (app/api/scanner.py, format_scanner_
+        dashboard()) that previously had no visibility into this context
+        at all outside of an actually-fired alert. get_latest_snapshot()
+        is a single cached-row SELECT, not a fresh agent-orchestrator run,
+        so calling this on every dashboard/API/Telegram request is cheap
+        and introduces no duplicate computation -- the expensive part (the
+        6-agent orchestrator cycle) still runs exactly once, on Watchdog's
+        own schedule."""
         snapshot = await self._watchdog_engine.get_latest_snapshot()
         if snapshot is None:
             return {
                 "regime": None,
+                "market_health": None,
                 "risk_score": None,
                 "confidence_score": None,
+                "trend_strength_score": None,
                 "committee_decision": None,
                 "committee_majority_pct": None,
                 "consensus": None,
+                "expected_scenario": None,
+                "expected_scenario_pct": None,
+                "highest_risk": None,
+                "biggest_opportunity": None,
+                "computed_at": None,
             }
         consensus = snapshot.consensus or {}
         return {
             "regime": snapshot.regime,
+            "market_health": snapshot.market_health,
             "risk_score": snapshot.risk_score,
             "confidence_score": snapshot.confidence_score,
+            "trend_strength_score": snapshot.trend_strength_score,
             "committee_decision": snapshot.committee_decision,
             # committee_confidence_pct is a Numeric(6,2) column -- asyncpg
             # returns decimal.Decimal for it, which breaks weighted_average's
@@ -230,6 +254,24 @@ class MarketScannerEngine:
                 else None
             ),
             "consensus": consensus or None,
+            "expected_scenario": snapshot.expected_scenario,
+            "expected_scenario_pct": snapshot.expected_scenario_pct,
+            "highest_risk": snapshot.highest_risk,
+            "biggest_opportunity": snapshot.biggest_opportunity,
+            "computed_at": snapshot.computed_at.isoformat() if snapshot.computed_at else None,
+        }
+
+    async def _ai_context(self) -> dict:
+        """Subset of get_market_context() shaped for _alignment_components()
+        -- same underlying WatchdogSnapshot read, not a second one."""
+        ctx = await self.get_market_context()
+        return {
+            "regime": ctx["regime"],
+            "risk_score": ctx["risk_score"],
+            "confidence_score": ctx["confidence_score"],
+            "committee_decision": ctx["committee_decision"],
+            "committee_majority_pct": ctx["committee_majority_pct"],
+            "consensus": ctx["consensus"],
         }
 
     def _alignment_components(self, ctx: dict, move_direction: str) -> dict:

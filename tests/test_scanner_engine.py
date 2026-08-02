@@ -39,6 +39,26 @@ def _engine(session_factory=None, session=None, watchdog_snapshot=None):
     return engine, deps, session
 
 
+def _watchdog_snapshot(**overrides) -> SimpleNamespace:
+    defaults = {
+        "regime": "risk_off",
+        "market_health": "Watch",
+        "risk_score": 70,
+        "confidence_score": 40,
+        "trend_strength_score": 55,
+        "committee_decision": "SELL",
+        "committee_confidence_pct": 75.0,
+        "consensus": {"bullish_pct": 20.0, "bearish_pct": 70.0, "agreement_score": 70.0},
+        "expected_scenario": "Deeper Correction",
+        "expected_scenario_pct": 60,
+        "highest_risk": "Macro liquidity tightening",
+        "biggest_opportunity": "Oversold bounce in majors",
+        "computed_at": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
 def _universe_entry(symbol: str, coingecko_id: str, rank: int) -> dict:
     return {"symbol": symbol, "name": symbol, "coingecko_id": coingecko_id, "market_cap_rank": rank}
 
@@ -142,14 +162,7 @@ async def test_run_cycle_escalation_is_one_alert_not_a_new_one_each_cycle():
 
 
 async def test_ai_filter_reads_from_latest_watchdog_snapshot_not_a_fresh_agent_run():
-    watchdog_snapshot = SimpleNamespace(
-        regime="risk_off",
-        risk_score=70,
-        confidence_score=40,
-        committee_decision="SELL",
-        committee_confidence_pct=75.0,
-        consensus={"bullish_pct": 20.0, "bearish_pct": 70.0, "agreement_score": 70.0},
-    )
+    watchdog_snapshot = _watchdog_snapshot()
     engine, deps, _ = _engine(watchdog_snapshot=watchdog_snapshot)
     deps["universe"].get_universe.return_value = [_universe_entry("PEPE", "pepe", 200)]
     deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 1.0, -9.0)]
@@ -164,6 +177,45 @@ async def test_ai_filter_reads_from_latest_watchdog_snapshot_not_a_fresh_agent_r
     assert detection["quality_score"] > 50
 
 
+async def test_get_market_context_exposes_full_watchdog_snapshot():
+    watchdog_snapshot = _watchdog_snapshot()
+    engine, deps, _ = _engine(watchdog_snapshot=watchdog_snapshot)
+
+    ctx = await engine.get_market_context()
+
+    assert ctx["regime"] == "risk_off"
+    assert ctx["market_health"] == "Watch"
+    assert ctx["risk_score"] == 70
+    assert ctx["committee_decision"] == "SELL"
+    assert ctx["committee_majority_pct"] == 75.0
+    assert ctx["expected_scenario"] == "Deeper Correction"
+    assert ctx["highest_risk"] == "Macro liquidity tightening"
+    assert ctx["biggest_opportunity"] == "Oversold bounce in majors"
+    deps["watchdog_engine"].get_latest_snapshot.assert_awaited_once()
+
+
+async def test_get_market_context_handles_no_snapshot_yet():
+    engine, _, _ = _engine(watchdog_snapshot=None)
+
+    ctx = await engine.get_market_context()
+
+    assert ctx == {
+        "regime": None,
+        "market_health": None,
+        "risk_score": None,
+        "confidence_score": None,
+        "trend_strength_score": None,
+        "committee_decision": None,
+        "committee_majority_pct": None,
+        "consensus": None,
+        "expected_scenario": None,
+        "expected_scenario_pct": None,
+        "highest_risk": None,
+        "biggest_opportunity": None,
+        "computed_at": None,
+    }
+
+
 async def test_ai_filter_handles_decimal_committee_confidence_pct_from_postgres():
     # Regression test: WatchdogSnapshot.committee_confidence_pct is a
     # Numeric(6,2) column -- asyncpg returns decimal.Decimal for it in
@@ -174,14 +226,7 @@ async def test_ai_filter_handles_decimal_committee_confidence_pct_from_postgres(
     # 'decimal.Decimal'" on every single run_cycle() call in production,
     # silently swallowed by compute_market_scan_job's try/except so the
     # scanner never persisted a single detection.
-    watchdog_snapshot = SimpleNamespace(
-        regime="risk_off",
-        risk_score=70,
-        confidence_score=40,
-        committee_decision="SELL",
-        committee_confidence_pct=Decimal("75.00"),
-        consensus={"bullish_pct": 20.0, "bearish_pct": 70.0, "agreement_score": 70.0},
-    )
+    watchdog_snapshot = _watchdog_snapshot(committee_confidence_pct=Decimal("75.00"))
     engine, deps, _ = _engine(watchdog_snapshot=watchdog_snapshot)
     deps["universe"].get_universe.return_value = [_universe_entry("PEPE", "pepe", 200)]
     deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 1.0, -9.0)]

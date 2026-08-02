@@ -1336,6 +1336,30 @@ def format_scanner_dashboard(dashboard: dict) -> str:
     lines.append(f"Pending alerts: {len(pending)} | Suppressed (last 50): {len(suppressed)}")
     lines.append("")
 
+    # Same WatchdogSnapshot already read by the AI filter every cycle --
+    # composed here rather than recomputed, so this is visible even when
+    # nothing has fired a HIGH/CRITICAL alert this cycle.
+    ctx = dashboard.get("market_context") or {}
+    if ctx.get("regime"):
+        lines.append("*Market Context*")
+        lines.append(
+            f"Regime: {ctx['regime'].replace('_', ' ').title()} "
+            f"({regime_direction_bucket(ctx['regime']).title()})"
+        )
+        if ctx.get("risk_score") is not None:
+            lines.append(f"Risk: {ctx['risk_score']}/100")
+        if ctx.get("confidence_score") is not None:
+            lines.append(f"Confidence: {ctx['confidence_score']}/100")
+        if ctx.get("committee_decision"):
+            majority = ctx.get("committee_majority_pct")
+            majority_str = f" ({majority}%)" if majority is not None else ""
+            lines.append(f"Committee: {ctx['committee_decision']}{majority_str}")
+        if ctx.get("expected_scenario"):
+            pct = ctx.get("expected_scenario_pct")
+            pct_str = f" ({pct}%)" if pct is not None else ""
+            lines.append(f"Expected Scenario: {ctx['expected_scenario']}{pct_str}")
+        lines.append("")
+
     if breadth and breadth.get("top_gainers"):
         lines.append("*Top Gainers*")
         for r in breadth["top_gainers"][:5]:

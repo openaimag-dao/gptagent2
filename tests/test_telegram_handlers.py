@@ -276,11 +276,13 @@ async def test_cmd_scanner_no_args_returns_combined_dashboard():
     engine.get_latest_sector_breadth.return_value = []
     engine.list_active_alerts.return_value = []
     engine.list_suppressed_alerts.return_value = []
+    engine.get_market_context.return_value = {}
 
     with patch("app.telegram.handlers.build_market_scanner_engine", return_value=engine):
         await cmd_scanner(message, command)
 
     engine.list_suppressed_alerts.assert_awaited_once_with(limit=50)
+    engine.get_market_context.assert_awaited_once()
     (text,), kwargs = message.answer.call_args
     assert "MARKET SCANNER" in text
 
