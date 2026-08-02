@@ -1312,6 +1312,91 @@ def test_format_scanner_dashboard_omits_market_context_when_no_snapshot_yet():
     assert "Market Context" not in text
 
 
+def test_format_scanner_dashboard_includes_smart_navigation_pointer_to_watchdog():
+    assert "View latest Watchdog events -- /watchdog events" in format_scanner_dashboard({})
+
+
+def test_format_replay_includes_smart_navigation_pointer_to_committee():
+    snapshot = {
+        "computed_at": "2026-01-01T00:00:00+00:00",
+        "regime": "bull",
+        "health_score": 70,
+        "trend_strength_score": 55,
+        "risk_score": 40,
+        "confidence_score": 60,
+        "consensus": None,
+        "portfolio_advice": None,
+        "alerts": [],
+    }
+    assert "See current Committee opinion -- /committee" in format_replay(snapshot)
+
+
+def test_format_committee_includes_smart_navigation_pointer_to_replay():
+    verdict = {
+        "majority_decision": "BUY",
+        "majority_pct": 70.0,
+        "dissent_pct": 30.0,
+        "confidence_pct": 70.0,
+        "supporting_evidence": [],
+        "opposing_evidence": [],
+        "minority_opinion": None,
+        "final_recommendation": "BUY",
+        "reasoning": "reasoning",
+    }
+    assert "Compare with historical Replay -- /replay" in format_committee(verdict)
+
+
+def test_format_consensus_includes_smart_navigation_pointer_to_committee():
+    result = ConsensusResult(
+        bullish_pct=70.0, bearish_pct=30.0, neutral_pct=0.0, agreement_score=70.0
+    )
+    assert "See Committee's structured verdict -- /committee" in format_consensus(result)
+
+
+def test_format_watchdog_dashboard_includes_smart_navigation_pointer_to_replay():
+    from app.telegram.formatters import format_watchdog_dashboard
+
+    dashboard = {
+        "market_brief": {
+            "is_market_healthy": True,
+            "market_health_label": "healthy",
+            "risk_direction": "stable",
+            "risk_reason": "no change",
+            "ai_opinion_changed": False,
+            "ai_opinion_reason": "no change",
+            "biggest_changes_today": [],
+            "needs_attention": [],
+        },
+        "current_status": {
+            "current_time": "2026-01-01T00:00:00",
+            "last_update": "2026-01-01T00:00:00",
+            "next_scan": "2026-01-01T00:05:00",
+            "scan_duration_ms": 100,
+            "market_health": "healthy",
+            "brain_status": "ok",
+            "replay_status": "ok",
+            "committee_status": "ok",
+            "consensus_status": "ok",
+        },
+        "market_overview": {
+            "regime": "bull",
+            "trend": "up",
+            "trend_strength": 50,
+            "momentum": 1.0,
+            "volatility": 20,
+            "confidence": 60,
+            "risk_score": 40,
+            "liquidity_score": 70,
+            "market_intelligence_score": 65,
+        },
+        "crypto_overview": [],
+        "macro_overview": [],
+        "ai_status": {"computed_at": None},
+        "what_changed": {"available": False},
+    }
+    assert "Open historical comparison -- /replay" in format_watchdog_dashboard(dashboard)
+
+
 def test_format_scanner_movers_empty():
     assert "No scan data yet" in format_scanner_movers(None)
     assert "No scan data yet" in format_scanner_movers({"total_scanned": 0})

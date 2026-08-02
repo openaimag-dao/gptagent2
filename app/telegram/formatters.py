@@ -15,6 +15,7 @@ from app.database.models import (
     SignalSnapshot,
 )
 from app.services.common.ai_insight import format_ai_insight_lines
+from app.services.common.navigation import nav_pointer
 from app.services.consensus.engine import ConsensusResult
 from app.services.shocks.detectors import regime_direction_bucket
 
@@ -502,6 +503,8 @@ def format_consensus(
     if result.invalidation_risk:
         lines.append("")
         lines.append(f"Invalidation risk: {result.invalidation_risk}")
+    lines.append("")
+    lines.append(nav_pointer("consensus"))
     return "\n".join(lines)
 
 
@@ -543,6 +546,8 @@ def format_committee(verdict: dict | None) -> str:
     if verdict.get("invalidation_risk"):
         lines.append("")
         lines.append(f"Invalidation risk: {verdict['invalidation_risk']}")
+    lines.append("")
+    lines.append(nav_pointer("committee"))
     return "\n".join(lines)
 
 
@@ -994,6 +999,7 @@ def format_watchdog_dashboard(dashboard: dict) -> str:
         format_watchdog_changes(dashboard["what_changed"]),
         "",
         "Use /watchdog events | providers | market | ai | changes | performance for more detail.",
+        nav_pointer("watchdog"),
     ]
     return "\n".join(sections)
 
@@ -1034,6 +1040,8 @@ def format_replay(snapshot: dict | None, insight: dict | None = None) -> str:
             f"Consensus: bullish {c['bullish_pct']}% / bearish {c['bearish_pct']}% / "
             f"neutral {c['neutral_pct']}% (conflict {c['conflict_pct']}%)"
         )
+    lines.append("")
+    lines.append(nav_pointer("replay"))
     return "\n".join(lines)
 
 
@@ -1259,6 +1267,8 @@ def format_brief(brief: dict) -> str:
             f"*Portfolio*: health {portfolio['health_score']}/100, "
             f"value {portfolio['total_value']:,.2f}"
         )
+    lines.append("")
+    lines.append(nav_pointer("brief"))
     return "\n".join(lines)
 
 
@@ -1543,6 +1553,7 @@ def format_scanner_dashboard(dashboard: dict) -> str:
         lines.append("")
 
     lines.append("Use /scanner movers | sectors | detections | pending for more detail.")
+    lines.append(nav_pointer("scanner"))
     return "\n".join(lines)
 
 
