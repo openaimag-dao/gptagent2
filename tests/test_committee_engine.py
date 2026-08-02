@@ -72,6 +72,35 @@ def test_split_vote_produces_minority_opinion_and_opposing_evidence():
     assert "moderate conviction" in verdict.final_recommendation
 
 
+def test_invalidation_risk_names_the_weakest_majority_supporter():
+    agent_outputs = {
+        "macro": _output("macro", "bearish", 40.0, "DXY strength is bearish for risk assets."),
+        "equity": _output("equity", "bearish", 10.0, "Weak breadth, low conviction bearish read."),
+        "news": _output("news", "bullish", 50.0, "Positive earnings surprises broadly."),
+    }
+    consensus = ConsensusResult(
+        bullish_pct=45.0,
+        bearish_pct=55.0,
+        neutral_pct=0.0,
+        agreement_score=55.0,
+        conflict_pct=45.0,
+        bullish_agents=["news"],
+        bearish_agents=["macro", "equity"],
+        neutral_agents=[],
+        unavailable_agents=[],
+        # macro carries most of the SELL side's weight; equity is the
+        # weakest supporter and should be named as the invalidation risk.
+        agent_weights={"macro": 40.0, "equity": 15.0, "news": 45.0},
+    )
+
+    verdict = convene_committee(agent_outputs, consensus)
+
+    assert verdict.majority_decision == "SELL"
+    assert verdict.invalidation_risk is not None
+    assert "equity" in verdict.invalidation_risk
+    assert "15.0%" in verdict.invalidation_risk
+
+
 def test_low_agreement_gives_low_conviction_recommendation():
     agent_outputs = {
         "macro": _output("macro", "neutral", 40.0, "Mixed macro signals."),
@@ -188,6 +217,7 @@ def test_to_dict_serializes_all_fields():
         "minority_opinion",
         "final_recommendation",
         "reasoning",
+        "invalidation_risk",
         "computed_at",
     }
 

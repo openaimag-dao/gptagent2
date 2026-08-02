@@ -443,12 +443,25 @@ def format_consensus(result: ConsensusResult | None) -> str:
         f"Bullish {result.bullish_pct}% | Bearish {result.bearish_pct}% | "
         f"Neutral {result.neutral_pct}%",
         f"Agreement: {result.agreement_score}% | Conflict: {result.conflict_pct}%",
-        "",
     ]
-    if result.bullish_agents:
-        lines.append(f"Bullish: {', '.join(result.bullish_agents)}")
-    if result.bearish_agents:
-        lines.append(f"Bearish: {', '.join(result.bearish_agents)}")
+    if result.strongest_agent:
+        lines.append(
+            f"Strongest influence: {result.strongest_agent} "
+            f"({result.agent_weights[result.strongest_agent]}% of vote weight)"
+        )
+    lines.append("")
+
+    def _bucket_lines(label: str, agents: list[str]) -> list[str]:
+        if not agents:
+            return []
+        out = [f"{label}:"]
+        for a in agents:
+            evidence = result.agent_evidence.get(a)
+            out.append(f"- {a}: {evidence}" if evidence else f"- {a}")
+        return out
+
+    lines.extend(_bucket_lines("Bullish", result.bullish_agents))
+    lines.extend(_bucket_lines("Bearish", result.bearish_agents))
     if result.neutral_agents:
         lines.append(f"Neutral: {', '.join(result.neutral_agents)}")
     if result.unavailable_agents:
@@ -473,11 +486,24 @@ def format_committee(verdict: dict | None) -> str:
     if verdict["supporting_evidence"]:
         lines.append("")
         lines.append("Supporting evidence:")
-        lines.extend(f"- {e['agent']}: {e['evidence']}" for e in verdict["supporting_evidence"])
+        lines.extend(
+            f"- {e['agent']} ({e['confidence']}% confidence): {e['evidence']}"
+            if e.get("confidence") is not None
+            else f"- {e['agent']}: {e['evidence']}"
+            for e in verdict["supporting_evidence"]
+        )
     if verdict["opposing_evidence"]:
         lines.append("")
         lines.append("Opposing evidence (minority):")
-        lines.extend(f"- {e['agent']}: {e['evidence']}" for e in verdict["opposing_evidence"])
+        lines.extend(
+            f"- {e['agent']} ({e['confidence']}% confidence): {e['evidence']}"
+            if e.get("confidence") is not None
+            else f"- {e['agent']}: {e['evidence']}"
+            for e in verdict["opposing_evidence"]
+        )
+    if verdict.get("invalidation_risk"):
+        lines.append("")
+        lines.append(f"Invalidation risk: {verdict['invalidation_risk']}")
     return "\n".join(lines)
 
 

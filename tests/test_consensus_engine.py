@@ -52,6 +52,34 @@ def test_compute_consensus_splits_by_confidence_weighted_vote():
     assert result.bearish_agents == ["macro"]
 
 
+def test_compute_consensus_exposes_strongest_agent_and_evidence():
+    # v8.0: "which engine has the strongest influence" should be real reuse
+    # of the same per-agent weight already tallied into the buckets, not a
+    # separate calculation, and each agent's own reasoning should be quoted
+    # (not just its name) so agree/disagree can be explained.
+    outputs = {
+        "news": AgentOutput(
+            agent="news", summary="*AGENT SUMMARY*\nHeadlines skew risk-on.", direction="bullish",
+            confidence=50.0,
+        ),
+        "macro": AgentOutput(
+            agent="macro", summary="*AGENT SUMMARY*\nDXY strength is bearish for risk assets.",
+            direction="bearish", confidence=30.0,
+        ),
+        "equity": AgentOutput(
+            agent="equity", summary="*AGENT SUMMARY*\nBreadth confirms the rally.",
+            direction="bullish", confidence=20.0,
+        ),
+    }
+
+    result = compute_consensus(outputs)
+
+    assert result.strongest_agent == "news"  # highest single-agent weight (50/100)
+    assert result.agent_weights["news"] == 50.0
+    assert result.agent_evidence["news"] == "Headlines skew risk-on."
+    assert result.agent_evidence["macro"] == "DXY strength is bearish for risk assets."
+
+
 def test_compute_consensus_excludes_unavailable_agents_from_the_tally():
     outputs = {
         "macro": _output("macro", None, None),

@@ -21,27 +21,11 @@ from datetime import UTC, datetime
 
 from app.services.agents.base import AgentOutput
 from app.services.agents.orchestrator import AgentOrchestrator
+from app.services.common.formatting import agent_evidence_excerpt
 from app.services.consensus.engine import ConsensusResult, compute_consensus
 from app.services.reliability.engine import AgentReliabilityEngine
 
-_EVIDENCE_EXCERPT_LENGTH = 200
-
 _DECISION_BY_DIRECTION: dict[str, str] = {"bullish": "BUY", "bearish": "SELL", "neutral": "HOLD"}
-
-
-def _excerpt(summary: str) -> str:
-    """First substantive line of an agent's summary -- skips the leading
-    "*AGENT SUMMARY*" markdown header every agent starts with (see
-    app/services/agents/*.py), so evidence quotes the agent's actual
-    reasoning rather than its section title."""
-    lines = [line.strip() for line in summary.strip().split("\n")]
-    content_lines = [
-        line for line in lines if line and not (line.startswith("*") and line.endswith("*"))
-    ]
-    text = content_lines[0] if content_lines else (lines[0] if lines else "")
-    if len(text) <= _EVIDENCE_EXCERPT_LENGTH:
-        return text
-    return text[:_EVIDENCE_EXCERPT_LENGTH].rstrip() + "..."
 
 
 @dataclass(frozen=True)
@@ -55,6 +39,11 @@ class CommitteeVerdict:
     minority_opinion: str | None = None
     final_recommendation: str = ""
     reasoning: str = ""
+    # v8.0 "what could invalidate it" -- deterministic, reused from the same
+    # per-agent weights ConsensusResult.agent_weights already computes:
+    # names the majority's weakest supporter and what dissent would rise to
+    # if it flipped, rather than inventing a new signal.
+    invalidation_risk: str | None = None
     computed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def to_dict(self) -> dict:
@@ -68,6 +57,7 @@ class CommitteeVerdict:
             "minority_opinion": self.minority_opinion,
             "final_recommendation": self.final_recommendation,
             "reasoning": self.reasoning,
+            "invalidation_risk": self.invalidation_risk,
             "computed_at": self.computed_at.isoformat(),
         }
 
@@ -106,7 +96,7 @@ def convene_committee(
             "agent": name,
             "direction": majority_direction,
             "confidence": agent_outputs[name].confidence,
-            "evidence": _excerpt(agent_outputs[name].summary),
+            "evidence": agent_evidence_excerpt(agent_outputs[name].summary),
         }
         for name in supporting_names
         if name in agent_outputs
@@ -116,7 +106,7 @@ def convene_committee(
             "agent": name,
             "direction": direction,
             "confidence": agent_outputs[name].confidence,
-            "evidence": _excerpt(agent_outputs[name].summary),
+            "evidence": agent_evidence_excerpt(agent_outputs[name].summary),
         }
         for name, direction in opposing_names_by_direction.items()
         if name in agent_outputs
@@ -151,6 +141,24 @@ def convene_committee(
         reasoning_parts.append(f"No vote from: {', '.join(consensus.unavailable_agents)}.")
     reasoning = " ".join(reasoning_parts)
 
+    invalidation_risk = None
+    weights = consensus.agent_weights
+    weakest_supporter = min(
+        (n for n in supporting_names if n in weights), key=lambda n: weights[n], default=None
+    )
+    if weakest_supporter is not None:
+        invalidation_risk = (
+            f"{weakest_supporter} contributes the least weight to the {majority_decision} "
+            f"majority ({weights[weakest_supporter]}%) -- if it reverses, dissent would rise "
+            f"toward {round(dissent_pct + weights[weakest_supporter], 1)}%."
+        )
+    elif opposing_evidence:
+        invalidation_risk = (
+            f"{dissent_pct}% already opposes "
+            f"({', '.join(sorted(opposing_names_by_direction))}); no majority-side vote weight "
+            "data is available to gauge how close a flip would be."
+        )
+
     return CommitteeVerdict(
         majority_decision=majority_decision,
         majority_pct=majority_pct,
@@ -161,6 +169,7 @@ def convene_committee(
         minority_opinion=minority_opinion,
         final_recommendation=final_recommendation,
         reasoning=reasoning,
+        invalidation_risk=invalidation_risk,
     )
 
 

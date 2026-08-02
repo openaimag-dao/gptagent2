@@ -142,11 +142,16 @@ def test_format_consensus_present():
         agreement_score=70.0,
         bullish_agents=["news", "equity"],
         bearish_agents=["macro"],
+        agent_weights={"news": 40.0, "equity": 30.0, "macro": 30.0},
+        agent_evidence={"news": "Headlines skew risk-on.", "macro": "DXY strength weighs."},
     )
     text = format_consensus(result)
     assert "Bullish 70.0%" in text
-    assert "news, equity" in text
+    assert "news" in text
+    assert "equity" in text
     assert "macro" in text
+    assert "Strongest influence: news" in text
+    assert "Headlines skew risk-on." in text
 
 
 def test_format_learning_none():
@@ -447,19 +452,26 @@ def test_format_committee_present():
         "majority_pct": 70.0,
         "dissent_pct": 30.0,
         "confidence_pct": 70.0,
-        "supporting_evidence": [{"agent": "macro", "evidence": "Bullish backdrop."}],
-        "opposing_evidence": [{"agent": "equity", "evidence": "Weak breadth."}],
+        "supporting_evidence": [
+            {"agent": "macro", "confidence": 80.0, "evidence": "Bullish backdrop."}
+        ],
+        "opposing_evidence": [
+            {"agent": "equity", "confidence": 55.0, "evidence": "Weak breadth."}
+        ],
         "minority_opinion": "equity (bearish): Weak breadth.",
         "final_recommendation": "BUY (high conviction)",
         "reasoning": "Majority decision: BUY with 70.0% of weighted committee votes (macro).",
+        "invalidation_risk": "macro contributes the least weight to the BUY majority (70.0%).",
     }
     text = format_committee(verdict)
     assert "AI INVESTMENT COMMITTEE" in text
     assert "BUY (high conviction)" in text
     assert "Dissent: 30.0%" in text
     assert "Supporting evidence" in text
+    assert "80.0% confidence" in text
     assert "Opposing evidence (minority)" in text
     assert "Weak breadth." in text
+    assert "Invalidation risk:" in text
 
 
 def test_format_whatif_none():

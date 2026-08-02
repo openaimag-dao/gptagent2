@@ -5,6 +5,26 @@ is defined once."""
 
 from app.database.models import AssetPrice
 
+_EVIDENCE_EXCERPT_LENGTH = 200
+
+
+def agent_evidence_excerpt(summary: str, max_length: int = _EVIDENCE_EXCERPT_LENGTH) -> str:
+    """First substantive line of an agent's summary -- skips the leading
+    "*AGENT SUMMARY*" markdown header every agent starts with (see
+    app/services/agents/*.py), so a quoted "evidence" excerpt is the
+    agent's actual reasoning, not its section title. Shared by
+    CommitteeEngine (supporting/opposing evidence) and ConsensusEngine
+    (per-agent evidence behind the agree/disagree split) so both read the
+    same real text instead of each re-deriving their own excerpt."""
+    lines = [line.strip() for line in summary.strip().split("\n")]
+    content_lines = [
+        line for line in lines if line and not (line.startswith("*") and line.endswith("*"))
+    ]
+    text = content_lines[0] if content_lines else (lines[0] if lines else "")
+    if len(text) <= max_length:
+        return text
+    return text[:max_length].rstrip() + "..."
+
 
 def format_asset_lines(assets: list[AssetPrice], symbols: tuple[str, ...]) -> list[str]:
     by_symbol = {a.symbol: a for a in assets}
