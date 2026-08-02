@@ -182,11 +182,12 @@ def build_institutional_report(
     scenarios = (report.institutional_summary or {}).get("scenarios")
     _, _, highest_risk, biggest_opportunity = scenario_extremes(scenarios)
 
-    executive_summary = (
-        f"{report.regime.replace('_', ' ').title()} regime, {report.risk_level} risk "
-        f"(bull {report.bull_score} / bear {report.bear_score}, "
-        f"{report.confidence_pct}% confidence). {analysis.get('what_changed', '')}"
-    ).strip()
+    # v9.0 noise pass: the regime/risk/bull-bear/confidence numbers are
+    # already shown as their own header fields everywhere this is rendered
+    # (Telegram's report header lines, the dashboard's report cards) --
+    # restating them as a sentence prefix here duplicated that, so the
+    # summary is just the LLM's real narrative of what changed.
+    executive_summary = analysis.get("what_changed", "").strip()
 
     market_drivers = (
         " ".join(

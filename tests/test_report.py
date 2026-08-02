@@ -170,8 +170,7 @@ def test_build_institutional_report_composes_from_analysis_and_scenarios():
 
     ir = build_institutional_report(report, sector_breadth)
 
-    assert "Risk On regime" in ir["executive_summary"]
-    assert "BTC broke above 65k." in ir["executive_summary"]
+    assert ir["executive_summary"] == "BTC broke above 65k."
     assert "Soft Landing" in ir["biggest_opportunity"]
     assert "Risk Off" in ir["biggest_risk"]
     assert "Spot ETF inflows." in ir["market_drivers"]

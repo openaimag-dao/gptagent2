@@ -806,8 +806,7 @@ async function renderWatchdog() {
   nodes.push(el("h2", {}, "Market Overview"));
   nodes.push(
     el("div", { class: "grid" }, [
-      card("Regime", (mo.regime || "unknown").replace(/_/g, " ")),
-      card("Trend", mo.trend || "n/a"),
+      card("Regime", (mo.regime || "unknown").replace(/_/g, " "), mo.trend ? `Trend: ${mo.trend}` : null),
       card("Trend Strength", fmtNum(mo.trend_strength, 0)),
       card("Momentum", fmtNum(mo.momentum, 1)),
       card("Volatility", fmtNum(mo.volatility, 0)),

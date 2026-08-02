@@ -49,6 +49,7 @@ from app.telegram.formatters import (
     format_technical,
     format_watchdog,
     format_watchdog_brief,
+    format_watchdog_market,
     format_weekly_review,
     format_whatif,
 )
@@ -436,6 +437,24 @@ def test_format_watchdog_shows_sent_and_suppressed():
     assert "sent" in text
     assert "suppressed" in text
     assert "(85% AI confidence)" in text
+
+
+def test_format_watchdog_market_merges_trend_into_regime_line():
+    market_overview = {
+        "regime": "risk_on",
+        "trend": "Bullish",
+        "trend_strength": 60,
+        "momentum": 1.5,
+        "volatility": 40,
+        "confidence": 70,
+        "risk_score": 30,
+        "liquidity_score": 55,
+        "market_intelligence_score": 65,
+    }
+    text = format_watchdog_market(market_overview, [], [])
+    assert "Regime: Risk On (Bullish)" in text
+    # Trend is no longer a separate labeled fact on its own line.
+    assert "Trend:" not in text
 
 
 def _global_score(**overrides) -> GlobalMarketScore:
@@ -1141,8 +1160,7 @@ def test_format_scanner_alert_includes_mission_required_fields():
     assert "Current Price:" in text
     assert "Price Change:" in text
     assert "Volume Change:" in text
-    assert "Market Regime:" in text
-    assert "Trend:" in text
+    assert "Market Regime: Risk On (Bullish)" in text  # trend merged in as a parenthetical
     assert "Risk:" in text
     assert "Confidence:" in text
     assert "Committee Opinion: BUY (80.0%)" in text
