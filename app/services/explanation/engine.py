@@ -120,3 +120,32 @@ class ExplanationEngine:
             "risk_factors": risk_factors,
             "alternative_view": alternative_view,
         }
+
+
+def condense_explanation(evidence: dict | None) -> str | None:
+    """v12.0 P1 -- ExplanationEngine's full evidence pack was never
+    referenced by Scanner/Watchdog's own HIGH/CRITICAL alerts (only /why
+    ever showed it), so an alert shipped with no "why should I trust this"
+    context even though the engine assembling exactly that already
+    exists. Condenses the same already-computed evidence pack into a
+    single line for a Telegram alert -- no new data, no new computation.
+    Returns None (never a fabricated placeholder) when there's nothing to
+    say."""
+    if not evidence:
+        return None
+    parts = []
+    indicator_names = [i["name"].replace("_", " ") for i in evidence.get("indicators") or []][:3]
+    if indicator_names:
+        parts.append(f"Triggered: {', '.join(indicator_names)}")
+    historical = evidence.get("historical_examples") or []
+    if historical:
+        avg_similarity = sum(h["similarity_score"] for h in historical) / len(historical)
+        plural = "s" if len(historical) != 1 else ""
+        parts.append(f"{len(historical)} similar setup{plural} (avg {avg_similarity:.0f}% similar)")
+    news = evidence.get("supporting_news") or []
+    if news:
+        plural = "s" if len(news) != 1 else ""
+        parts.append(f"{len(news)} supporting news item{plural}")
+    if not parts:
+        return None
+    return "Why: " + " | ".join(parts)

@@ -18,7 +18,7 @@ def _session_factory():
     return MagicMock(return_value=session), session
 
 
-def _engine(session_factory=None, session=None, watchdog_snapshot=None):
+def _engine(session_factory=None, session=None, watchdog_snapshot=None, explanation_engine=None):
     if session_factory is None:
         session_factory, session = _session_factory()
     universe = AsyncMock()
@@ -28,7 +28,14 @@ def _engine(session_factory=None, session=None, watchdog_snapshot=None):
     technical_engine = AsyncMock()
     technical_engine.get_latest.return_value = None
     engine = MarketScannerEngine(
-        session_factory, universe, markets_client, watchdog_engine, technical_engine, None, 500
+        session_factory,
+        universe,
+        markets_client,
+        watchdog_engine,
+        technical_engine,
+        None,
+        500,
+        explanation_engine=explanation_engine,
     )
     deps = {
         "universe": universe,
@@ -376,3 +383,78 @@ def test_scan_symbol_falls_back_to_new_high_low_without_a_breakout_event():
     scan = engine._scan_symbol(reading, history, None)
 
     assert scan["breakout_label"] == "New Daily High"
+
+
+async def test_run_cycle_attaches_explanation_evidence_pack_to_critical_alert():
+    explanation_engine = AsyncMock()
+    explanation_engine.build.return_value = {
+        "indicators": [{"name": "rsi_oversold", "triggered": True}],
+        "historical_examples": [],
+        "supporting_news": [{"title": "x"}],
+    }
+    engine, deps, _ = _engine(explanation_engine=explanation_engine)
+    deps["universe"].get_universe.return_value = [_universe_entry("PEPE", "pepe", 200)]
+    deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 0.00001, 12.0)]
+
+    result = await engine.run_cycle()
+
+    detection = result["processed"][0]
+    assert detection["tier"] == "critical"
+    explanation_engine.build.assert_awaited_once_with("PEPE")
+    assert "Why: Triggered: rsi oversold | 1 supporting news item" in detection["message"]
+
+
+async def test_run_cycle_does_not_call_explanation_engine_without_one_configured():
+    engine, deps, _ = _engine()  # explanation_engine=None default
+    deps["universe"].get_universe.return_value = [_universe_entry("PEPE", "pepe", 200)]
+    deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 0.00001, 12.0)]
+
+    result = await engine.run_cycle()
+
+    detection = result["processed"][0]
+    assert "Why:" not in detection["message"]
+
+
+async def test_process_detection_skips_explanation_engine_for_suppressed_detection():
+    explanation_engine = AsyncMock()
+    explanation_engine.build.return_value = None
+    session_factory, session = _session_factory()
+    engine, deps, _ = _engine(session_factory, session, explanation_engine=explanation_engine)
+    deps["universe"].get_universe.return_value = [_universe_entry("PEPE", "pepe", 200)]
+
+    # Cycle 1: a "high" tier move creates a new active episode.
+    deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 1.0, 8.5)]
+    await engine.run_cycle()
+    explanation_engine.build.reset_mock()
+
+    # Cycle 2: an existing active episode of the same alert_key/tier is
+    # returned by the (mocked) lookup -- suppressed, so the evidence pack
+    # must never be built for it.
+    existing_row = SimpleNamespace(
+        id=1,
+        alert_key="scanner:price_event:PEPE:up",
+        tier="high",
+        active=True,
+        telegram_message_ids={},
+        last_updated_at=datetime.now(UTC),
+    )
+    session.scalar = AsyncMock(return_value=existing_row)
+    deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 1.0, 8.6)]
+    result = await engine.run_cycle()
+
+    assert result["processed"][0]["action"] == "suppress"
+    explanation_engine.build.assert_not_awaited()
+
+
+async def test_run_cycle_explanation_engine_failure_does_not_break_alert_pipeline():
+    explanation_engine = AsyncMock()
+    explanation_engine.build.side_effect = RuntimeError("boom")
+    engine, deps, _ = _engine(explanation_engine=explanation_engine)
+    deps["universe"].get_universe.return_value = [_universe_entry("PEPE", "pepe", 200)]
+    deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 0.00001, 12.0)]
+
+    result = await engine.run_cycle()
+
+    detection = result["processed"][0]
+    assert detection["action"] == "new"
+    assert detection["alert_log_id"] == 1

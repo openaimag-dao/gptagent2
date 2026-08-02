@@ -21,7 +21,7 @@ def _session_factory(session):
     return MagicMock(return_value=session)
 
 
-def _engine(session=None) -> tuple[CriticalAlertEngine, MagicMock]:
+def _engine(session=None, explanation_engine=None) -> tuple[CriticalAlertEngine, MagicMock]:
     session = session or AsyncMock()
     session_factory = _session_factory(session)
     engine = CriticalAlertEngine(
@@ -33,6 +33,7 @@ def _engine(session=None) -> tuple[CriticalAlertEngine, MagicMock]:
         AsyncMock(),  # agent_orchestrator
         AsyncMock(),  # reliability_engine
         AsyncMock(),  # similar_market_engine
+        explanation_engine=explanation_engine,
     )
     return engine, session
 
@@ -231,3 +232,79 @@ async def test_run_cycle_suppresses_individual_alerts_folded_into_multi_asset_sh
 
     categories = [r["category"] for r in results]
     assert categories == ["multi_asset_shock"]  # BTC/ETH/SOL folded into one, not fired separately
+
+
+async def test_high_tier_new_episode_appends_explanation_evidence_pack():
+    explanation_engine = AsyncMock()
+    explanation_engine.build.return_value = {
+        "indicators": [{"name": "rsi_oversold", "triggered": True}],
+        "historical_examples": [{"similarity_score": 82.0}, {"similarity_score": 90.0}],
+        "supporting_news": [{"title": "x"}],
+    }
+    engine, session = _engine(explanation_engine=explanation_engine)
+    session.scalar.return_value = None
+
+    with (
+        _patched_settings(),
+        patch(
+            "app.telegram.broadcast.send_text_to_with_id", AsyncMock(return_value=999)
+        ) as mock_send,
+    ):
+        result = await engine._process_envelope(_envelope(tier="high"), datetime.now(UTC))
+
+    explanation_engine.build.assert_awaited_once_with("BTC")
+    assert "Why: Triggered: rsi oversold" in result["message"]
+    assert "2 similar setups (avg 86% similar)" in result["message"]
+    assert "1 supporting news item" in result["message"]
+    mock_send.assert_awaited()
+    sent_text = mock_send.call_args.args[1]
+    assert "Why:" in sent_text
+
+
+async def test_suppressed_action_does_not_call_explanation_engine():
+    explanation_engine = AsyncMock()
+    existing = _existing_row(tier="critical")
+    engine, session = _engine(explanation_engine=explanation_engine)
+    session.scalar.return_value = existing
+
+    with (
+        _patched_settings(),
+        patch("app.telegram.broadcast.send_text_to_with_id", AsyncMock()),
+    ):
+        result = await engine._process_envelope(_envelope(tier="high"), datetime.now(UTC))
+
+    assert result["action"] == "suppress"
+    explanation_engine.build.assert_not_awaited()
+
+
+async def test_low_tier_does_not_call_explanation_engine():
+    explanation_engine = AsyncMock()
+    engine, session = _engine(explanation_engine=explanation_engine)
+    session.scalar.return_value = None
+
+    with (
+        _patched_settings(),
+        patch("app.telegram.broadcast.send_text_to_with_id", AsyncMock()),
+    ):
+        await engine._process_envelope(_envelope(tier="important"), datetime.now(UTC))
+
+    explanation_engine.build.assert_not_awaited()
+
+
+async def test_explanation_engine_failure_does_not_break_alert_pipeline():
+    explanation_engine = AsyncMock()
+    explanation_engine.build.side_effect = RuntimeError("boom")
+    engine, session = _engine(explanation_engine=explanation_engine)
+    session.scalar.return_value = None
+
+    with (
+        _patched_settings(),
+        patch(
+            "app.telegram.broadcast.send_text_to_with_id", AsyncMock(return_value=999)
+        ) as mock_send,
+    ):
+        result = await engine._process_envelope(_envelope(tier="high"), datetime.now(UTC))
+
+    assert result["action"] == "new"
+    assert result["notified"] is True
+    mock_send.assert_awaited()

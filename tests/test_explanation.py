@@ -9,7 +9,7 @@ from app.database.models import (
     SignalSnapshot,
 )
 from app.services.analysis.regime import MarketRegime
-from app.services.explanation.engine import ExplanationEngine
+from app.services.explanation.engine import ExplanationEngine, condense_explanation
 
 
 class _StubExplanationEngine(ExplanationEngine):
@@ -83,3 +83,36 @@ async def test_build_assembles_evidence_from_every_source():
     assert [n["title"] for n in result["supporting_news"]] == ["bull item"]
     assert result["risk_factors"] is None
     assert result["alternative_view"]["key"] == "risk_off"
+
+
+def test_condense_explanation_returns_none_for_empty_evidence():
+    assert condense_explanation(None) is None
+    assert condense_explanation({}) is None
+    empty_evidence = {"indicators": [], "historical_examples": [], "supporting_news": []}
+    assert condense_explanation(empty_evidence) is None
+
+
+def test_condense_explanation_joins_available_parts():
+    evidence = {
+        "indicators": [
+            {"name": "nasdaq_up", "triggered": True},
+            {"name": "vix_up", "triggered": True},
+        ],
+        "historical_examples": [{"similarity_score": 80.0}],
+        "supporting_news": [{"title": "a"}, {"title": "b"}],
+    }
+
+    result = condense_explanation(evidence)
+
+    assert result == (
+        "Why: Triggered: nasdaq up, vix up | 1 similar setup (avg 80% similar) "
+        "| 2 supporting news items"
+    )
+
+
+def test_condense_explanation_partial_evidence_omits_missing_parts():
+    evidence = {"indicators": [], "historical_examples": [], "supporting_news": [{"title": "a"}]}
+
+    result = condense_explanation(evidence)
+
+    assert result == "Why: 1 supporting news item"
