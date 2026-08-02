@@ -96,6 +96,8 @@ class ExplanationEngine:
                 "fear_score": global_score.fear_score,
                 "macro_pressure_score": global_score.macro_pressure_score,
                 "risk_off_score": global_score.risk_off_score,
+                "risk_score": global_score.risk_score,
+                "confidence_score": global_score.confidence_score,
             }
             if global_score is not None
             else None

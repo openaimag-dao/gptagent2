@@ -113,7 +113,7 @@ async def test_compute_brief_assembles_all_sections():
 
     global_score_engine = AsyncMock()
     global_score_engine.get_latest.return_value = type(
-        "GS", (), {"risk_off_score": 40, "liquidity_score": 60}
+        "GS", (), {"risk_off_score": 40, "liquidity_score": 60, "global_score": 65}
     )()
 
     portfolio_engine = AsyncMock()
@@ -147,6 +147,45 @@ async def test_compute_brief_assembles_all_sections():
     assert brief["top_opportunities"] == []
     assert brief["portfolio"] == {"empty": True, "positions": []}
     assert brief["regime"] == "bull"
+    # Prefers the freshly-fetched Global Market Score (65) over the possibly
+    # stale Replay snapshot's copy of an earlier global_score (60).
+    assert brief["health_score"] == 65
+
+
+async def test_compute_brief_falls_back_to_replay_health_score_without_global_score():
+    committee_engine = AsyncMock()
+    committee_engine.convene.return_value = None
+
+    global_score_engine = AsyncMock()
+    global_score_engine.get_latest.return_value = None
+
+    portfolio_engine = AsyncMock()
+    portfolio_engine.get_or_create.return_value = type("P", (), {"id": 1})()
+    portfolio_engine.compute_health.return_value = {"empty": True, "positions": []}
+
+    replay_engine = AsyncMock()
+    replay_engine.get_latest.return_value = _snapshot(health_score=60)
+
+    probability_engine = AsyncMock()
+    probability_engine.get_latest.return_value = None
+    breakout_engine = AsyncMock()
+    breakout_engine.get_latest.return_value = None
+    portfolio_advisor = AsyncMock()
+    portfolio_advisor.advise.return_value = None
+
+    engine = _engine(
+        probability_engine=probability_engine,
+        breakout_engine=breakout_engine,
+        portfolio_advisor=portfolio_advisor,
+        portfolio_engine=portfolio_engine,
+        committee_engine=committee_engine,
+        global_score_engine=global_score_engine,
+        replay_engine=replay_engine,
+    )
+
+    brief = await engine.compute_brief()
+
+    assert brief["risk"] is None
     assert brief["health_score"] == 60
 
 

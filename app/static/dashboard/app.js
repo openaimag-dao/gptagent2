@@ -640,6 +640,8 @@ async function renderRisk() {
         scoreBar("Risk-On", data.global_score.risk_on_score),
         scoreBar("Fear", data.global_score.fear_score),
         scoreBar("Macro Pressure", data.global_score.macro_pressure_score),
+        scoreBar("Risk Score", data.global_score.risk_score),
+        scoreBar("Confidence", data.global_score.confidence_score),
       ])
     );
   } else {
@@ -1233,6 +1235,8 @@ async function renderExplanation() {
             card("Fear", d.risk_factors.fear_score),
             card("Macro Pressure", d.risk_factors.macro_pressure_score),
             card("Risk-Off", d.risk_factors.risk_off_score),
+            card("Risk Score", d.risk_factors.risk_score),
+            card("Confidence", d.risk_factors.confidence_score),
           ])
         );
       }
