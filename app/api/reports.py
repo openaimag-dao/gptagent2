@@ -7,6 +7,7 @@ from app.services.analysis.regime import RegimeDetector
 from app.services.analysis.report import ReportGenerator, build_institutional_report
 from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
+from app.services.replay.engine import get_replay_comparison
 from app.services.scanner.engine import build_market_scanner_engine
 from app.services.signals.engine import SignalEngine
 
@@ -29,7 +30,9 @@ def build_report_generator() -> ReportGenerator:
 
 
 async def _serialize(report) -> dict:
+    session_factory = get_session_factory()
     sector_breadth = await build_market_scanner_engine().get_latest_sector_breadth()
+    replay_comparison = await get_replay_comparison(session_factory)
     return {
         "id": str(report.id),
         "report_type": report.report_type,
@@ -41,7 +44,9 @@ async def _serialize(report) -> dict:
         "market_summary": report.market_summary,
         "correlations_summary": report.correlations_summary,
         "institutional_summary": report.institutional_summary,
-        "institutional_report": build_institutional_report(report, sector_breadth),
+        "institutional_report": build_institutional_report(
+            report, sector_breadth, replay_comparison
+        ),
         "analysis": report.analysis,
         "generated_at": report.generated_at.isoformat(),
     }

@@ -140,15 +140,43 @@ def derive_risk_level(regime: MarketRegime) -> str:
     return "moderate"
 
 
-def build_institutional_report(report: Report, sector_breadth: list[dict] | None = None) -> dict:
+def _format_replay_comparison(replay_comparison: dict | None) -> str | None:
+    """v9.0 "Reports should reference Replay" -- turns a
+    get_replay_comparison() dict into a one-line addendum for Historical
+    Comparison. Genuinely different content from the LLM's own narrative
+    (which grounds in technical/price analogs): this is a real regime/
+    health/risk delta Replay already computed, not a restatement."""
+    if replay_comparison is None:
+        return None
+    diff = replay_comparison["diff"]
+    hours_ago = replay_comparison["hours_ago"]
+    parts = []
+    if diff["regime"]["changed"]:
+        parts.append(f"regime shifted {diff['regime']['from']} -> {diff['regime']['to']}")
+    for field, label in (("health_score", "health"), ("risk_score", "risk")):
+        entry = diff[field]
+        if entry["delta"]:
+            parts.append(f"{label} {entry['delta']:+d}")
+    if not parts:
+        return f"No material change vs. {hours_ago}h ago (Replay)."
+    return f"Vs. {hours_ago}h ago (Replay): " + "; ".join(parts) + "."
+
+
+def build_institutional_report(
+    report: Report,
+    sector_breadth: list[dict] | None = None,
+    replay_comparison: dict | None = None,
+) -> dict:
     """Restructures a persisted Report into the institutional-research shape
     v8.0 calls for -- Executive Summary, Biggest Opportunity, Biggest Risk,
     Market Drivers, Sector Rotation, Historical Comparison, AI Conclusion,
     What to Watch Next. Every field is a direct read or template composition
     of report.analysis/report.institutional_summary (both already produced
     by generate_and_store()) plus, for sector rotation, the Market Scanner's
-    already-computed sector breadth -- no new LLM call, no fabricated
-    figures, no second computation of anything Scenario Engine already did.
+    already-computed sector breadth, and for historical comparison, Replay's
+    own regime/health/risk delta (get_replay_comparison()) -- no new LLM
+    call, no fabricated figures, no second computation of anything Scenario
+    Engine already did.
     """
     analysis = report.analysis
     scenarios = (report.institutional_summary or {}).get("scenarios")
@@ -183,6 +211,11 @@ def build_institutional_report(report: Report, sector_breadth: list[dict] | None
             "Sector breadth unavailable -- the Market Scanner has not completed a cycle yet."
         )
 
+    historical_comparison = analysis.get("historical_comparison", "n/a")
+    replay_note = _format_replay_comparison(replay_comparison)
+    if replay_note:
+        historical_comparison = f"{historical_comparison} {replay_note}"
+
     return {
         "executive_summary": executive_summary or "No summary available.",
         "biggest_opportunity": biggest_opportunity or "No bullish scenario currently dominant.",
@@ -191,7 +224,7 @@ def build_institutional_report(report: Report, sector_breadth: list[dict] | None
         "market_drivers": market_drivers,
         "institutional_behavior": analysis.get("institutional_behavior", "n/a"),
         "sector_rotation": sector_rotation,
-        "historical_comparison": analysis.get("historical_comparison", "n/a"),
+        "historical_comparison": historical_comparison,
         "ai_conclusion": analysis.get("actionable_insights", "n/a"),
         "what_to_watch_next": analysis.get("key_events_today", "n/a"),
     }

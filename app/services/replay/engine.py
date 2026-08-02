@@ -12,7 +12,7 @@ yet -- never a fabricated placeholder.
 """
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -109,6 +109,43 @@ async def get_latest_consensus(session_factory: async_sessionmaker[AsyncSession]
             select(MarketSnapshot).order_by(MarketSnapshot.computed_at.desc()).limit(1)
         )
     return row.consensus if row is not None else None
+
+
+async def get_replay_comparison(
+    session_factory: async_sessionmaker[AsyncSession], hours_ago: int = 24
+) -> dict | None:
+    """A Replay-derived "how has the market changed" comparison -- the same
+    nearest-snapshot lookup TerminalEngine.compute_historical_comparison()
+    uses, exposed as a standalone reader (no MarketReplayEngine
+    construction, same rationale as get_latest_consensus() above) so other
+    engines can reference Replay's own history without paying its ~10
+    write-path dependencies. v9.0 "Reports should reference Replay."
+    Returns None when there isn't at least two distinct snapshots to
+    compare -- never a fabricated comparison.
+    """
+    async with session_factory() as session:
+        latest = await session.scalar(
+            select(MarketSnapshot).order_by(MarketSnapshot.computed_at.desc()).limit(1)
+        )
+        if latest is None:
+            return None
+        target_time = latest.computed_at - timedelta(hours=hours_ago)
+        earlier = await session.scalar(
+            select(MarketSnapshot)
+            .where(MarketSnapshot.computed_at <= target_time)
+            .order_by(MarketSnapshot.computed_at.desc())
+            .limit(1)
+        )
+        if earlier is None:
+            earlier = await session.scalar(
+                select(MarketSnapshot)
+                .where(MarketSnapshot.computed_at > target_time)
+                .order_by(MarketSnapshot.computed_at.asc())
+                .limit(1)
+            )
+    if earlier is None or earlier.id == latest.id:
+        return None
+    return {"hours_ago": hours_ago, "diff": diff_snapshots(earlier, latest)}
 
 
 class MarketReplayEngine:

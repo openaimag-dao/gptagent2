@@ -45,7 +45,11 @@ from app.services.probability.engine import ProbabilityEngine
 from app.services.quality.engine import PredictionQualityEngine
 from app.services.ranking.engine import RankingEngine
 from app.services.reliability.engine import AgentReliabilityEngine
-from app.services.replay.engine import MarketReplayEngine, get_latest_consensus
+from app.services.replay.engine import (
+    MarketReplayEngine,
+    get_latest_consensus,
+    get_replay_comparison,
+)
 from app.services.research.engine import ResearchEngine
 from app.services.research.impact import EventImpactEngine
 from app.services.scanner.engine import build_market_scanner_engine
@@ -471,8 +475,10 @@ async def cmd_report(message: Message) -> None:
         await _answer(message, format_report(None))
         return
 
+    session_factory = get_session_factory()
     sector_breadth = await build_market_scanner_engine().get_latest_sector_breadth()
-    institutional_report = build_institutional_report(report, sector_breadth)
+    replay_comparison = await get_replay_comparison(session_factory)
+    institutional_report = build_institutional_report(report, sector_breadth, replay_comparison)
     await _answer(message, format_report(report, institutional_report))
 
 
