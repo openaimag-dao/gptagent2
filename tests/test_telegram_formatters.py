@@ -358,6 +358,7 @@ def test_format_watchdog_shows_sent_and_suppressed():
                 "alert_type": "flash_crash",
                 "message": "BTC crashed -10.00% in 24h.",
                 "conviction_tier": "Strong",
+                "confidence_pct": 85,
                 "broadcast": True,
             },
         },
@@ -368,6 +369,7 @@ def test_format_watchdog_shows_sent_and_suppressed():
                 "alert_type": "funding_shift",
                 "message": "Funding-rate momentum rising.",
                 "conviction_tier": "Medium",
+                "confidence_pct": None,
                 "broadcast": False,
             },
         },
@@ -376,6 +378,7 @@ def test_format_watchdog_shows_sent_and_suppressed():
     assert "flash_crash" in text
     assert "sent" in text
     assert "suppressed" in text
+    assert "(85% AI confidence)" in text
 
 
 def _global_score(**overrides) -> GlobalMarketScore:
@@ -933,6 +936,24 @@ def test_format_critical_alert_low_quality_omits_reasons():
     envelope["quality_components"] = {k: None for k in envelope["quality_components"]}
     text = format_critical_alert(envelope, "important", None)
     assert "Reasons:" not in text
+
+
+def test_format_critical_alert_states_how_unusual_the_move_is():
+    envelope = _shock_envelope()
+    envelope["quality_components"]["historical_similarity"] = 72.0
+    text = format_critical_alert(envelope, "high", 82.0)
+    assert "How Unusual: 72.0% of similar historical moves continued down afterward" in text
+    assert "what AI expects next" in text
+
+
+def test_format_critical_alert_states_what_changed_on_escalation():
+    text = format_critical_alert(_shock_envelope(), "critical", 90.0, previous_tier="high")
+    assert "What Changed: escalated from HIGH to CRITICAL." in text
+
+
+def test_format_critical_alert_omits_what_changed_without_previous_tier():
+    text = format_critical_alert(_shock_envelope(), "high", 82.0)
+    assert "What Changed:" not in text
 
 
 def test_format_active_shocks_empty():

@@ -750,8 +750,11 @@ def format_watchdog(entries: list[dict]) -> str:
     for entry in entries:
         s = entry["summary"]
         state = "sent" if s["broadcast"] else "suppressed (gated/cooldown)"
+        confidence = s.get("confidence_pct")
+        confidence_str = f" ({confidence}% AI confidence)" if confidence is not None else ""
         lines.append(
-            f"{entry['timestamp'][:16]} [{s['alert_type']}] {s['conviction_tier']} -- {state}"
+            f"{entry['timestamp'][:16]} [{s['alert_type']}] {s['conviction_tier']} -- "
+            f"{state}{confidence_str}"
         )
         lines.append(s["message"])
         lines.append("")
@@ -1280,16 +1283,31 @@ def _shock_recommendation(direction: str, tier: str) -> str:
     )
 
 
-def format_critical_alert(envelope: dict, tier: str, quality_score: float | None) -> str:
+def format_critical_alert(
+    envelope: dict,
+    tier: str,
+    quality_score: float | None,
+    previous_tier: str | None = None,
+) -> str:
     """Renders one Autonomous Critical Alert System detection (v5.1) --
     a SECOND, independent alert layer from the Smart Alert Engine's
     format_watchdog()/broadcast messages and Configurable Alerts'
-    format_alert_*() above."""
+    format_alert_*() above.
+
+    v8.0: also states what changed since the previous alert of this key
+    (`previous_tier`, passed only on an escalation of an already-active
+    alert) and how unusual the move is historically, via the same
+    historical_similarity_score() already folded into quality_components
+    for the "Reasons" line below -- surfaced here as an explicit
+    percentage instead of a bare >=60 threshold check."""
     category = envelope["category"]
     direction = envelope["direction"]
     emoji = _SHOCK_TIER_EMOJI.get(tier, "")
     title = _SHOCK_CATEGORY_TITLE.get(category, "ALERT")
     lines = [f"{emoji} *{title}* ({tier.upper()})", ""]
+    if previous_tier is not None and previous_tier != tier:
+        lines.append(f"What Changed: escalated from {previous_tier.upper()} to {tier.upper()}.")
+        lines.append("")
 
     for reading in envelope["readings"]:
         current = reading["current_value"]
@@ -1313,6 +1331,14 @@ def format_critical_alert(envelope: dict, tier: str, quality_score: float | None
 
     if ctx["committee"] is not None:
         lines.append(f"Committee Verdict: {ctx['committee']['final_recommendation']}")
+        lines.append("")
+
+    historical_similarity = envelope["quality_components"].get("historical_similarity")
+    if historical_similarity is not None:
+        lines.append(
+            f"How Unusual: {historical_similarity}% of similar historical moves continued "
+            f"{direction} afterward -- what AI expects next."
+        )
         lines.append("")
 
     reasons = [

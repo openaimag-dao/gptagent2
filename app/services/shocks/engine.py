@@ -363,7 +363,6 @@ class CriticalAlertEngine:
         quality_score = score_alert_quality(envelope["quality_components"])
         tier = gate_severity(envelope["raw_tier"], quality_score)
         notify_eligible = should_notify(tier)
-        message = format_critical_alert(envelope, tier, quality_score)
 
         async with self._session_factory() as session:
             existing = await session.scalar(
@@ -383,6 +382,8 @@ class CriticalAlertEngine:
             now=now,
             last_updated_at=existing.last_updated_at if existing is not None else None,
         )
+        previous_tier = existing.tier if (action == "escalate" and existing is not None) else None
+        message = format_critical_alert(envelope, tier, quality_score, previous_tier)
 
         if action == "resolve_then_new":
             async with self._session_factory() as session:

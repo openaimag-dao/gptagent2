@@ -134,6 +134,8 @@ async def test_escalation_edits_existing_message_instead_of_sending_new():
     assert result["tier"] == "critical"
     mock_edit.assert_awaited_once()
     mock_send.assert_not_awaited()
+    edited_text = mock_edit.call_args.args[2]
+    assert "What Changed: escalated from HIGH to CRITICAL." in edited_text
 
 
 async def test_same_tier_suppresses_without_any_telegram_call():
