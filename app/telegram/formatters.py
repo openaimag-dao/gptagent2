@@ -1316,10 +1316,13 @@ def format_critical_alert(envelope: dict, tier: str, quality_score: float | None
 
 
 def format_scanner_alert(detection: dict) -> str:
-    """v5.5 Market Scanner Telegram alert -- the mission's required field
-    list: Title, Asset, Current Price, Price Change, Volume Change, Market
-    Regime, Trend, Risk, Confidence, Committee Opinion, Explanation,
-    Recommendation. `detection` is one MarketScannerEngine.run_cycle()
+    """v5.5/v8.0 Market Scanner Telegram alert -- the mission's required
+    field list: Title, Asset, Current Price, Price Change, Volume Change,
+    Market Regime, Trend, Risk, Confidence, Committee Opinion, Explanation,
+    Recommendation, plus v8.0's Main Opportunity/Main Threat/Expected
+    Scenario (from the same WatchdogSnapshot-derived context already
+    carrying regime/risk/committee -- MarketScannerEngine.get_market_context(),
+    not a new calculation). `detection` is one MarketScannerEngine.run_cycle()
     processed-detection dict; only ever called for tier in (high,
     critical), per the mission's "Only HIGH and CRITICAL events should
     notify users"."""
@@ -1362,6 +1365,14 @@ def format_scanner_alert(detection: dict) -> str:
         majority = ctx.get("committee_majority_pct")
         majority_str = f" ({majority}%)" if majority is not None else ""
         lines.append(f"Committee Opinion: {ctx['committee_decision']}{majority_str}")
+    if ctx.get("expected_scenario"):
+        pct = ctx.get("expected_scenario_pct")
+        pct_str = f" ({pct}%)" if pct is not None else ""
+        lines.append(f"Expected Scenario: {ctx['expected_scenario']}{pct_str}")
+    if ctx.get("biggest_opportunity"):
+        lines.append(f"Main Opportunity: {ctx['biggest_opportunity']}")
+    if ctx.get("highest_risk"):
+        lines.append(f"Main Threat: {ctx['highest_risk']}")
     lines.append("")
 
     lines.append("Explanation:")
