@@ -61,6 +61,14 @@ async def get_dashboard() -> dict:
     suppressed = await engine.list_suppressed_alerts(limit=50)
     breadth = await engine.get_latest_breadth()
     sector_breadth = await engine.get_latest_sector_breadth()
+    # Composed from the same WatchdogSnapshot the scanner's own AI filter
+    # already reads every cycle (regime/risk/confidence/committee/consensus
+    # plus Scenario Engine's expected_scenario/highest_risk/
+    # biggest_opportunity) -- a cheap cached-row read, not a fresh
+    # agent-orchestrator run, so this was previously only ever visible
+    # inside a fired HIGH/CRITICAL Telegram alert and never on the
+    # dashboard itself.
+    market_context = await engine.get_market_context()
     return {
         "current_scans": [_serialize_snapshot(s) for s in snapshots],
         "latest_detections": [_serialize_alert(a) for a in recent_alerts],
@@ -68,6 +76,7 @@ async def get_dashboard() -> dict:
         "sector_leaders": sector_breadth,
         "pending_alerts": [_serialize_alert(a) for a in pending],
         "suppressed_alerts": [_serialize_log(a) for a in suppressed],
+        "market_context": market_context,
     }
 
 

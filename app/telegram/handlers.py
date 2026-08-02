@@ -1251,11 +1251,13 @@ async def cmd_scanner(message: Message, command: CommandObject) -> None:
     sector_breadth = await engine.get_latest_sector_breadth()
     pending = await engine.list_active_alerts()
     suppressed = await engine.list_suppressed_alerts(limit=50)
+    market_context = await engine.get_market_context()
     dashboard = {
         "top_movers": breadth,
         "sector_leaders": sector_breadth,
         "pending_alerts": pending,
         "suppressed_alerts": suppressed,
+        "market_context": market_context,
     }
     await _answer(message, format_scanner_dashboard(dashboard))
 

@@ -960,6 +960,48 @@ def test_format_scanner_dashboard_populated():
     assert "Pending alerts: 1" in text
 
 
+def test_format_scanner_dashboard_includes_market_context_from_watchdog():
+    dashboard = {
+        "top_movers": {
+            "total_scanned": 500,
+            "rising_count": 300,
+            "falling_count": 200,
+            "top_gainers": [],
+            "top_losers": [],
+        },
+        "sector_leaders": [],
+        "pending_alerts": [],
+        "suppressed_alerts": [],
+        "market_context": {
+            "regime": "risk_off",
+            "risk_score": 70,
+            "confidence_score": 40,
+            "committee_decision": "SELL",
+            "committee_majority_pct": 75.0,
+            "expected_scenario": "Deeper Correction",
+            "expected_scenario_pct": 60,
+        },
+    }
+    text = format_scanner_dashboard(dashboard)
+    assert "Market Context" in text
+    assert "Risk On" not in text
+    assert "Risk: 70/100" in text
+    assert "Confidence: 40/100" in text
+    assert "Committee: SELL (75.0%)" in text
+    assert "Expected Scenario: Deeper Correction (60%)" in text
+
+
+def test_format_scanner_dashboard_omits_market_context_when_no_snapshot_yet():
+    dashboard = {
+        "top_movers": None,
+        "sector_leaders": [],
+        "pending_alerts": [],
+        "suppressed_alerts": [],
+    }
+    text = format_scanner_dashboard(dashboard)
+    assert "Market Context" not in text
+
+
 def test_format_scanner_movers_empty():
     assert "No scan data yet" in format_scanner_movers(None)
     assert "No scan data yet" in format_scanner_movers({"total_scanned": 0})
