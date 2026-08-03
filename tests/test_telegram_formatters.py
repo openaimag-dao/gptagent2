@@ -24,6 +24,7 @@ from app.telegram.formatters import (
     format_brief,
     format_committee,
     format_consensus,
+    format_conviction,
     format_critical_alert,
     format_explanation,
     format_features,
@@ -137,6 +138,39 @@ def test_format_signal_present():
 def test_format_regime_present():
     snapshot = MarketRegimeSnapshot(regime=MarketRegime.RISK_ON, inputs={})
     assert "Risk On" in format_regime(snapshot)
+
+
+def test_format_conviction_omits_track_record_line_without_quality_data():
+    text = format_conviction(
+        {
+            "signal": {"tier": "Strong", "effective_confidence_pct": 70},
+            "probability": {
+                "symbol": "BTC",
+                "tier": "Institutional",
+                "effective_confidence_pct": 99,
+                "sample_size": 100,
+                "quality_multiplier": None,
+            },
+        }
+    )
+    assert "Track record discount" not in text
+
+
+def test_format_conviction_shows_track_record_discount_when_present():
+    text = format_conviction(
+        {
+            "signal": None,
+            "probability": {
+                "symbol": "BTC",
+                "tier": "Weak",
+                "effective_confidence_pct": 0,
+                "sample_size": 100,
+                "quality_multiplier": 0.0,
+            },
+        }
+    )
+    assert "Track record discount: x0.0" in text
+    assert "Prediction Quality Lab's own Brier score" in text
 
 
 def test_format_consensus_none():

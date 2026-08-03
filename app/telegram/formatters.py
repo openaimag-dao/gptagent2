@@ -695,6 +695,11 @@ def format_conviction(data: dict) -> str:
             f"({probability['effective_confidence_pct']}% effective confidence, "
             f"sample size {probability['sample_size']})"
         )
+        if probability.get("quality_multiplier") is not None:
+            lines.append(
+                f"Track record discount: x{probability['quality_multiplier']} "
+                "(Prediction Quality Lab's own Brier score for this symbol/timeframe)"
+            )
     return "\n".join(lines)
 
 

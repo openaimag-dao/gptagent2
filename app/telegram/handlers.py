@@ -1108,7 +1108,9 @@ async def cmd_conviction(message: Message, command: CommandObject) -> None:
     news_repository = NewsRepository(session_factory)
     signal_engine = SignalEngine(session_factory, market_repository, news_repository)
     probability_engine = ProbabilityEngine(session_factory)
-    engine = ConvictionEngine(signal_engine, probability_engine)
+    engine = ConvictionEngine(
+        signal_engine, probability_engine, PredictionQualityEngine(session_factory)
+    )
     signal_conviction = await engine.evaluate_signal()
     probability_conviction = await engine.evaluate_probability(symbol, Timeframe.DAILY)
     await _answer(
