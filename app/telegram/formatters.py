@@ -17,6 +17,7 @@ from app.database.models import (
 from app.services.common.ai_insight import format_ai_insight_lines
 from app.services.common.navigation import nav_pointer
 from app.services.consensus.engine import ConsensusResult
+from app.services.scenarios.engine import scenario_extremes, scenario_threat_level
 from app.services.shocks.detectors import regime_direction_bucket
 
 _CLASS_LABELS: dict[AssetClass, str] = {
@@ -565,6 +566,15 @@ def format_scenarios(row: ScenarioSnapshot | None) -> str:
     if row is None:
         return "Not enough data yet -- regime detection and signal scoring need to run first."
     lines = ["*SCENARIOS*", ""]
+    threat_level = scenario_threat_level(row.scenarios)
+    if threat_level is not None:
+        lines.append(f"Threat level: {threat_level} (combined Risk Off + Black Swan weight)")
+    _, _, highest_risk, biggest_opportunity = scenario_extremes(row.scenarios)
+    if highest_risk:
+        lines.append(f"Highest risk: {highest_risk}")
+    if biggest_opportunity:
+        lines.append(f"Biggest opportunity: {biggest_opportunity}")
+    lines.append("")
     for scenario in sorted(row.scenarios, key=lambda s: s["probability_pct"], reverse=True):
         lines.append(f"*{scenario['name']}* -- {scenario['probability_pct']}%")
         lines.append(scenario["rationale"])
@@ -757,6 +767,10 @@ def format_status(snapshots: dict) -> str:
 
 def format_risk(data: dict) -> str:
     lines = ["*RISK*", ""]
+    risk_level = data.get("risk_level")
+    if risk_level is not None:
+        lines.append(f"Risk level: {risk_level.upper()} (from the detected market regime)")
+        lines.append("")
     if data["global_score"] is not None:
         gs = data["global_score"]
         lines.append(f"Risk-off: {gs['risk_off_score']}/100 | Risk-on: {gs['risk_on_score']}/100")

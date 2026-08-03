@@ -6,7 +6,7 @@ from app.services.analysis.regime import RegimeDetector
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
-from app.services.scenarios.engine import ScenarioEngine
+from app.services.scenarios.engine import ScenarioEngine, scenario_extremes, scenario_threat_level
 from app.services.signals.engine import SignalEngine
 
 router = APIRouter(prefix="/api/scenarios", tags=["scenarios"])
@@ -35,8 +35,12 @@ async def get_scenarios() -> dict:
             detail="Cannot compute scenarios before regime detection and signal scoring "
             "have run at least once",
         )
+    _, _, highest_risk, biggest_opportunity = scenario_extremes(row.scenarios)
     return {
         "scenarios": row.scenarios,
         "global_score": row.global_score,
         "computed_at": row.computed_at.isoformat(),
+        "threat_level": scenario_threat_level(row.scenarios),
+        "highest_risk": highest_risk,
+        "biggest_opportunity": biggest_opportunity,
     }

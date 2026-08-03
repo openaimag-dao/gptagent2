@@ -765,6 +765,15 @@ async function renderRisk() {
     nodes.push(el("p", { class: "error" }, "Not enough data yet."));
     return nodes;
   }
+  if (data.risk_level) {
+    nodes.push(
+      el("p", {}, [
+        "Risk level: ",
+        decisionPill(data.risk_level.toUpperCase(), riskLevelTone(data.risk_level)),
+        el("span", { class: "sub" }, " -- from the detected market regime"),
+      ])
+    );
+  }
   if (data.global_score) {
     nodes.push(
       el("div", { class: "grid" }, [
@@ -2001,6 +2010,12 @@ async function renderAdvice() {
   return nodes;
 }
 
+function threatClass(level) {
+  if (level === "Severe" || level === "Elevated") return "down";
+  if (level === "Moderate") return "neutral";
+  return "up";
+}
+
 async function renderScenarios() {
   const data = await safe("/api/scenarios");
   const nodes = [el("h2", {}, "Scenarios")];
@@ -2008,6 +2023,15 @@ async function renderScenarios() {
     nodes.push(el("p", { class: "error" }, "Not enough data yet."));
     return nodes;
   }
+  if (data.threat_level) {
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Threat Level", data.threat_level, "Combined Risk Off + Black Swan weight", threatClass(data.threat_level)),
+      ])
+    );
+  }
+  if (data.highest_risk) nodes.push(el("p", { class: "sub" }, `Highest risk: ${data.highest_risk}`));
+  if (data.biggest_opportunity) nodes.push(el("p", { class: "sub" }, `Biggest opportunity: ${data.biggest_opportunity}`));
   for (const s of [...data.scenarios].sort((a, b) => b.probability_pct - a.probability_pct)) {
     nodes.push(
       card(s.name, `${s.probability_pct}%`, s.rationale)

@@ -44,6 +44,7 @@ from app.telegram.formatters import (
     format_scanner_detections,
     format_scanner_movers,
     format_scanner_sectors,
+    format_scenarios,
     format_signal,
     format_similar_periods,
     format_single_asset,
@@ -383,6 +384,57 @@ def test_format_risk_shows_risk_and_confidence_score_when_present():
     )
     assert "Risk score: 65/100" in text
     assert "Confidence: 70/100" in text
+
+
+def test_format_risk_shows_risk_level_when_present():
+    text = format_risk(
+        {
+            "risk_level": "high",
+            "global_score": None,
+            "signal_conviction": None,
+        }
+    )
+    assert "Risk level: HIGH" in text
+
+
+def test_format_risk_omits_risk_level_line_when_absent():
+    text = format_risk({"global_score": None, "signal_conviction": None})
+    assert "Risk level" not in text
+
+
+def test_format_scenarios_includes_threat_level_and_extremes():
+    row = SimpleNamespace(
+        scenarios=[
+            {
+                "name": "Risk Off",
+                "key": "risk_off",
+                "probability_pct": 55,
+                "rationale": "Broad de-risking.",
+            },
+            {
+                "name": "Black Swan",
+                "key": "black_swan",
+                "probability_pct": 10,
+                "rationale": "Tail risk, dampened by design.",
+            },
+            {
+                "name": "Soft Landing",
+                "key": "soft_landing",
+                "probability_pct": 25,
+                "rationale": "Growth continues.",
+            },
+            {
+                "name": "Liquidity Expansion",
+                "key": "liquidity_expansion",
+                "probability_pct": 10,
+                "rationale": "Easing conditions.",
+            },
+        ]
+    )
+    text = format_scenarios(row)
+    assert "Threat level: Severe" in text
+    assert "Highest risk: Risk Off (55%)" in text
+    assert "Biggest opportunity: Soft Landing (25%)" in text
 
 
 def test_format_watchdog_brief_answers_the_control_center_questions():
