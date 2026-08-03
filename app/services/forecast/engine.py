@@ -35,7 +35,9 @@ from app.database.models import EconomicCalendarEvent, PriceForecastSnapshot, Wa
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import MarketRegime, RegimeDetector
 from app.services.analysis.report import derive_risk_level
+from app.services.backtest.metrics import compute_max_drawdown_pct
 from app.services.calendar.engine import EconomicCalendarEngine
+from app.services.common.scoring import center_scaled
 from app.services.conviction.engine import classify_conviction
 from app.services.explanation.engine import ExplanationEngine
 from app.services.history.registry import find_symbol_config
@@ -89,6 +91,19 @@ def compute_price_path(
     return path
 
 
+def _normal_mean_and_std(
+    current_price: float, avg_forward_return_pct: float, atr: float | None
+) -> tuple[float, float] | None:
+    """Pure function: the one shared (mean_price, std) pair every normal-
+    approximation calculation in this engine is built from -- mean is the
+    empirically-observed forward return already computed by
+    ProbabilityEngine, std is ATR (this project's one real $-volatility
+    primitive). None (never a guessed pair) when ATR isn't available."""
+    if atr is None or atr <= 0 or current_price <= 0:
+        return None
+    return current_price * (1 + avg_forward_return_pct / 100), atr
+
+
 def compute_probability_distribution(
     current_price: float, avg_forward_return_pct: float, atr: float | None
 ) -> list[dict]:
@@ -101,11 +116,10 @@ def compute_probability_distribution(
 
     Four buckets, edges at target +-0.5*ATR and +-1.5*ATR, probability mass
     via the standard normal CDF (`math.erf`, stdlib -- no new dependency)."""
-    if atr is None or atr <= 0 or current_price <= 0:
+    mean_and_std = _normal_mean_and_std(current_price, avg_forward_return_pct, atr)
+    if mean_and_std is None:
         return []
-
-    mean_price = current_price * (1 + avg_forward_return_pct / 100)
-    std = atr
+    mean_price, std = mean_and_std
 
     def cdf(x: float) -> float:
         return 0.5 * (1 + math.erf((x - mean_price) / (std * math.sqrt(2))))
@@ -132,6 +146,110 @@ def compute_probability_distribution(
             "probability_pct": round(cdf(low_edge) * 100, 1),
         },
     ]
+
+
+def compute_prediction_range(
+    current_price: float, avg_forward_return_pct: float, atr: float | None
+) -> dict | None:
+    """Pure function: Upper/Lower Bound of the same normal approximation
+    `compute_probability_distribution` already builds its outer bucket
+    edges from (+-1.5*ATR around the empirical mean) -- reused here as an
+    explicit range rather than re-derived. None when ATR isn't available."""
+    mean_and_std = _normal_mean_and_std(current_price, avg_forward_return_pct, atr)
+    if mean_and_std is None:
+        return None
+    mean_price, std = mean_and_std
+    return {
+        "upper_bound": round(mean_price + 1.5 * std, 8),
+        "lower_bound": round(mean_price - 1.5 * std, 8),
+    }
+
+
+def compute_scenario_cases(
+    current_price: float,
+    avg_forward_return_pct: float,
+    atr: float | None,
+    prob_up_pct: int,
+    prob_down_pct: int,
+    prob_flat_pct: int,
+    effective_confidence_pct: float,
+) -> dict | None:
+    """Pure function: Bull/Base/Bear cases over the exact same real inputs
+    the rest of this engine already computes -- no second forecasting
+    model. Base Case's target is identical to `compute_price_target`
+    (today's single target_price); Bull/Bear are the same mean +-1*ATR the
+    normal approximation already treats as "one volatility band away".
+    Each case's own probability is ProbabilityEngine's own real prob_up/
+    down/flat_pct (already sums to 100 -- not re-derived). Confidence is
+    `effective_confidence_pct` (the conviction already computed for this
+    forecast) scaled down proportionally for the two non-dominant cases,
+    so the dominant case's confidence matches today's single forecast
+    confidence exactly, and the others reflect their lower relative
+    likelihood -- not a separately invented number. None when ATR isn't
+    available (no volatility band to build Bull/Bear off of)."""
+    mean_and_std = _normal_mean_and_std(current_price, avg_forward_return_pct, atr)
+    if mean_and_std is None:
+        return None
+    base_target, std = mean_and_std
+    dominant_prob = max(prob_up_pct, prob_down_pct, prob_flat_pct)
+
+    def _case(target_price: float, probability_pct: int) -> dict:
+        expected_return_pct = round(100 * (target_price - current_price) / current_price, 4)
+        confidence_pct = (
+            round(effective_confidence_pct * probability_pct / dominant_prob)
+            if dominant_prob > 0
+            else None
+        )
+        return {
+            "target_price": round(target_price, 8),
+            "probability_pct": probability_pct,
+            "expected_return_pct": expected_return_pct,
+            "confidence_pct": confidence_pct,
+        }
+
+    return {
+        "bull_case": _case(base_target + std, prob_up_pct),
+        "base_case": _case(base_target, prob_flat_pct),
+        "bear_case": _case(base_target - std, prob_down_pct),
+    }
+
+
+# Trailing daily returns beyond this many days add noise without adding
+# signal for a 24h-72h forecast horizon -- the same "recent window" framing
+# ATR/RSI already use, applied to drawdown instead of volatility/momentum.
+_DRAWDOWN_LOOKBACK_DAYS = 30
+
+
+def compute_expected_max_drawdown_pct(
+    returns: list[float | None], lookback: int = _DRAWDOWN_LOOKBACK_DAYS
+) -> float | None:
+    """Pure function: real trailing daily `return_pct` history (already
+    fractions, e.g. 0.02 = +2%, from HistoryTimeframe.DAILY rows) fed
+    straight into `compute_max_drawdown_pct` (app/services/backtest/
+    metrics.py) -- the same peak-to-trough drawdown Backtest/Portfolio
+    already compute, applied to a new input, not a new formula. None when
+    there's no real trailing history to measure."""
+    trailing = [r for r in returns[-lookback:] if r is not None]
+    if not trailing:
+        return None
+    return compute_max_drawdown_pct(trailing)
+
+
+# How many percentage points of real signed momentum map to a full swing
+# from center -- same per-percent scaling convention as GlobalScoreEngine's
+# own fear_score (scale=4.0 off VIX change); momentum typically moves in a
+# narrower band than VIX, so a slightly larger scale is used here.
+_MOMENTUM_SCALE = 5.0
+
+
+def compute_momentum_score(momentum_pct: float | None) -> float:
+    """Pure function: TechnicalAnalysisSnapshot's own real signed momentum
+    (% change, already computed by app/services/technical/scoring.py) ->
+    a 0-100 score centered at 50, via the same `center_scaled` primitive
+    every other centered composite score in this project (fear/greed/
+    liquidity/macro_pressure) already uses. 50 (neutral) when momentum
+    isn't available -- never a guessed direction."""
+    return center_scaled(momentum_pct, scale=_MOMENTUM_SCALE)
 
 
 def classify_direction_label(prob_up_pct: int, prob_down_pct: int) -> str:
@@ -565,11 +683,29 @@ class ForecastEngine:
         target_price = compute_price_target(current_price, avg_forward_return_pct)
         path = compute_price_path(current_price, avg_forward_return_pct)
         distribution = compute_probability_distribution(current_price, avg_forward_return_pct, atr)
+        prediction_range = compute_prediction_range(current_price, avg_forward_return_pct, atr)
+        scenario_cases = compute_scenario_cases(
+            current_price,
+            avg_forward_return_pct,
+            atr,
+            probability_snapshot.prob_up_pct,
+            probability_snapshot.prob_down_pct,
+            probability_snapshot.prob_flat_pct,
+            conviction["effective_confidence_pct"],
+        )
+        expected_max_drawdown_pct = compute_expected_max_drawdown_pct(
+            [float(r.return_pct) if r.return_pct is not None else None for r in rows]
+        )
         direction_label = classify_direction_label(
             probability_snapshot.prob_up_pct, probability_snapshot.prob_down_pct
         )
 
         technical_snapshot = await self._technical_engine.get_latest(config.symbol)
+        momentum_score = compute_momentum_score(
+            float(technical_snapshot.momentum)
+            if technical_snapshot is not None and technical_snapshot.momentum is not None
+            else None
+        )
         watchdog = await self._latest_watchdog_snapshot()
         explanation = await self._explanation_engine.build(config.symbol)
         confidence_breakdown = await self._confidence_breakdown(
@@ -666,11 +802,15 @@ class ForecastEngine:
                 "high": round(current_price + atr, 8) if atr is not None else None,
             },
             "expected_volatility_pct": expected_volatility_pct,
+            "expected_max_drawdown_pct": expected_max_drawdown_pct,
             "trend_strength": float(technical_snapshot.trend_strength)
             if technical_snapshot is not None and technical_snapshot.trend_strength is not None
             else None,
+            "momentum_score": momentum_score,
             "price_path": path,
             "probability_distribution": distribution,
+            "prediction_range": prediction_range,
+            "scenario_cases": scenario_cases,
             "reasons": explanation.get("indicators", []),
             "confidence_breakdown": [
                 {"name": r.name, "confidence_pct": r.confidence_pct} for r in confidence_breakdown

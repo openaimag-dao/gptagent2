@@ -23,6 +23,15 @@ async def test_404_when_engine_returns_none():
     assert exc_info.value.status_code == 404
 
 
+def _explainability_engine(engine_breakdown=None, final_prediction=None):
+    explainability_engine = AsyncMock()
+    explainability_engine.build.return_value = {
+        "engine_breakdown": engine_breakdown or [],
+        "final_prediction": final_prediction or {},
+    }
+    return explainability_engine
+
+
 @pytest.mark.parametrize("horizon", ["24h", "3d", "7d", "30d"])
 async def test_every_horizon_reaches_the_engine(horizon):
     engine = AsyncMock()
@@ -30,6 +39,10 @@ async def test_every_horizon_reaches_the_engine(horizon):
     with (
         patch("app.api.forecast.build_forecast_engine", return_value=engine),
         patch("app.api.forecast.get_job_next_run", return_value=None),
+        patch(
+            "app.api.forecast.build_explainability_engine",
+            return_value=_explainability_engine(),
+        ),
     ):
         payload = await forecast.get_forecast("BTC", horizon=horizon)
     engine.compute.assert_awaited_once_with("BTC", horizon)
@@ -44,9 +57,31 @@ async def test_next_refresh_at_is_isoformatted():
     with (
         patch("app.api.forecast.build_forecast_engine", return_value=engine),
         patch("app.api.forecast.get_job_next_run", return_value=next_run),
+        patch(
+            "app.api.forecast.build_explainability_engine",
+            return_value=_explainability_engine(),
+        ),
     ):
         payload = await forecast.get_forecast("BTC", horizon="24h")
     assert payload["next_refresh_at"] == next_run.isoformat()
+
+
+async def test_ai_explanation_merges_engine_breakdown_and_final_prediction():
+    engine = AsyncMock()
+    engine.compute.return_value = {"symbol": "BTC"}
+    breakdown = [{"name": "Technical Analysis", "signal": "Bullish"}]
+    final_prediction = {"bias": "Strong Bullish", "agreement_score": 80.0}
+    with (
+        patch("app.api.forecast.build_forecast_engine", return_value=engine),
+        patch("app.api.forecast.get_job_next_run", return_value=None),
+        patch(
+            "app.api.forecast.build_explainability_engine",
+            return_value=_explainability_engine(breakdown, final_prediction),
+        ),
+    ):
+        payload = await forecast.get_forecast("BTC", horizon="24h")
+    assert payload["ai_explanation"]["engine_breakdown"] == breakdown
+    assert payload["ai_explanation"]["final_prediction"] == final_prediction
 
 
 async def test_history_endpoint_serializes_snapshots():
