@@ -20,6 +20,7 @@ from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.committee.engine import CommitteeEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.features.engine import FeatureEngine
+from app.services.forecast.engine import HORIZONS, build_forecast_engine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.registry import find_symbol_config
 from app.services.history.schemas import Timeframe
@@ -94,6 +95,7 @@ REPLAY_JOB_ID = "compute_market_replay"
 BREAKOUT_JOB_ID = "compute_breakout_intelligence"
 WEEKLY_REVIEW_JOB_ID = "broadcast_weekly_review"
 MONTHLY_PERFORMANCE_JOB_ID = "broadcast_monthly_performance"
+FORECAST_JOB_ID = "compute_forecast"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -498,6 +500,23 @@ async def compute_ranking_job() -> None:
         logger.exception("Ranking computation job failed")
 
 
+async def compute_forecast_job() -> None:
+    """AI Forecast Center -- BTC only for now (this project's flagship
+    symbol, matching ConvictionEngine's/PortfolioAdvisorEngine's own
+    defaults). Persists one PriceForecastSnapshot per horizon so
+    `next_refresh_at` (this job's own APScheduler next_run_time) and the
+    dashboard's countdown are meaningful, and so the follow-up prediction-
+    history/self-learning grading job has real rows to grade."""
+    engine = build_forecast_engine()
+    for horizon in HORIZONS:
+        try:
+            payload = await engine.compute("BTC", horizon)
+            if payload is None:
+                logger.info("Forecast %s/%s: insufficient data this cycle", "BTC", horizon)
+        except Exception:
+            logger.exception("Forecast computation failed for BTC/%s", horizon)
+
+
 async def test_hypotheses_job() -> None:
     engine = HypothesisEngine(get_session_factory())
     try:
@@ -756,6 +775,14 @@ def start_scheduler() -> AsyncIOScheduler:
         compute_ranking_job,
         trigger=CronTrigger(day_of_week="mon", hour=5, minute=0, timezone="UTC"),
         id=RANKING_JOB_ID,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        compute_forecast_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=FORECAST_JOB_ID,
+        next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,
     )
