@@ -11,9 +11,13 @@ from app.services.forecast.engine import (
     _onchain_confidence,
     _whale_confidence,
     classify_direction_label,
+    compute_expected_max_drawdown_pct,
+    compute_momentum_score,
+    compute_prediction_range,
     compute_price_path,
     compute_price_target,
     compute_probability_distribution,
+    compute_scenario_cases,
     derive_regime_label,
     derive_risk_meter,
     grade_confidence,
@@ -67,6 +71,58 @@ def test_compute_probability_distribution_matches_known_normal_cdf():
     below = buckets[3]["probability_pct"]
     assert math.isclose(above, (1 - 0.9332) * 100, abs_tol=0.5)
     assert math.isclose(below, 0.3085 * 100, abs_tol=0.5)
+
+
+def test_compute_prediction_range_none_without_atr():
+    assert compute_prediction_range(100.0, 2.0, None) is None
+    assert compute_prediction_range(100.0, 2.0, 0.0) is None
+
+
+def test_compute_prediction_range_uses_15_atr_band():
+    range_ = compute_prediction_range(100.0, 0.0, 5.0)
+    assert range_ == {"upper_bound": 107.5, "lower_bound": 92.5}
+
+
+def test_compute_scenario_cases_none_without_atr():
+    assert compute_scenario_cases(100.0, 2.0, None, 70, 10, 20, 60.0) is None
+
+
+def test_compute_scenario_cases_bull_base_bear_targets():
+    cases = compute_scenario_cases(100.0, 3.0, 2.0, 70, 10, 20, 60.0)
+    assert cases["base_case"]["target_price"] == 103.0
+    assert cases["bull_case"]["target_price"] == 105.0
+    assert cases["bear_case"]["target_price"] == 101.0
+    assert cases["bull_case"]["probability_pct"] == 70
+    assert cases["base_case"]["probability_pct"] == 20
+    assert cases["bear_case"]["probability_pct"] == 10
+
+
+def test_compute_scenario_cases_dominant_case_keeps_full_confidence():
+    # dominant bucket is bullish (70) -- its confidence should equal
+    # effective_confidence_pct exactly, matching today's single forecast.
+    cases = compute_scenario_cases(100.0, 3.0, 2.0, 70, 10, 20, 60.0)
+    assert cases["bull_case"]["confidence_pct"] == 60
+    assert cases["base_case"]["confidence_pct"] < 60
+    assert cases["bear_case"]["confidence_pct"] < 60
+
+
+def test_compute_expected_max_drawdown_pct_none_without_returns():
+    assert compute_expected_max_drawdown_pct([]) is None
+    assert compute_expected_max_drawdown_pct([None, None]) is None
+
+
+def test_compute_expected_max_drawdown_pct_reuses_backtest_metric():
+    # equity path: 1 -> 1.1 -> 0.99 (peak 1.1, trough 0.99) = 10% drawdown.
+    assert compute_expected_max_drawdown_pct([0.1, -0.1]) == 10.0
+
+
+def test_compute_momentum_score_centers_at_50_when_unavailable():
+    assert compute_momentum_score(None) == 50.0
+
+
+def test_compute_momentum_score_signed():
+    assert compute_momentum_score(2.0) == 60.0
+    assert compute_momentum_score(-2.0) == 40.0
 
 
 def test_classify_direction_label_thresholds():
@@ -213,7 +269,9 @@ async def test_compute_returns_none_without_probability_snapshot():
 
 async def test_compute_builds_full_payload_and_persists():
     engine, deps, session = _build_engine()
-    history_row = SimpleNamespace(close=100.0, atr=2.0, timestamp=datetime(2026, 8, 2, tzinfo=UTC))
+    history_row = SimpleNamespace(
+        close=100.0, atr=2.0, timestamp=datetime(2026, 8, 2, tzinfo=UTC), return_pct=0.01
+    )
     probability_snapshot = SimpleNamespace(
         prob_up_pct=70,
         prob_down_pct=10,
@@ -224,7 +282,7 @@ async def test_compute_builds_full_payload_and_persists():
     deps["probability_engine"].compute_and_store.return_value = probability_snapshot
     deps["quality_engine"].evaluate.return_value = None
     deps["technical_engine"].get_latest.return_value = SimpleNamespace(
-        confidence=80.0, trend_strength=45.0, support=95.0, resistance=105.0
+        confidence=80.0, trend_strength=45.0, support=95.0, resistance=105.0, momentum=1.5
     )
     deps["explanation_engine"].build.return_value = {"indicators": [{"name": "rsi", "points": 2}]}
     deps["economic_calendar_engine"].get_upcoming.return_value = []
@@ -251,6 +309,15 @@ async def test_compute_builds_full_payload_and_persists():
     assert payload["confidence_breakdown"][0]["name"] == "Technical Analysis"
     assert payload["confidence_breakdown"][0]["confidence_pct"] == 80
     assert payload["reference_timestamp"] == history_row.timestamp.isoformat()
+    assert payload["prediction_range"] == {"upper_bound": 106.0, "lower_bound": 100.0}
+    assert payload["scenario_cases"]["bull_case"]["target_price"] == 105.0
+    assert payload["scenario_cases"]["base_case"]["target_price"] == 103.0
+    assert payload["scenario_cases"]["bear_case"]["target_price"] == 101.0
+    assert payload["scenario_cases"]["bull_case"]["probability_pct"] == 70
+    assert payload["scenario_cases"]["base_case"]["probability_pct"] == 20
+    assert payload["scenario_cases"]["bear_case"]["probability_pct"] == 10
+    assert payload["expected_max_drawdown_pct"] == 0.0
+    assert payload["momentum_score"] is not None
     assert payload["track_record"] == {
         "evaluated_count": 0,
         "avg_abs_error_pct": None,

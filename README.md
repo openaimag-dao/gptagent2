@@ -2476,6 +2476,137 @@ alongside a within-band error (`confidence_correct: true`) -- then
 confirmed `/api/accuracy` aggregated it correctly and the new dashboard
 page rendered it, in a real browser, with the right pass/fail coloring.
 
+## Next-Generation AI Forecast Engine
+
+Redesigns the AI Forecast Center's single price target into Bull/Base/Bear
+scenario cases, a Prediction Range, Expected Max Drawdown/Momentum Score,
+an 11-agent AI Consensus (up from 6), and a per-engine AI Explanation
+breakdown -- all additive to the existing `GET /api/forecast/{symbol}`
+payload, entirely reused from engines already built in this project. No
+duplicate logic: every new number is either a new caller of an existing
+pure function, or a small, honestly-derived composition following the same
+patterns already established.
+
+### 1. Bull / Base / Bear cases (new pure function, same math)
+
+`compute_scenario_cases()` (`app/services/forecast/engine.py`) reuses the
+exact normal approximation `compute_probability_distribution` already
+builds (mean = `ProbabilityEngine`'s empirical `avg_forward_return_pct`,
+std = ATR) -- not a second forecasting model:
+
+- **Base Case** target = today's existing single `target_price`, unchanged.
+- **Bull/Bear Case** targets = Base Case +-1 ATR (one volatility band away).
+- **Probability** per case is `ProbabilityEngine`'s own real
+  `prob_up_pct`/`prob_flat_pct`/`prob_down_pct` (already sums to 100) --
+  not re-derived.
+- **Confidence** per case scales the forecast's existing
+  `effective_confidence_pct` proportionally to that case's probability
+  relative to the dominant case, so the dominant case's confidence matches
+  today's single forecast confidence exactly.
+
+`compute_prediction_range()` reuses the same normal approximation's outer
++-1.5*ATR edges (already computed inside the probability distribution) to
+expose an explicit Upper/Lower Bound.
+
+### 2. Expected Max Drawdown & Momentum Score (new callers, no new formulas)
+
+- `compute_expected_max_drawdown_pct()` feeds the symbol's real trailing
+  30-day `return_pct` history straight into `compute_max_drawdown_pct()`
+  (`app/services/backtest/metrics.py`) -- the same peak-to-trough drawdown
+  Backtest/Portfolio already compute, applied to a new input.
+- `compute_momentum_score()` feeds `TechnicalAnalysisSnapshot`'s own real
+  signed momentum % into `center_scaled()` (`app/services/common/
+  scoring.py`) -- the same "signed change -> 0-100 score centered at 50"
+  primitive fear/greed/liquidity/macro_pressure already use.
+
+### 3. AI Consensus expansion: 6 agents -> 11
+
+`AgentOrchestrator` (`app/services/agents/orchestrator.py`) -- shared
+app-wide by Watchdog, Committee, Consensus, Reports, Telegram, Replay, and
+Shocks -- gains five new agents, each a real `AgentOutput` following the
+existing agent pattern:
+
+- **`WhaleAgent`** -- votes off `WhaleIntelligenceEngine`'s real
+  derivatives classification (long_heavy/short_heavy/balanced); reports no
+  direction when derivatives data is unavailable this cycle.
+- **`PatternAgent`** -- votes off the last 10 real detected patterns from
+  `PatternEngine`; since `PatternSignal` has no confidence field,
+  confidence is a genuine recency-weighted agreement measure (more recent
+  patterns count for more) rather than an invented number.
+- **`RiskAgent`** -- votes off `GlobalScoreEngine`'s own `risk_score` (a
+  distinct weighted blend from Macro's own risk_on/risk_off diff), reusing
+  `direction_from_score()` inverted (higher risk = bearish for risk assets).
+- **`OnchainAgent`** -- always reports no direction, honestly:
+  `OnChainIntelligenceEngine` is a documented no-data-source scaffold.
+  Contributes zero vote-weight change to any existing consumer until a real
+  on-chain provider is wired in.
+- **`CorrelationAgent`** -- also always reports no direction: no existing
+  derivation turns `CorrelationEngine`'s real but unsigned pair correlations
+  into a directional call for the reference symbol, and inventing one under
+  time pressure was rejected in favor of honesty. Still surfaces the real
+  correlation data in its evidence.
+
+Only Whale/Pattern/Risk introduce new, real vote weight (deliberately
+shifting Consensus/Committee percentages app-wide, as intended); On-chain/
+Correlation are zero-behavior-change additions until real data exists.
+Verified live against a real local Postgres: Watchdog, Committee, and
+Consensus all correctly reflect the expanded 11-agent roster (`pattern`/
+`onchain`/`correlation` honestly appear in `unavailable_agents` today since
+no patterns/on-chain/correlation data exist yet in this environment).
+
+### 4. AI Explanation (reused, not duplicated)
+
+`GET /api/forecast/{symbol}` now also calls the existing `ExplainabilityEngine`
+("Why AI Thinks This") at the API route layer -- not from `ForecastEngine`
+itself, since `ExplainabilityEngine` already imports from `forecast.engine`
+and a reverse import would create a cycle -- and merges its
+`engine_breakdown` (Signal/Weight/Confidence/Reason per engine) and
+`final_prediction` into the response under a new `ai_explanation` key. No
+new computation: the exact same breakdown the "Why AI Thinks This" page
+already shows.
+
+### 5. Already shipped, no new work needed
+
+Two items from this feature's spec were already fully built in prior work:
+"Track prediction accuracy automatically" (the Prediction Accuracy
+dashboard, `GET /api/accuracy`) and "What could invalidate this forecast"
+(`ForecastEngine._what_can_change()`, already in the payload's
+`what_can_change` field).
+
+### 6. New/modified files
+
+```
+app/services/agents/whale_agent.py         -- new
+app/services/agents/pattern_agent.py       -- new
+app/services/agents/risk_agent.py          -- new
+app/services/agents/onchain_agent.py       -- new
+app/services/agents/correlation_agent.py   -- new
+app/services/agents/orchestrator.py        -- +5 agents in __init__/run_all/
+                                               build_agent_orchestrator
+app/services/forecast/engine.py            -- compute_scenario_cases,
+                                               compute_prediction_range,
+                                               compute_expected_max_drawdown_pct,
+                                               compute_momentum_score,
+                                               _normal_mean_and_std (shared)
+app/api/forecast.py                        -- merges ai_explanation into
+                                               GET /api/forecast/{symbol}
+app/static/dashboard/app.js                -- Bull/Base/Bear cards,
+                                               Prediction Range/Max Drawdown/
+                                               Momentum Score stats, AI
+                                               Explanation table
+tests/test_new_consensus_agents.py         -- new
+tests/test_forecast_engine.py, test_forecast_api.py -- extended
+```
+
+### 7. Test results & verification
+
+1073 -> 1083 tests, all passing; `ruff check`/`format` clean; dashboard
+verified in a real browser (Playwright) against real local Postgres/Redis
+data -- Bull/Base/Bear cards, Prediction Range, Expected Max Drawdown,
+Momentum Score, the 11-agent AI Consensus grid, and the AI Explanation
+table all rendered correctly, and horizon-tab switching (24h/3d/7d/30d)
+correctly re-fetched and re-rendered every new section.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

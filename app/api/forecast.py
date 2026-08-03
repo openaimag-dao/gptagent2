@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.scheduler.jobs import FORECAST_JOB_ID, get_job_next_run
+from app.services.explainability.engine import build_explainability_engine
 from app.services.forecast.engine import HORIZONS, build_forecast_engine
 
 router = APIRouter(prefix="/api/forecast", tags=["forecast"])
@@ -26,6 +27,20 @@ async def get_forecast(symbol: str, horizon: str = Query("24h")) -> dict:
             ),
         )
     payload["next_refresh_at"] = _next_refresh()
+
+    # AI Explanation: every contributing engine's Signal/Weight/Confidence/
+    # Reason, built by ExplainabilityEngine's own "Why AI Thinks This"
+    # composer (app/services/explainability/engine.py) -- called here at
+    # the API layer, not from ForecastEngine itself, since
+    # ExplainabilityEngine already imports from forecast.engine and a
+    # reverse import would create a cycle. No new computation: this reuses
+    # the exact same engine_breakdown/final_prediction the "Why AI Thinks
+    # This" page already shows.
+    explainability = await build_explainability_engine().build(symbol.upper())
+    payload["ai_explanation"] = {
+        "engine_breakdown": explainability["engine_breakdown"],
+        "final_prediction": explainability["final_prediction"],
+    }
     return payload
 
 

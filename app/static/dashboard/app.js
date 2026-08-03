@@ -294,6 +294,55 @@ function forecastConsensusSection(consensus) {
   ]);
 }
 
+const FORECAST_CASE_LABELS = { bull_case: "Bull Case", base_case: "Base Case", bear_case: "Bear Case" };
+const FORECAST_CASE_CLASS = { bull_case: "up", base_case: "neutral", bear_case: "down" };
+
+function forecastScenarioCases(scenarioCases) {
+  if (!scenarioCases) return el("p", { class: "sub" }, "Scenario cases need ATR data, not yet available.");
+  return el(
+    "div",
+    { class: "grid" },
+    ["bull_case", "base_case", "bear_case"].map((key) => {
+      const c = scenarioCases[key];
+      return el("div", { class: "card" }, [
+        el("div", { class: "label" }, FORECAST_CASE_LABELS[key]),
+        el("div", { class: `value ${FORECAST_CASE_CLASS[key]}` }, fmtNum(c.target_price)),
+        el("div", { class: "sub" }, `Probability ${c.probability_pct}%`),
+        el("div", { class: `sub ${changeClass(c.expected_return_pct)}` }, `Return ${fmtPct(c.expected_return_pct)}`),
+        el("div", { class: "sub" }, `Confidence ${c.confidence_pct != null ? c.confidence_pct + "%" : "n/a"}`),
+      ]);
+    })
+  );
+}
+
+function forecastAiExplanation(aiExplanation) {
+  if (!aiExplanation || !(aiExplanation.engine_breakdown || []).length) {
+    return [el("p", { class: "sub" }, "AI Explanation not yet available.")];
+  }
+  const nodes = [
+    table(
+      ["Engine", "Signal", "Weight", "Confidence", "Reason"],
+      aiExplanation.engine_breakdown.map((row) => [
+        row.name,
+        row.signal || "n/a",
+        row.weight != null ? `${row.weight}%` : "n/a",
+        row.confidence != null ? `${row.confidence}%` : "unavailable",
+        row.explanation || "n/a",
+      ])
+    ),
+  ];
+  const fp = aiExplanation.final_prediction;
+  if (fp) {
+    nodes.push(
+      el("p", { class: "sub" }, [
+        el("strong", {}, "Final Consensus Bias: "),
+        `${fp.bias || "n/a"}${fp.agreement_score != null ? ` (${fp.agreement_score}% agreement)` : ""}`,
+      ])
+    );
+  }
+  return nodes;
+}
+
 function forecastKeyLevels(levels) {
   if (!levels) return null;
   return el("div", { class: "grid" }, [
@@ -417,9 +466,17 @@ function buildForecastCard(payload, onHorizonChange, historyNodes) {
     card("Confidence", confidenceLabel),
     card("Expected Range", payload.expected_range ? `${fmtNum(payload.expected_range.low)} - ${fmtNum(payload.expected_range.high)}` : "n/a"),
     card("Expected Volatility", payload.expected_volatility_pct != null ? `${payload.expected_volatility_pct}%` : "n/a"),
+    card("Expected Max Drawdown", payload.expected_max_drawdown_pct != null ? `${payload.expected_max_drawdown_pct}%` : "n/a"),
     card("Trend Strength", payload.trend_strength != null ? payload.trend_strength.toFixed(1) : "n/a"),
+    card("Momentum Score", payload.momentum_score != null ? payload.momentum_score.toFixed(0) : "n/a"),
     card("Market Regime", payload.regime || "n/a"),
     card("Risk Level", payload.risk_meter || "n/a"),
+    card(
+      "Prediction Range",
+      payload.prediction_range
+        ? `${fmtNum(payload.prediction_range.lower_bound)} - ${fmtNum(payload.prediction_range.upper_bound)}`
+        : "n/a"
+    ),
   ]);
 
   const trackRecord = forecastTrackRecordLine(payload.track_record);
@@ -476,6 +533,8 @@ function buildForecastCard(payload, onHorizonChange, historyNodes) {
   root.appendChild(hero);
   root.appendChild(heroStats);
   root.appendChild(trackRecord);
+  root.appendChild(el("h3", {}, "Bull / Base / Bear Case"));
+  root.appendChild(forecastScenarioCases(payload.scenario_cases));
   root.appendChild(el("h3", {}, "Price Path"));
   root.appendChild(forecastPricePath(payload));
   root.appendChild(el("h3", {}, "Why AI Thinks This"));
@@ -486,6 +545,8 @@ function buildForecastCard(payload, onHorizonChange, historyNodes) {
   root.appendChild(distribution);
   root.appendChild(el("h3", {}, "AI Consensus"));
   root.appendChild(forecastConsensusSection(payload.consensus));
+  root.appendChild(el("h3", {}, "AI Explanation"));
+  for (const node of forecastAiExplanation(payload.ai_explanation)) root.appendChild(node);
   root.appendChild(el("h3", {}, "Key Levels"));
   const keyLevels = forecastKeyLevels(payload.key_levels);
   if (keyLevels) root.appendChild(keyLevels);
