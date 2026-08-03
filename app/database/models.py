@@ -1123,7 +1123,17 @@ class PriceForecastSnapshot(Base):
     this row -- never a fabricated placeholder. `confidence_tier` is the
     same `classify_conviction()` tier already shown on the live forecast,
     persisted here too so the self-learning history table can show
-    Predicted/Actual/Error%/Confidence without re-deriving it."""
+    Predicted/Actual/Error%/Confidence without re-deriving it.
+
+    `direction_correct`/`confidence_correct` are also filled in by the
+    grading job, for the Prediction Accuracy dashboard: `direction_correct`
+    compares this row's own `direction` label's sign against the realized
+    price's real sign of change from `current_price` -- honestly `None`
+    (not fabricated) for a "Neutral" call, since a neutral read has no
+    direction to grade. `confidence_correct` compares the real |error_pct|
+    against this row's own ATR-derived expected volatility band (the same
+    "no better than noise" baseline `price_forecast_quality_multiplier`
+    already uses) -- `None` until graded."""
 
     __tablename__ = "price_forecast_snapshots"
 
@@ -1146,6 +1156,8 @@ class PriceForecastSnapshot(Base):
     # always NULL until then.
     realized_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
     error_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    direction_correct: Mapped[bool | None] = mapped_column(nullable=True)
+    confidence_correct: Mapped[bool | None] = mapped_column(nullable=True)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True

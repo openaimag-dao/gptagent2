@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from app.api.accuracy import router as accuracy_router
 from app.api.admin import router as admin_router
 from app.api.agents import router as agents_router
 from app.api.alerts import router as alerts_router
@@ -139,6 +140,7 @@ app.include_router(technical_router)
 app.include_router(watchdog_router)
 app.include_router(scanner_router)
 app.include_router(executive_summary_router)
+app.include_router(accuracy_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

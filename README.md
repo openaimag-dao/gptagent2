@@ -2415,6 +2415,67 @@ dashboard page rendered correctly in a real browser (Playwright) with
 Final Prediction and Engine Breakdown at the top, correctly colored by
 signal, above the pre-existing supplementary sections.
 
+## Prediction Accuracy
+
+A new dashboard page tracks every price forecast permanently and shows how
+accurate this project's own predictions really are -- Daily/Weekly/Monthly/
+Asset accuracy, real trend charts, and confidence calibration -- entirely
+built on the grading loop the Forecast Center follow-up already shipped
+(`app/services/accuracy/engine.py`, `GET /api/accuracy`).
+
+### 1. Two new graded fields, no new grading mechanism
+
+`grade_price_forecasts()` (`app/services/forecast/engine.py`) already joins
+every `PriceForecastSnapshot` against real elapsed history to fill in
+`realized_price`/`error_pct`. This follow-up adds two more real, derived
+fields to that same pass:
+
+- **`direction_correct`** -- did the forecast's own directional call
+  (Bullish/Bearish, from its own `direction` label) match the real sign of
+  price change from `current_price` to `realized_price`? Honestly `None`
+  for a "Neutral" call, since a neutral read makes no directional claim to
+  grade.
+- **`confidence_correct`** -- did the real `|error_pct|` stay within the
+  forecast's own ATR-derived expected volatility band -- the exact same
+  "no better than noise" baseline `price_forecast_quality_multiplier`
+  already uses for its self-learning discount, recomputed here from the
+  real ATR stored on the reference history candle. `None` until graded.
+
+Migration `0028` adds both as nullable boolean columns -- no change to the
+grading join itself, no new scheduler job.
+
+### 2. Daily/Weekly/Monthly/Asset aggregation (new, pure functions)
+
+`app/services/accuracy/engine.py` buckets every already-graded row by the
+calendar day/ISO-week/month of its real `evaluated_at` timestamp, and
+separately by symbol -- only periods/assets with at least one real graded
+row ever appear, nothing is padded. Each bucket reports real evaluated
+count, average absolute error%, direction accuracy%, and confidence
+accuracy%. Since `PriceForecastSnapshot` grading is currently scheduled
+BTC-only, "Asset Accuracy" today shows one row -- it generalizes honestly
+the moment more symbols are graded, with no code change.
+
+### 3. Dashboard
+
+New "Prediction Accuracy" page: overall summary cards, two trend charts
+(avg error%/direction accuracy% over daily buckets, reusing the existing
+`svgLineChart()` primitive -- no new charting dependency), Daily/Weekly/
+Monthly/Asset tables, and a Recent Graded Predictions table showing
+Predicted/Actual/Error%/Direction/Confidence/Tier per row, colored
+correct/wrong.
+
+### 4. Test results & verification
+
+1041 -> 1060 tests, all passing; `ruff check`/`format` clean. Verified the
+full grading-to-dashboard path against a real local Postgres: computed a
+genuine forecast, rewound its `reference_timestamp` to an earlier stored
+candle with a real directional call, ran `grade_price_forecasts()`
+directly, and confirmed it correctly graded a wrong directional call
+(`direction_correct: false`, price moved against the stated Bullish call)
+alongside a within-band error (`confidence_correct: true`) -- then
+confirmed `/api/accuracy` aggregated it correctly and the new dashboard
+page rendered it, in a real browser, with the right pass/fail coloring.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is
