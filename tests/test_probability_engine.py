@@ -1,16 +1,32 @@
+import pytest
+
 from app.services.probability.engine import compute_forward_returns, compute_rsi_probability
 
 
 def test_compute_forward_returns_shifts_back_by_horizon():
     returns = [0.01, 0.02, -0.03, 0.04, None]
     forward = compute_forward_returns(returns, horizon=1)
-    assert forward == [0.02, -0.03, 0.04, None, None]
+    assert forward[:3] == pytest.approx([0.02, -0.03, 0.04])
+    assert forward[3:] == [None, None]
 
 
-def test_compute_forward_returns_horizon_two():
+def test_compute_forward_returns_horizon_two_compounds_both_periods():
     returns = [0.01, 0.02, -0.03, 0.04]
     forward = compute_forward_returns(returns, horizon=2)
-    assert forward == [-0.03, 0.04, None, None]
+    # index 0: compound periods 1 and 2 -> (1.02 * 0.97) - 1
+    assert forward[0] == pytest.approx((1.02 * 0.97) - 1)
+    # index 1: compound periods 2 and 3 -> (0.97 * 1.04) - 1
+    assert forward[1] == pytest.approx((0.97 * 1.04) - 1)
+    # index 2/3: window runs past the end of the series -> None, not guessed
+    assert forward[2] is None
+    assert forward[3] is None
+
+
+def test_compute_forward_returns_none_when_any_period_in_window_missing():
+    returns = [0.01, None, 0.03, 0.04]
+    forward = compute_forward_returns(returns, horizon=2)
+    # index 0's window (periods 1, 2) includes a None -> None, not a partial compound
+    assert forward[0] is None
 
 
 def test_compute_rsi_probability_insufficient_sample_returns_none():
