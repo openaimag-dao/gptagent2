@@ -227,7 +227,9 @@ def _build_engine():
         "correlation_engine": AsyncMock(),
         "whale_engine": AsyncMock(),
         "onchain_engine": AsyncMock(),
+        "pattern_engine": AsyncMock(),
     }
+    deps["pattern_engine"].get_latest.return_value = []
     engine = ForecastEngine(
         session_factory,
         deps["probability_engine"],
@@ -239,6 +241,7 @@ def _build_engine():
         deps["correlation_engine"],
         deps["whale_engine"],
         deps["onchain_engine"],
+        deps["pattern_engine"],
     )
     return engine, deps, session
 
@@ -292,6 +295,13 @@ async def test_compute_builds_full_payload_and_persists():
     deps["correlation_engine"].get_latest.return_value = []
     deps["whale_engine"].get_snapshot.return_value = {"available": False}
     deps["onchain_engine"].get_snapshot.return_value = {"available": False, "metrics": {}}
+    deps["pattern_engine"].get_latest.return_value = [
+        SimpleNamespace(
+            pattern_name="golden_cross",
+            direction="bullish",
+            timestamp=datetime(2026, 8, 1, tzinfo=UTC),
+        )
+    ]
 
     with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=[history_row])):
         payload = await engine.compute("BTC", "24h")
@@ -308,6 +318,12 @@ async def test_compute_builds_full_payload_and_persists():
     assert payload["key_levels"]["resistance_1"] == 105.0
     assert payload["confidence_breakdown"][0]["name"] == "Technical Analysis"
     assert payload["confidence_breakdown"][0]["confidence_pct"] == 80
+    breakdown = {r["name"]: r["confidence_pct"] for r in payload["confidence_breakdown"]}
+    assert "Momentum" in breakdown
+    assert "Pattern" in breakdown
+    assert breakdown["Pattern"] == 100  # single unanimous bullish signal
+    assert "Risk" in breakdown
+    assert breakdown["Risk"] is None  # no watchdog snapshot in this test
     assert payload["reference_timestamp"] == history_row.timestamp.isoformat()
     assert payload["prediction_range"] == {"upper_bound": 106.0, "lower_bound": 100.0}
     assert payload["scenario_cases"]["bull_case"]["target_price"] == 105.0
@@ -326,6 +342,24 @@ async def test_compute_builds_full_payload_and_persists():
     }
     session.add.assert_called_once()
     session.commit.assert_awaited()
+
+
+async def test_confidence_breakdown_risk_row_reuses_watchdog_risk_score():
+    engine, deps, _ = _build_engine()
+    deps["sentiment_engine"].get_latest.return_value = None
+    deps["correlation_engine"].get_latest.return_value = []
+    deps["whale_engine"].get_snapshot.return_value = {"available": False}
+    deps["onchain_engine"].get_snapshot.return_value = {"available": False, "metrics": {}}
+    deps["pattern_engine"].get_latest.return_value = []
+    watchdog = SimpleNamespace(confidence_score=None, risk_score=80)
+
+    rows = await engine._confidence_breakdown("BTC", None, watchdog, momentum_score=None)
+
+    breakdown = {r.name: r.confidence_pct for r in rows}
+    # risk_score=80 is 30 points from the neutral center (50) -> distance*2 = 60
+    assert breakdown["Risk"] == 60
+    assert breakdown["Momentum"] is None  # no momentum_score given -> honestly unavailable
+    assert breakdown["Pattern"] is None  # no patterns detected
 
 
 def test_price_forecast_quality_multiplier_none_without_enough_track_record():

@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import WatchdogSnapshot
+from app.services.analysis.correlation import CorrelationEngine, compute_correlation_strength
 from app.services.analysis.regime import MarketRegime
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.explanation.engine import ExplanationEngine
@@ -261,6 +262,7 @@ class ExecutiveSummaryEngine:
         whale_engine: WhaleIntelligenceEngine,
         onchain_engine: OnChainIntelligenceEngine,
         etf_engine: ETFIntelligenceEngine,
+        correlation_engine: CorrelationEngine,
     ) -> None:
         self._session_factory = session_factory
         self._global_score_engine = global_score_engine
@@ -270,6 +272,7 @@ class ExecutiveSummaryEngine:
         self._whale_engine = whale_engine
         self._onchain_engine = onchain_engine
         self._etf_engine = etf_engine
+        self._correlation_engine = correlation_engine
 
     async def _latest_watchdog_snapshot(self) -> WatchdogSnapshot | None:
         async with self._session_factory() as session:
@@ -290,6 +293,7 @@ class ExecutiveSummaryEngine:
         whale_snapshot = await self._whale_engine.get_snapshot(symbol)
         onchain_snapshot = await self._onchain_engine.get_snapshot(symbol)
         etf_proxy = await self._etf_engine.get_flow_proxy()
+        correlations = await self._correlation_engine.get_latest()
 
         consensus = watchdog.consensus
         bias = (
@@ -339,6 +343,12 @@ class ExecutiveSummaryEngine:
             "news_quality": sentiment_snapshot.news_sentiment_score
             if sentiment_snapshot is not None
             else None,
+            # Trend Strength is a distinct axis from momentum above: ADX-style
+            # "how strongly trending" (direction-agnostic), reusing the exact
+            # same trend_strength TechnicalAnalysisEngine already computed
+            # this cycle -- not a rename of momentum, an additive real number.
+            "trend_strength": min(100.0, trend_strength) if trend_strength is not None else None,
+            "correlation_strength": compute_correlation_strength(correlations),
         }
 
         summary = compose_summary(
@@ -410,4 +420,5 @@ def build_executive_summary_engine() -> ExecutiveSummaryEngine:
         WhaleIntelligenceEngine(session_factory),
         OnChainIntelligenceEngine(),
         ETFIntelligenceEngine(news_repository),
+        CorrelationEngine(session_factory),
     )
