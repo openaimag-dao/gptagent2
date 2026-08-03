@@ -519,16 +519,136 @@ async function renderForecastCenter() {
   return container;
 }
 
+// Executive Market Summary -- the Overview page's second hero panel,
+// directly below the AI Forecast Center. Bias/score/factors/action all come
+// from a single /api/executive-summary/BTC read; no client-side scoring.
+const EXEC_BIAS_STYLE = {
+  "Strong Bullish": "up",
+  Bullish: "up",
+  Neutral: "neutral",
+  Bearish: "down",
+  "Strong Bearish": "down",
+};
+
+const EXEC_MARKET_HEALTH_FIELDS = [
+  ["Liquidity", "liquidity"],
+  ["Volatility", "volatility"],
+  ["Momentum", "momentum"],
+  ["Sentiment", "sentiment"],
+  ["Institutional Activity", "institutional_activity"],
+  ["On-chain Activity", "onchain_activity"],
+  ["News Quality", "news_quality"],
+];
+
+const EXEC_ACTION_STYLE = {
+  "Strong Buy": "up",
+  Buy: "up",
+  Accumulate: "up",
+  Hold: "neutral",
+  "Reduce Risk": "down",
+  "Take Profit": "down",
+  Sell: "down",
+  "No Trade": "neutral",
+};
+
+function buildExecutiveSummaryCard(payload) {
+  const biasCls = EXEC_BIAS_STYLE[payload.bias] || "neutral";
+  const actionCls = EXEC_ACTION_STYLE[payload.action] || "neutral";
+
+  const root = el("div", { class: "exec-summary" });
+
+  root.appendChild(
+    el("div", { class: "exec-summary-header" }, [
+      el("div", { class: "forecast-eyebrow" }, "EXECUTIVE MARKET SUMMARY"),
+      el("div", { class: "forecast-symbol" }, payload.symbol),
+    ])
+  );
+
+  root.appendChild(
+    el("div", { class: "exec-summary-hero" }, [
+      el("div", { class: "forecast-hero-block" }, [
+        el("div", { class: "forecast-stat-label" }, "Overall Market Score"),
+        el("div", { class: "forecast-price" }, payload.overall_score != null ? `${payload.overall_score}/100` : "n/a"),
+      ]),
+      el("div", { class: "forecast-hero-block" }, [
+        el("div", { class: "forecast-stat-label" }, "Current Bias"),
+        el("div", { class: `forecast-direction ${biasCls}` }, payload.bias),
+      ]),
+    ])
+  );
+
+  root.appendChild(el("p", {}, payload.summary));
+
+  root.appendChild(
+    el("div", { class: "exec-summary-factors" }, [
+      el("div", {}, [
+        el("h3", {}, "Bullish Factors"),
+        payload.bullish_factors && payload.bullish_factors.length
+          ? el("ul", { class: "structured-list" }, payload.bullish_factors.map((f) => el("li", { class: "up" }, `✓ ${f}`)))
+          : el("p", { class: "sub" }, "No bullish factors flagged this cycle."),
+      ]),
+      el("div", {}, [
+        el("h3", {}, "Bearish Factors"),
+        payload.bearish_factors && payload.bearish_factors.length
+          ? el("ul", { class: "structured-list" }, payload.bearish_factors.map((f) => el("li", { class: "down" }, `⚠ ${f}`)))
+          : el("p", { class: "sub" }, "No bearish factors flagged this cycle."),
+      ]),
+    ])
+  );
+
+  root.appendChild(el("h3", {}, "Market Health"));
+  root.appendChild(
+    el(
+      "div",
+      { class: "grid" },
+      EXEC_MARKET_HEALTH_FIELDS.map(([label, key]) => scoreBar(label, payload.market_health[key]))
+    )
+  );
+
+  root.appendChild(el("h3", {}, "AI Action"));
+  root.appendChild(
+    el("div", { class: "exec-summary-action" }, [
+      el("span", { class: `exec-action-badge ${actionCls}` }, payload.action),
+      el("span", { class: "sub" }, payload.action_reason),
+    ])
+  );
+
+  root.appendChild(
+    el(
+      "div",
+      { class: "forecast-footer" },
+      `Last analysis cycle: ${new Date(payload.watchdog_computed_at).toLocaleString()}`
+    )
+  );
+
+  return root;
+}
+
+async function renderExecutiveSummary() {
+  const payload = await safe("/api/executive-summary/BTC");
+  if (!payload) {
+    return el(
+      "p",
+      { class: "error exec-summary-wrap" },
+      "Executive Market Summary: not enough data yet (Market Watchdog hasn't completed a cycle)."
+    );
+  }
+  const wrap = el("div", { class: "exec-summary-wrap" });
+  wrap.appendChild(buildExecutiveSummaryCard(payload));
+  return wrap;
+}
+
 async function renderOverview() {
-  const [forecastCenter, market, regime, signals, score] = await Promise.all([
+  const [forecastCenter, execSummary, market, regime, signals, score] = await Promise.all([
     renderForecastCenter(),
+    renderExecutiveSummary(),
     safe("/api/market"),
     safe("/api/regime"),
     safe("/api/signals"),
     safe("/api/global-score"),
   ]);
 
-  const nodes = [forecastCenter, el("h2", {}, "Overview")];
+  const nodes = [forecastCenter, execSummary, el("h2", {}, "Overview")];
   const top = el("div", { class: "grid" });
   if (regime) top.appendChild(card("Regime", regime.regime.replace(/_/g, " ")));
   if (signals) top.appendChild(card("Bull / Bear", `${signals.bull_score} / ${signals.bear_score}`, `net ${signals.net_score}, ${signals.confidence_pct}% confidence`));

@@ -2284,6 +2284,74 @@ without waiting real days): `grade_forecasts_job` correctly found it,
 computed a real error%, and persisted it, all visible end-to-end in the
 dashboard's new history table and accuracy cards.
 
+## Executive Market Summary
+
+A second hero panel on the Overview page, directly below the AI Forecast
+Center, answering "what should I know right now?" -- entirely out of numbers
+other engines already compute (`app/services/executive_summary/engine.py`,
+`GET /api/executive-summary/{symbol}`).
+
+### 1. Reused, not rebuilt
+
+- **Overall score, regime, risk, committee decision, consensus vote** are
+  all read straight off the latest `WatchdogSnapshot` -- the same
+  "never duplicate calculations already performed by Committee/Consensus/
+  Scenario/Risk" reuse the Forecast Center already established -- rather
+  than re-invoking the agent orchestrator, Committee, or GlobalScore from
+  scratch.
+- **Bullish/Bearish Factors** are assembled only from real, already-labeled
+  signals: `TechnicalAnalysisSnapshot.active_signals` (the RSI/MACD/cross/
+  trend events the technical engine already detected this cycle),
+  Consensus's own bullish/bearish agent buckets plus each agent's own
+  evidence excerpt, `ExplanationEngine`'s already-tagged supporting news,
+  the real Crypto Fear & Greed classification, the ETF proxy's own
+  classification (always labeled "proxy", never presented as confirmed
+  flow data), and Whale Intelligence's own funding-rate reading. No factor
+  is ever invented to fill out the list -- both sides render `[]` honestly
+  when a source has nothing to say.
+- **Market Health** (Liquidity/Volatility/Momentum/Sentiment/Institutional
+  Activity/On-chain Activity/News Quality) reads real already-computed
+  0-100 scores off `WatchdogSnapshot`, `GlobalMarketScore`,
+  `TechnicalAnalysisSnapshot`, and `SentimentSnapshot`. On-chain Activity
+  is honestly `null` today -- `OnChainIntelligenceEngine` is a documented
+  no-data-source scaffold, exactly like the Forecast Center's Confidence
+  Breakdown already shows it.
+
+### 2. New composition (no new trading model)
+
+- `classify_ai_action()` maps the AI Investment Committee's own decision
+  (BUY/SELL/HOLD) and confidence, plus `GlobalScoreEngine`'s own
+  `risk_score`, onto the requested 8-tier scale (Strong Buy/Buy/Accumulate/
+  Hold/Reduce Risk/Take Profit/Sell/No Trade) -- pure presentation
+  composition over 3 numbers this project already computes every cycle,
+  always paired with a one-line reason citing the real inputs behind it.
+- `compose_summary()` builds the 3-5 sentence narrative deterministically
+  from the fields above -- the same string-composition style
+  `ExplanationEngine`/`WatchdogEngine` already use elsewhere, never an LLM
+  call (LLM report generation already has its own, separate, occasionally
+  rate-limited path in this project; the Executive Summary never depends
+  on it).
+
+### 3. No new persistence
+
+Every input here is already recomputed every analysis cycle by its own
+engine/scheduler job (Watchdog's own cycle, GlobalScore, Sentiment,
+Technical Analysis all run on the existing `analysis_interval_minutes`
+cadence) -- re-reading them on each dashboard refresh satisfies "update
+every analysis cycle" honestly, with no redundant new scheduler job and no
+new migration.
+
+### 4. Test results & verification
+
+1005 -> 1028 tests, all passing; `ruff check`/`format` clean. Verified
+against a real local Postgres + Redis: the endpoint was exercised against a
+genuine `WatchdogSnapshot` row computed by a live scheduler cycle (real
+Consensus/Committee/Sentiment/Technical Analysis data, not mocks), and the
+dashboard panel was confirmed rendering correctly in a real browser
+(Playwright) directly below the AI Forecast Center, with the Bullish/
+Bearish Factors, Market Health bars, and AI Action badge all showing real,
+distinct values.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

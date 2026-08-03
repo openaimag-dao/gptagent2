@@ -315,6 +315,65 @@ ul.structured-list { margin: 3px 0 0; padding-left: 18px; }
 .forecast-center h3 { font-size: 14px; margin: 20px 0 10px; color: var(--text); }
 .forecast-center .grid { margin-bottom: 12px; }
 
+/* Executive Market Summary -- Overview page's second hero panel, directly
+   below the AI Forecast Center. Same glassmorphism treatment, a distinct
+   accent tint (green-leaning) so the two panels read as related but
+   separate, scoped entirely under .exec-summary. */
+.exec-summary-wrap { margin-bottom: 24px; }
+
+.exec-summary {
+  position: relative;
+  background: linear-gradient(160deg, rgba(84, 214, 139, 0.10), rgba(18, 24, 34, 0.6));
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(84, 214, 139, 0.22);
+  border-radius: 16px;
+  padding: 24px 28px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  animation: forecast-fade-in 0.4s ease;
+}
+
+.exec-summary-header { margin-bottom: 16px; }
+
+.exec-summary-hero {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  flex-wrap: wrap;
+  padding: 4px 0 18px;
+  text-align: center;
+}
+
+.exec-summary-factors {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 20px;
+  margin: 16px 0;
+}
+
+.exec-summary-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.exec-action-badge {
+  font-size: 14px;
+  font-weight: 700;
+  padding: 6px 16px;
+  border-radius: 100px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+.exec-action-badge.up { color: #54d68b; border-color: rgba(84, 214, 139, 0.4); }
+.exec-action-badge.down { color: #ff6b6b; border-color: rgba(255, 107, 107, 0.4); }
+.exec-action-badge.neutral { color: var(--muted); }
+
+.exec-summary h3 { font-size: 14px; margin: 20px 0 10px; color: var(--text); }
+.exec-summary .grid { margin-bottom: 12px; }
+
 @media (max-width: 800px) {
   #nav-toggle { display: block; }
   body { flex-direction: column; }
