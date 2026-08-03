@@ -1,16 +1,19 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from app.services.explainability.engine import (
+    EngineBreakdownRow,
     ExplainabilityEngine,
     _agent_explanation,
     _agent_signal,
     _agent_weight,
+    _compose_summary_text,
     _correlation_explanation,
     _historical_confidence,
     _historical_signal_and_explanation,
+    _pattern_explanation,
     _whale_explanation,
-    _whale_signal,
 )
 
 # -- pure helpers -------------------------------------------------------------
@@ -44,23 +47,21 @@ def test_agent_weight_reads_consensus_share():
     assert _agent_weight("technical", None) is None
 
 
-def test_whale_signal_and_explanation_available():
+def test_whale_explanation_available():
     snapshot = {
         "available": True,
         "classification": "long_heavy",
         "long_short_ratio": 1.35,
         "funding_rate": 0.0002,
     }
-    assert _whale_signal(snapshot) == "Long Heavy"
     explanation = _whale_explanation(snapshot)
     assert "long heavy" in explanation
     assert "1.35" in explanation
     assert "0.02" in explanation or "0.0200%" in explanation
 
 
-def test_whale_signal_and_explanation_unavailable():
+def test_whale_explanation_unavailable():
     snapshot = {"available": False, "reason": "CoinGlass returned no usable data"}
-    assert _whale_signal(snapshot) is None
     assert (
         _whale_explanation(snapshot) == "Unavailable this cycle: CoinGlass returned no usable data"
     )
@@ -117,6 +118,46 @@ def test_historical_confidence_averages_similarity():
     assert _historical_confidence([]) is None
 
 
+def _pattern_signal(name: str, direction: str, day: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        pattern_name=name, direction=direction, timestamp=datetime(2026, 1, day, tzinfo=UTC)
+    )
+
+
+def test_pattern_explanation_empty():
+    assert _pattern_explanation([]) == "No patterns detected in recent history."
+
+
+def test_pattern_explanation_lists_recent_patterns():
+    signals = [
+        _pattern_signal("golden_cross", "bullish", 5),
+        _pattern_signal("hammer", "bullish", 3),
+    ]
+    explanation = _pattern_explanation(signals)
+    assert "golden_cross (bullish)" in explanation
+    assert "hammer (bullish)" in explanation
+
+
+def test_compose_summary_text_no_signals():
+    assert _compose_summary_text(None, None, []) == (
+        "Not enough engines reported a signal this cycle to form a consensus view."
+    )
+
+
+def test_compose_summary_text_names_strongest_row():
+    rows = [
+        EngineBreakdownRow("Technical Analysis", "Bullish", 80, 60.0, "Strong uptrend"),
+        EngineBreakdownRow("News", "Bullish", 40, 10.0, "Positive coverage"),
+    ]
+    consensus = {"agreement_score": 70.0}
+    summary = _compose_summary_text("Strong Bullish", consensus, rows)
+    assert "2 of 2 engines" in summary
+    assert "Strong Bullish" in summary
+    assert "70.0% agreement" in summary
+    assert "Technical Analysis carries the most weight (60.0%)" in summary
+    assert "Strong uptrend" in summary
+
+
 # -- ExplainabilityEngine.build ------------------------------------------------
 
 
@@ -137,7 +178,9 @@ def _build_engine(watchdog=None):
         "correlation_engine": AsyncMock(),
         "whale_engine": AsyncMock(),
         "onchain_engine": AsyncMock(),
+        "pattern_engine": AsyncMock(),
     }
+    deps["pattern_engine"].get_latest.return_value = []
     engine = ExplainabilityEngine(
         session_factory,
         deps["explanation_engine"],
@@ -147,6 +190,7 @@ def _build_engine(watchdog=None):
         deps["correlation_engine"],
         deps["whale_engine"],
         deps["onchain_engine"],
+        deps["pattern_engine"],
     )
     return engine, deps
 
@@ -164,7 +208,7 @@ async def test_build_returns_explanation_plus_breakdown_without_watchdog():
     result = await engine.build("BTC")
 
     assert result["symbol"] == "BTC"
-    assert len(result["engine_breakdown"]) == 8
+    assert len(result["engine_breakdown"]) == 9
     names = [row["name"] for row in result["engine_breakdown"]]
     assert names == [
         "Technical Analysis",
@@ -174,10 +218,12 @@ async def test_build_returns_explanation_plus_breakdown_without_watchdog():
         "On-chain",
         "Whales",
         "Correlations",
+        "Pattern",
         "Historical Patterns",
     ]
     assert result["final_prediction"]["bias"] is None
     assert result["final_prediction"]["committee_decision"] is None
+    assert "Not enough engines" in result["summary_text"]
 
 
 async def test_build_full_payload_with_watchdog_consensus():
@@ -187,11 +233,19 @@ async def test_build_full_payload_with_watchdog_consensus():
             "bearish_pct": 15.0,
             "neutral_pct": 20.0,
             "agreement_score": 65.0,
-            "bullish_agents": ["technical", "news"],
+            "bullish_agents": ["technical", "news", "whale", "pattern", "historical"],
             "bearish_agents": [],
             "neutral_agents": ["sentiment", "macro"],
             "unavailable_agents": [],
-            "agent_weights": {"technical": 40.0, "news": 30.0, "sentiment": 20.0, "macro": 10.0},
+            "agent_weights": {
+                "technical": 40.0,
+                "news": 30.0,
+                "sentiment": 20.0,
+                "macro": 10.0,
+                "whale": 5.0,
+                "pattern": 5.0,
+                "historical": 5.0,
+            },
             "agent_evidence": {"technical": "Strong uptrend", "news": "Positive coverage"},
         },
         committee_decision="BUY",
@@ -217,6 +271,7 @@ async def test_build_full_payload_with_watchdog_consensus():
     deps["correlation_engine"].get_latest.return_value = []
     deps["whale_engine"].get_snapshot.return_value = {"available": False, "reason": "no data"}
     deps["onchain_engine"].get_snapshot.return_value = {"available": False, "metrics": {}}
+    deps["pattern_engine"].get_latest.return_value = [_pattern_signal("golden_cross", "bullish", 5)]
 
     result = await engine.build("BTC")
 
@@ -228,7 +283,17 @@ async def test_build_full_payload_with_watchdog_consensus():
     assert breakdown["News"]["signal"] == "Bullish"
     assert breakdown["Sentiment"]["signal"] == "Neutral"
     assert breakdown["Macro"]["weight"] == 10.0
+    assert breakdown["Whales"]["signal"] == "Bullish"
+    assert breakdown["Whales"]["weight"] == 5.0
+    assert breakdown["Pattern"]["signal"] == "Bullish"
+    assert breakdown["Pattern"]["weight"] == 5.0
+    assert "golden_cross" in breakdown["Pattern"]["explanation"]
     assert breakdown["Historical Patterns"]["signal"] == "Bullish"
+    assert breakdown["Historical Patterns"]["weight"] == 5.0
 
     assert result["final_prediction"]["bias"] == "Strong Bullish"
     assert result["final_prediction"]["committee_decision"] == "BUY"
+    # On-chain and Correlations have no agent key mapping (signal stays
+    # None); the other 7 rows all got a real consensus bucket.
+    assert "7 of 9 engines" in result["summary_text"]
+    assert "Technical Analysis carries the most weight (40.0%)" in result["summary_text"]

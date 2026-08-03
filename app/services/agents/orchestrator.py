@@ -6,6 +6,7 @@ from app.services.agents.base import AgentOutput
 from app.services.agents.correlation_agent import CorrelationAgent
 from app.services.agents.crypto_agent import CryptoAgent
 from app.services.agents.equity_agent import EquityAgent
+from app.services.agents.historical_agent import HistoricalAgent
 from app.services.agents.macro_agent import MacroAgent
 from app.services.agents.news_agent import NewsAgent
 from app.services.agents.onchain_agent import OnchainAgent
@@ -24,6 +25,7 @@ from app.services.onchain.engine import OnChainIntelligenceEngine
 from app.services.patterns.engine import PatternEngine
 from app.services.sentiment.engine import SentimentEngine
 from app.services.signals.engine import SignalEngine
+from app.services.similar_market.engine import SimilarMarketEngine
 from app.services.technical.engine import TechnicalAnalysisEngine
 from app.services.technical.provider import TechnicalAnalysisProvider
 from app.services.whales.engine import WhaleIntelligenceEngine
@@ -47,6 +49,7 @@ class AgentOrchestrator:
         risk_agent: RiskAgent,
         onchain_agent: OnchainAgent,
         correlation_agent: CorrelationAgent,
+        historical_agent: HistoricalAgent,
     ) -> None:
         self._macro_agent = macro_agent
         self._crypto_agent = crypto_agent
@@ -59,6 +62,7 @@ class AgentOrchestrator:
         self._risk_agent = risk_agent
         self._onchain_agent = onchain_agent
         self._correlation_agent = correlation_agent
+        self._historical_agent = historical_agent
 
     async def run_all(self) -> dict[str, AgentOutput]:
         (
@@ -73,6 +77,7 @@ class AgentOrchestrator:
             risk,
             onchain,
             correlation,
+            historical,
         ) = await asyncio.gather(
             self._macro_agent.summarize(),
             self._crypto_agent.summarize(),
@@ -85,6 +90,7 @@ class AgentOrchestrator:
             self._risk_agent.summarize(),
             self._onchain_agent.summarize(),
             self._correlation_agent.summarize(),
+            self._historical_agent.summarize(),
         )
         return {
             "macro": macro,
@@ -98,6 +104,7 @@ class AgentOrchestrator:
             "risk": risk,
             "onchain": onchain,
             "correlation": correlation,
+            "historical": historical,
         }
 
 
@@ -122,6 +129,7 @@ def build_agent_orchestrator() -> AgentOrchestrator:
     pattern_engine = PatternEngine(session_factory)
     onchain_engine = OnChainIntelligenceEngine()
     correlation_engine = CorrelationEngine(session_factory)
+    similar_market_engine = SimilarMarketEngine(session_factory)
 
     return AgentOrchestrator(
         macro_agent=MacroAgent(market_repository, global_score_engine),
@@ -135,4 +143,5 @@ def build_agent_orchestrator() -> AgentOrchestrator:
         risk_agent=RiskAgent(global_score_engine),
         onchain_agent=OnchainAgent(onchain_engine),
         correlation_agent=CorrelationAgent(correlation_engine),
+        historical_agent=HistoricalAgent(similar_market_engine),
     )
