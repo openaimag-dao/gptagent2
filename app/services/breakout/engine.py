@@ -12,6 +12,7 @@ PortfolioAdvisorEngine and MarketReplayEngine already read.
 
 import asyncio
 import logging
+from collections.abc import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -246,3 +247,25 @@ class BreakoutEngine:
                 .limit(limit)
             )
             return list(rows)
+
+    async def get_latest_across(
+        self, symbols: Sequence[str], timeframe: Timeframe = Timeframe.DAILY
+    ) -> list[BreakoutEvent]:
+        """Most recent detection per symbol across a symbol universe -- one
+        query, then keep the first (most recent) row per symbol in Python.
+        Reads what compute_breakout_job already persisted; does not trigger
+        a new computation, so this stays cheap enough for a dashboard load."""
+        upper_symbols = [s.upper() for s in symbols]
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(BreakoutEvent)
+                .where(
+                    BreakoutEvent.symbol.in_(upper_symbols),
+                    BreakoutEvent.timeframe == timeframe.value,
+                )
+                .order_by(BreakoutEvent.computed_at.desc())
+            )
+            latest_by_symbol: dict[str, BreakoutEvent] = {}
+            for row in rows:
+                latest_by_symbol.setdefault(row.symbol, row)
+            return list(latest_by_symbol.values())

@@ -36,6 +36,7 @@ from app.api.market import router as market_router
 from app.api.memory import router as memory_router
 from app.api.news import router as news_router
 from app.api.onchain import router as onchain_router
+from app.api.opportunities import router as opportunities_router
 from app.api.patterns import router as patterns_router
 from app.api.portfolio import router as portfolio_router
 from app.api.probability import router as probability_router
@@ -134,6 +135,7 @@ app.include_router(risk_router)
 app.include_router(replay_router)
 app.include_router(breakout_router)
 app.include_router(onchain_router)
+app.include_router(opportunities_router)
 app.include_router(alerts_router)
 app.include_router(shocks_router)
 app.include_router(technical_router)

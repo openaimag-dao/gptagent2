@@ -795,17 +795,54 @@ async function renderExecutiveSummary() {
   return wrap;
 }
 
+function renderTopOpportunities(data) {
+  if (!data || !data.opportunities || !data.opportunities.length) return [];
+  const nodes = [el("h2", {}, "Top Opportunities")];
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      "Ranked by Breakout Intelligence's own confirmation-weighted probability across the tracked symbol universe."
+    )
+  );
+  nodes.push(
+    table(
+      ["Asset", "Price", "Trend", "Probability", "Confidence", "Risk", "AI Rating", "Reason"],
+      data.opportunities.map((o) => [
+        o.symbol,
+        fmtNum(o.price, o.price < 10 ? 4 : 2),
+        el("span", { class: changeClass(o.direction === "bullish" ? 1 : -1) }, o.direction),
+        o.probability_pct != null ? `${o.probability_pct.toFixed(1)}%` : "n/a",
+        `${o.confidence_pct}%`,
+        o.risk_score != null ? `${o.risk_score.toFixed(0)}/100` : "n/a",
+        decisionPill(o.rating, recommendationTone(o.rating)),
+        o.expected_continuation,
+      ])
+    )
+  );
+  return nodes;
+}
+
 async function renderOverview() {
-  const [forecastCenter, execSummary, market, regime, signals, score, execSummaryData] =
-    await Promise.all([
-      renderForecastCenter(),
-      renderExecutiveSummary(),
-      safe("/api/market"),
-      safe("/api/regime"),
-      safe("/api/signals"),
-      safe("/api/global-score"),
-      safe("/api/executive-summary/BTC"),
-    ]);
+  const [
+    forecastCenter,
+    execSummary,
+    market,
+    regime,
+    signals,
+    score,
+    execSummaryData,
+    opportunities,
+  ] = await Promise.all([
+    renderForecastCenter(),
+    renderExecutiveSummary(),
+    safe("/api/market"),
+    safe("/api/regime"),
+    safe("/api/signals"),
+    safe("/api/global-score"),
+    safe("/api/executive-summary/BTC"),
+    safe("/api/opportunities"),
+  ]);
 
   const nodes = [forecastCenter, execSummary, el("h2", {}, "Overview")];
   const top = el("div", { class: "grid" });
@@ -836,6 +873,9 @@ async function renderOverview() {
   } else {
     nodes.push(el("p", { class: "error" }, "No market data collected yet."));
   }
+
+  nodes.push(...renderTopOpportunities(opportunities));
+
   return nodes;
 }
 
