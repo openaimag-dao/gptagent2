@@ -141,6 +141,30 @@ def derive_risk_level(regime: MarketRegime) -> str:
     return "moderate"
 
 
+_STRING_FIELD_PLACEHOLDER = (
+    "Not available this cycle -- the AI model returned an invalid value for this field."
+)
+_PROBABILITY_FIELD_PLACEHOLDER = 0
+
+
+def recover_analysis_fields(raw: dict, exc: ValidationError) -> tuple[dict, list[str]]:
+    """One or more AIAnalysisContent fields failed validation (wrong type,
+    an out-of-range percentage, or a missing key) -- rather than discarding
+    an otherwise-valid report, substitutes an honest placeholder for exactly
+    the fields `exc` names and leaves every other field's real LLM content
+    untouched. Returns the recovered dict plus the sorted list of field
+    names that needed a placeholder (empty if none did)."""
+    failed_fields = sorted({str(err["loc"][0]) for err in exc.errors() if err["loc"]})
+    recovered = dict(raw)
+    for name in failed_fields:
+        recovered[name] = (
+            _PROBABILITY_FIELD_PLACEHOLDER
+            if name.startswith("probability_")
+            else _STRING_FIELD_PLACEHOLDER
+        )
+    return recovered, failed_fields
+
+
 def _format_replay_comparison(replay_comparison: dict | None) -> str | None:
     """v9.0 "Reports should reference Replay" -- turns a
     get_replay_comparison() dict into a one-line addendum for Historical
@@ -182,6 +206,22 @@ def _format_watchdog_citation(watchdog: dict | None) -> str | None:
     return (
         f"Watchdog's last cycle reads {watchdog['market_health']} -- "
         f"Investment Committee: {watchdog['committee_recommendation']}."
+    )
+
+
+def _format_data_quality_note(recovered_fields: list | None) -> str | None:
+    """v12.0 P2 "Report Generator partial-recovery for LLM field failures" --
+    generate_and_store() no longer discards an entire report when only some
+    of the LLM's fields fail validation (recover_analysis_fields()
+    substitutes an honest placeholder for just those fields and keeps every
+    other field's real content). This surfaces that substitution instead of
+    silently presenting a placeholder string as if it were genuine analysis."""
+    if not recovered_fields:
+        return None
+    return (
+        f"Data quality note: {len(recovered_fields)} narrative field(s) "
+        f"({', '.join(recovered_fields)}) came back invalid from the AI model this cycle "
+        "and were replaced with a placeholder; every other field is the model's real output."
     )
 
 
@@ -276,6 +316,9 @@ def build_institutional_report(
 
     risk_detail = _format_risk_detail((report.institutional_summary or {}).get("global_score"))
     watchdog_note = _format_watchdog_citation(watchdog)
+    data_quality_note = _format_data_quality_note(
+        (report.institutional_summary or {}).get("analysis_recovered_fields")
+    )
 
     return {
         "executive_summary": executive_summary or "No summary available.",
@@ -283,6 +326,7 @@ def build_institutional_report(
         "biggest_risk": highest_risk or "No bearish scenario currently dominant.",
         "risk_detail": risk_detail,
         "watchdog_note": watchdog_note,
+        "data_quality_note": data_quality_note,
         "main_risks": analysis.get("main_risks", "n/a"),
         "market_drivers": market_drivers,
         "institutional_behavior": analysis.get("institutional_behavior", "n/a"),
@@ -554,9 +598,26 @@ class ReportGenerator:
         raw_content = await generate_analysis_json(SYSTEM_PROMPT, user_prompt)
 
         try:
-            analysis = AIAnalysisContent.model_validate(json.loads(strip_json_fence(raw_content)))
-        except (json.JSONDecodeError, ValidationError) as exc:
+            parsed_content = json.loads(strip_json_fence(raw_content))
+        except json.JSONDecodeError as exc:
             raise RuntimeError(f"LLM returned an invalid analysis payload: {exc}") from exc
+
+        recovered_fields: list[str] = []
+        try:
+            analysis = AIAnalysisContent.model_validate(parsed_content)
+        except ValidationError as exc:
+            if not isinstance(parsed_content, dict):
+                raise RuntimeError(f"LLM returned an invalid analysis payload: {exc}") from exc
+            recovered_content, recovered_fields = recover_analysis_fields(parsed_content, exc)
+            logger.warning(
+                "LLM analysis had invalid fields %s; substituting honest placeholders "
+                "and continuing report generation",
+                recovered_fields,
+            )
+            try:
+                analysis = AIAnalysisContent.model_validate(recovered_content)
+            except ValidationError as exc2:
+                raise RuntimeError(f"LLM returned an invalid analysis payload: {exc2}") from exc2
 
         market_summary: dict[str, Any] = {
             a.symbol: {
@@ -597,6 +658,7 @@ class ReportGenerator:
                 "consensus": consensus_result.to_dict() if consensus_result else None,
                 "scenarios": scenarios,
                 "portfolio_advice": portfolio_advice.to_dict() if portfolio_advice else None,
+                "analysis_recovered_fields": recovered_fields or None,
             },
             analysis=analysis.model_dump(),
         )
