@@ -834,6 +834,27 @@ function renderMarketMovers(breadth) {
   return nodes;
 }
 
+// Section 18 "Whale Activity" -- WhaleIntelligenceEngine has no
+// per-transaction/inflow data source anywhere in this codebase (honestly
+// documented in its own module), only aggregate derivatives positioning
+// (funding rate, open interest, liquidations, long/short ratio). Rendered
+// as-is rather than inventing per-transaction rows; renders nothing when
+// the derivatives provider is unavailable this cycle.
+function renderWhalePositioning(data) {
+  if (!data || !data.available) return [];
+  const nodes = [el("h2", {}, "Whale Positioning")];
+  nodes.push(
+    el("div", { class: "grid" }, [
+      card("Classification", (data.classification || "n/a").replace(/_/g, " ")),
+      card("Funding Rate", data.funding_rate != null ? `${(data.funding_rate * 100).toFixed(4)}%` : "n/a"),
+      card("Long/Short Ratio", data.long_short_ratio != null ? data.long_short_ratio.toFixed(2) : "n/a"),
+      card("Open Interest", data.open_interest != null ? fmtNum(data.open_interest, 0) : "n/a"),
+      card("Liquidations 24h", data.liquidations_24h != null ? fmtNum(data.liquidations_24h, 0) : "n/a"),
+    ])
+  );
+  return nodes;
+}
+
 function renderTopOpportunities(data) {
   if (!data || !data.opportunities || !data.opportunities.length) return [];
   const nodes = [el("h2", {}, "Top Opportunities")];
@@ -873,6 +894,7 @@ async function renderOverview() {
     execSummaryData,
     opportunities,
     marketMovers,
+    whales,
   ] = await Promise.all([
     renderForecastCenter(),
     renderExecutiveSummary(),
@@ -883,6 +905,7 @@ async function renderOverview() {
     safe("/api/executive-summary/BTC"),
     safe("/api/opportunities"),
     safe("/api/scanner/movers"),
+    safe("/api/whales"),
   ]);
 
   const nodes = [forecastCenter, execSummary, el("h2", {}, "Overview")];
@@ -916,6 +939,7 @@ async function renderOverview() {
   }
 
   nodes.push(...renderMarketMovers(marketMovers));
+  nodes.push(...renderWhalePositioning(whales));
   nodes.push(...renderTopOpportunities(opportunities));
 
   return nodes;
