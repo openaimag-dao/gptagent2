@@ -14,14 +14,28 @@ _DEFAULT_BUCKET_WIDTH = 10.0
 
 
 def compute_forward_returns(returns: list[float | None], horizon: int = 1) -> list[float | None]:
-    """Shifts `returns` back by `horizon` so index i holds "what happened over
-    the next `horizon` periods after candle i" rather than the trailing
-    return already stored at i."""
+    """Real cumulative (compounded) return over the next `horizon` periods
+    after candle i -- what an investor would have actually realized holding
+    from i to i+horizon, not just the single period's return that happens to
+    land exactly `horizon` periods later. For horizon=1 this is identical to
+    the single-period return (compounding one term is a no-op), which is why
+    the bug this replaces (naively indexing `returns[i + horizon]` instead of
+    compounding every period in between) only ever showed up for horizon>1 --
+    it silently understated 3d/7d/30d-style forward moves to roughly
+    single-day magnitude. None when any period in the window is missing or
+    the window runs past the end of the series (never silently skips a gap
+    or guesses)."""
     n = len(returns)
     result: list[float | None] = []
     for i in range(n):
-        j = i + horizon
-        result.append(returns[j] if j < n else None)
+        window = returns[i + 1 : i + 1 + horizon]
+        if len(window) < horizon or any(r is None for r in window):
+            result.append(None)
+            continue
+        cumulative = 1.0
+        for r in window:
+            cumulative *= 1 + r
+        result.append(cumulative - 1)
     return result
 
 
