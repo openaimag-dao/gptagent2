@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 from app.database.models import PatternSignal
 from app.services.agents.correlation_agent import CorrelationAgent
+from app.services.agents.historical_agent import HistoricalAgent, _historical_direction
 from app.services.agents.onchain_agent import OnchainAgent
 from app.services.agents.pattern_agent import PatternAgent, _recency_weighted_direction
 from app.services.agents.risk_agent import RiskAgent
@@ -194,3 +195,57 @@ async def test_correlation_agent_reports_unavailable_when_no_pairs():
 
     assert output.direction is None
     assert output.data["available"] is False
+
+
+# -- HistoricalAgent -------------------------------------------------------------
+
+
+def _match(similarity: float, forward_7d: float | None) -> dict:
+    return {
+        "date": datetime(2026, 1, 1, tzinfo=UTC),
+        "similarity": similarity,
+        "forward_returns_pct": {"7d": forward_7d},
+    }
+
+
+def test_historical_direction_empty_is_none():
+    assert _historical_direction([]) == (None, None)
+
+
+def test_historical_direction_bullish_from_real_forward_returns():
+    matches = [_match(90.0, 2.0), _match(80.0, 1.0)]
+    direction, confidence = _historical_direction(matches)
+    assert direction == "bullish"
+    assert confidence == 85.0
+
+
+def test_historical_direction_neutral_within_band():
+    matches = [_match(70.0, 0.1), _match(60.0, -0.1)]
+    direction, _ = _historical_direction(matches)
+    assert direction == "neutral"
+
+
+async def test_historical_agent_reports_no_direction_when_no_matches():
+    similar_market_engine = AsyncMock()
+    similar_market_engine.find_similar_periods.return_value = []
+
+    output = await HistoricalAgent(similar_market_engine).summarize()
+
+    assert output.direction is None
+    assert output.confidence is None
+    assert output.data["available"] is False
+
+
+async def test_historical_agent_bullish_from_real_matches():
+    similar_market_engine = AsyncMock()
+    similar_market_engine.find_similar_periods.return_value = [
+        _match(95.0, 3.0),
+        _match(85.0, 2.0),
+    ]
+
+    output = await HistoricalAgent(similar_market_engine).summarize()
+
+    assert output.direction == "bullish"
+    assert output.confidence == 90.0
+    assert output.data["available"] is True
+    assert output.data["match_count"] == 2
