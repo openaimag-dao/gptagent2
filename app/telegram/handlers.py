@@ -86,6 +86,7 @@ from app.telegram.formatters import (
     format_etf_proxy,
     format_events,
     format_explanation,
+    format_features,
     format_global_score,
     format_historical_comparison,
     format_history,
@@ -167,6 +168,8 @@ HELP_TEXT = (
     "/patterns SYMBOL -- detected technical patterns\n"
     "/breakout SYMBOL [timeframe] -- breakout/breakdown/false breakout/failed "
     "breakdown/retest/liquidity sweep detection\n"
+    "/features SYMBOL -- beta, cointegration, market breadth, momentum, "
+    "funding-rate/open-interest momentum\n"
     "/knowledge SYMBOL -- similar historical episodes for current conditions\n"
     "/brain -- AI Brain: latest institutional-grade synthesis report (alias of /report)\n"
     "/similar SYMBOL [timeframe] -- 25 most similar historical periods\n"
@@ -267,6 +270,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("quality", "Prediction Quality Lab: Brier score, precision/recall, calibration"),
     ("patterns", "Detected technical patterns"),
     ("breakout", "Breakout/breakdown/retest/liquidity sweep detection"),
+    ("features", "Beta, cointegration, market breadth, momentum"),
     ("knowledge", "Similar historical episodes for current conditions"),
     ("brain", "AI Brain synthesis report (alias of /report)"),
     ("similar", "Most similar historical periods"),
@@ -594,6 +598,15 @@ async def cmd_breakout(message: Message, command: CommandObject) -> None:
     await engine.compute_and_store(config.symbol, config.model, timeframe)
     event = await engine.get_latest(config.symbol, timeframe)
     await _answer(message, format_breakout(config.symbol, event))
+
+
+@router.message(Command("features"))
+async def cmd_features(message: Message, command: CommandObject) -> None:
+    symbol = (command.args or "BTC").strip().upper()
+    session_factory = get_session_factory()
+    engine = FeatureEngine(session_factory, _market_repository())
+    row = await engine.compute_and_store(symbol)
+    await _answer(message, format_features(symbol, row))
 
 
 @router.message(Command("knowledge"))

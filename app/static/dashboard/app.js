@@ -2280,6 +2280,80 @@ async function renderBreakout() {
   return nodes;
 }
 
+async function renderFeatures() {
+  const nodes = [el("h2", {}, "Feature Signals")];
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      "Beta, cointegration, market breadth, multi-window momentum and funding-rate/open-interest " +
+        "momentum -- everything Feature Engine computes on every scheduled cycle that no other " +
+        "screen shows."
+    )
+  );
+  const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
+  const btn = el("button", {}, "Load");
+  nodes.push(el("div", { class: "controls" }, [symbolInput, btn]));
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    results.innerHTML = "";
+    try {
+      const data = await fetchJSON(
+        `/api/features/${encodeURIComponent(symbolInput.value)}?compute=true`
+      );
+      results.innerHTML = "";
+      const f = data.features;
+      if (!f || !Object.keys(f).length) {
+        results.appendChild(
+          el("p", { class: "error" }, `No feature data available for ${data.symbol} yet.`)
+        );
+        return;
+      }
+      const cards = [];
+      for (const [key, value] of Object.entries(f)) {
+        if (key.startsWith("momentum_")) {
+          const window = key.slice("momentum_".length, -"d_pct".length);
+          cards.push(card(`Momentum ${window}d`, fmtPct(value), null, changeClass(value)));
+        } else if (key.startsWith("beta_vs_")) {
+          cards.push(card(`Beta vs ${key.slice("beta_vs_".length).toUpperCase()}`, fmtNum(value)));
+        } else if (key === "market_breadth_mag7_pct") {
+          cards.push(card("Mag 7 Breadth", fmtPct(value), null, changeClass(value)));
+        } else if (key === "funding_rate_momentum_pct") {
+          cards.push(card("Funding Rate Momentum", fmtPct(value), null, changeClass(value)));
+        } else if (key === "open_interest_change_pct") {
+          cards.push(card("Open Interest Change", fmtPct(value), null, changeClass(value)));
+        }
+      }
+      results.appendChild(el("div", { class: "grid" }, cards));
+      for (const [key, value] of Object.entries(f)) {
+        if (key.startsWith("cointegration_vs_")) {
+          const benchmark = key.slice("cointegration_vs_".length).toUpperCase();
+          const stationary = value.is_stationary ? "cointegrated" : "not cointegrated";
+          results.appendChild(
+            el(
+              "p",
+              { class: "sub" },
+              `Cointegration vs ${benchmark}: hedge ratio ${value.hedge_ratio.toFixed(3)}, ` +
+                `${stationary} (stat ${value.statistic.toFixed(2)})`
+            )
+          );
+        }
+      }
+      results.appendChild(
+        el("p", { class: "sub" }, `Computed at ${data.computed_at.slice(0, 16).replace("T", " ")}`)
+      );
+    } catch (err) {
+      results.innerHTML = "";
+      results.appendChild(errorBox(err));
+    }
+  }
+  btn.addEventListener("click", load);
+  await load();
+  return nodes;
+}
+
 async function renderOnchain() {
   const nodes = [el("h2", {}, "On-Chain Intelligence")];
   const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
@@ -2678,7 +2752,7 @@ const PAGES = {
   overview: renderOverview, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
-  patterns: renderPatterns, breakout: renderBreakout, liquidity: renderLiquidity, sentiment: renderSentiment,
+  patterns: renderPatterns, breakout: renderBreakout, features: renderFeatures, liquidity: renderLiquidity, sentiment: renderSentiment,
   calendar: renderCalendar, similarity: renderSimilarity, brain: renderBrain,
   research: renderResearch, strategies: renderStrategies,
   probability: renderProbability, learning: renderLearning, quality: renderQuality,

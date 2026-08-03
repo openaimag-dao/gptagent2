@@ -26,6 +26,7 @@ from app.telegram.formatters import (
     format_consensus,
     format_critical_alert,
     format_explanation,
+    format_features,
     format_global_score,
     format_historical_comparison,
     format_knowledge,
@@ -573,6 +574,46 @@ def test_format_breakout_present():
     assert "Confidence: 83%" in text
     assert "Risk score: 65.0/100" in text
     assert "likely to continue" in text
+
+
+def test_format_features_without_snapshot():
+    assert "No feature data available for BTC" in format_features("BTC", None)
+
+
+def test_format_features_with_no_computable_features():
+    row = SimpleNamespace(features={}, computed_at=datetime(2026, 1, 1, tzinfo=UTC))
+    assert "No feature data available for BTC" in format_features("BTC", row)
+
+
+def test_format_features_renders_every_feature_kind():
+    row = SimpleNamespace(
+        features={
+            "momentum_7d_pct": 3.25,
+            "momentum_30d_pct": -1.5,
+            "beta_vs_nasdaq": 1.42,
+            "cointegration_vs_nasdaq": {
+                "hedge_ratio": 0.873,
+                "statistic": -3.21,
+                "is_stationary": True,
+            },
+            "market_breadth_mag7_pct": 62.5,
+            "funding_rate_momentum_pct": 0.015,
+            "open_interest_change_pct": 4.2,
+        },
+        computed_at=datetime(2026, 1, 1, 12, 30, tzinfo=UTC),
+    )
+
+    text = format_features("BTC", row)
+
+    assert "BTC FEATURES" in text
+    assert "7d +3.25%" in text
+    assert "30d -1.50%" in text
+    assert "Beta vs NASDAQ: 1.42" in text
+    assert "Cointegration vs NASDAQ: hedge ratio 0.873, cointegrated (stat -3.21)" in text
+    assert "Magnificent 7 breadth: +62.50%" in text
+    assert "Funding rate momentum: +0.01%" in text
+    assert "Open interest change: +4.20%" in text
+    assert "Computed at: 2026-01-01 12:30" in text
 
 
 def test_format_onchain_reports_unavailable_metrics():
