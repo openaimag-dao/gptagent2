@@ -795,6 +795,45 @@ async function renderExecutiveSummary() {
   return wrap;
 }
 
+function renderMarketMovers(breadth) {
+  if (!breadth || (!breadth.top_gainers.length && !breadth.top_losers.length)) return [];
+  const nodes = [el("h2", {}, "Market Movers")];
+  const grid = el("div", { class: "grid-2col" });
+  const moversTable = (title, rows, extraHeader) => {
+    const wrap = el("div");
+    wrap.appendChild(el("h3", {}, title));
+    const headers = extraHeader ? ["Symbol", "Price", "24h %", extraHeader] : ["Symbol", "Price", "24h %"];
+    wrap.appendChild(
+      table(
+        headers,
+        rows.slice(0, 5).map((r) => {
+          const row = [
+            r.symbol,
+            fmtNum(r.price, 6),
+            el("span", { class: changeClass(r.change_pct_24h) }, fmtPct(r.change_pct_24h)),
+          ];
+          if (extraHeader) row.push(fmtPct(r.volume_change_pct));
+          return row;
+        })
+      )
+    );
+    return wrap;
+  };
+  grid.appendChild(moversTable("Top Gainers", breadth.top_gainers));
+  grid.appendChild(moversTable("Top Losers", breadth.top_losers));
+  nodes.push(grid);
+  if (breadth.top_volume_increase.length) {
+    nodes.push(moversTable("Volume Surge", breadth.top_volume_increase, "Volume Change"));
+  }
+  nodes.push(
+    el("p", { class: "sub nav-pointer" }, [
+      "Related: ",
+      el("a", { href: "#scanner" }, "Full Market Scanner (breadth, sectors, detections)"),
+    ])
+  );
+  return nodes;
+}
+
 function renderTopOpportunities(data) {
   if (!data || !data.opportunities || !data.opportunities.length) return [];
   const nodes = [el("h2", {}, "Top Opportunities")];
@@ -833,6 +872,7 @@ async function renderOverview() {
     score,
     execSummaryData,
     opportunities,
+    marketMovers,
   ] = await Promise.all([
     renderForecastCenter(),
     renderExecutiveSummary(),
@@ -842,6 +882,7 @@ async function renderOverview() {
     safe("/api/global-score"),
     safe("/api/executive-summary/BTC"),
     safe("/api/opportunities"),
+    safe("/api/scanner/movers"),
   ]);
 
   const nodes = [forecastCenter, execSummary, el("h2", {}, "Overview")];
@@ -874,6 +915,7 @@ async function renderOverview() {
     nodes.push(el("p", { class: "error" }, "No market data collected yet."));
   }
 
+  nodes.push(...renderMarketMovers(marketMovers));
   nodes.push(...renderTopOpportunities(opportunities));
 
   return nodes;
