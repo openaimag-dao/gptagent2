@@ -2537,16 +2537,77 @@ async function renderAlerts() {
   return nodes;
 }
 
+async function renderMemory() {
+  const nodes = [el("h2", {}, "Market Memory")];
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      "A read-only timeline across every table this platform persists -- predictions, signals, " +
+        "regime, correlations, patterns, similarity matches, knowledge rules, whale/ETF snapshots, " +
+        "sentiment, macro events, news, alerts, reports, global score. Nothing here is recomputed, " +
+        "only indexed."
+    )
+  );
+
+  const meta = await safe("/api/memory?limit=1");
+  const categories = meta ? meta.categories : [];
+
+  const categorySelect = el(
+    "select",
+    {},
+    [el("option", { value: "" }, "All categories"), ...categories.map((c) => el("option", { value: c }, c))]
+  );
+  const limitInput = el("input", { type: "text", value: "50", placeholder: "Limit", style: "width:80px" });
+  const sinceInput = el("input", { type: "datetime-local" });
+  const loadBtn = el("button", {}, "Load");
+  nodes.push(el("div", { class: "controls" }, [categorySelect, limitInput, sinceInput, loadBtn]));
+
+  const results = el("div");
+  nodes.push(results);
+
+  async function load() {
+    results.innerHTML = "";
+    results.appendChild(el("p", { class: "loading" }, "Loading..."));
+    try {
+      const params = new URLSearchParams();
+      if (categorySelect.value) params.set("category", categorySelect.value);
+      params.set("limit", limitInput.value || "50");
+      if (sinceInput.value) params.set("since", new Date(sinceInput.value).toISOString());
+      const data = await fetchJSON(`/api/memory?${params.toString()}`);
+      results.innerHTML = "";
+      if (!data.entries.length) {
+        results.appendChild(el("p", { class: "error" }, "No entries recorded yet for this filter."));
+        return;
+      }
+      results.appendChild(
+        table(
+          ["Time", "Category", "Summary"],
+          data.entries.map((e) => [
+            e.timestamp.slice(0, 19).replace("T", " "),
+            e.category,
+            Object.entries(e.summary)
+              .map(([k, v]) => `${k}: ${v}`)
+              .join(" | "),
+          ])
+        )
+      );
+    } catch (err) {
+      results.innerHTML = "";
+      results.appendChild(errorBox(err));
+    }
+  }
+  loadBtn.addEventListener("click", load);
+  await load();
+
+  return nodes;
+}
+
 async function renderSettings() {
   const nodes = [el("h2", {}, "Settings")];
   nodes.push(
     el("p", { class: "sub" }, "Configuration lives in .env (see .env.example in the repository) -- no secrets are exposed through this dashboard.")
   );
-  const memory = await safe("/api/memory?limit=1");
-  if (memory) {
-    nodes.push(el("h2", {}, "Available Memory Categories"));
-    nodes.push(el("p", { class: "sub" }, memory.categories.join(", ")));
-  }
 
   nodes.push(el("h2", {}, "Historical Data Sync"));
   nodes.push(
@@ -2601,6 +2662,7 @@ const PAGES = {
   alerts: renderAlerts,
   risk: renderRisk, why: renderExplanation, watchdog: renderWatchdog, status: renderStatus,
   replay: renderReplay, shocks: renderShocks, technical: renderTechnical, scanner: renderScanner,
+  memory: renderMemory,
   settings: renderSettings,
 };
 
