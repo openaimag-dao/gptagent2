@@ -15,7 +15,11 @@ from app.services.agents.orchestrator import build_agent_orchestrator
 from app.services.alerts.rules import VALID_METRICS, VALID_OPERATORS, build_alert_rule_engine
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
-from app.services.analysis.report import build_institutional_report, watchdog_report_input
+from app.services.analysis.report import (
+    build_institutional_report,
+    derive_risk_level,
+    watchdog_report_input,
+)
 from app.services.backtest.conditions import Condition
 from app.services.backtest.engine import BacktestEngine
 from app.services.backtest.strategy_engine import StrategyLabEngine
@@ -1345,11 +1349,15 @@ async def cmd_risk(message: Message) -> None:
 
     global_score = await global_score_engine.get_latest()
     signal_conviction = await conviction_engine.evaluate_signal()
+    regime_snapshot = await regime_detector.get_latest()
 
     await _answer(
         message,
         format_risk(
             {
+                "risk_level": derive_risk_level(regime_snapshot.regime)
+                if regime_snapshot
+                else None,
                 "global_score": (
                     {
                         "risk_off_score": global_score.risk_off_score,

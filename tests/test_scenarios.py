@@ -1,5 +1,5 @@
 from app.database.models import GlobalMarketScore
-from app.services.scenarios.engine import compute_scenarios
+from app.services.scenarios.engine import compute_scenarios, scenario_threat_level
 
 
 def _score(**overrides) -> GlobalMarketScore:
@@ -58,3 +58,22 @@ def test_black_swan_is_dampened_even_under_max_stress():
 def test_every_probability_is_at_least_the_floor():
     scenarios = compute_scenarios(_score(risk_on_score=0, liquidity_score=0, fear_score=0))
     assert all(s["probability_pct"] >= 1 for s in scenarios)
+
+
+def test_scenario_threat_level_is_none_without_scenarios():
+    assert scenario_threat_level(None) is None
+    assert scenario_threat_level([]) is None
+
+
+def test_scenario_threat_level_is_low_under_calm_conditions():
+    scenarios = compute_scenarios(
+        _score(risk_on_score=90, risk_off_score=10, macro_pressure_score=10, fear_score=10)
+    )
+    assert scenario_threat_level(scenarios) == "Low"
+
+
+def test_scenario_threat_level_is_severe_under_max_stress():
+    scenarios = compute_scenarios(
+        _score(risk_off_score=100, fear_score=100, macro_pressure_score=100, risk_on_score=0)
+    )
+    assert scenario_threat_level(scenarios) == "Severe"

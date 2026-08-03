@@ -33,6 +33,16 @@ _SCENARIO_LABELS: dict[str, str] = {
 _BEARISH_SCENARIO_KEYS = ("risk_off", "black_swan")
 _BULLISH_SCENARIO_KEYS = ("soft_landing", "liquidity_expansion")
 
+# Plain-English threat label from the combined risk_off + black_swan
+# probability -- fixed, documented thresholds on numbers the engine already
+# computed, never a new probability model of its own.
+_THREAT_THRESHOLDS: tuple[tuple[float, str], ...] = (
+    (50.0, "Severe"),
+    (35.0, "Elevated"),
+    (20.0, "Moderate"),
+)
+_DEFAULT_THREAT_LEVEL = "Low"
+
 
 def _raw_weights(score: GlobalMarketScore) -> dict[str, float]:
     soft_landing = (
@@ -133,6 +143,20 @@ def scenario_extremes(scenarios: list[dict] | None) -> tuple:
         o = max(bullish, key=lambda s: s["probability_pct"])
         biggest_opportunity = f"{o['name']} ({o['probability_pct']}%) -- {o['rationale']}"
     return top["name"], top["probability_pct"], highest_risk, biggest_opportunity
+
+
+def scenario_threat_level(scenarios: list[dict] | None) -> str | None:
+    """Pure function: the 4-scenario list -> a plain-English threat label
+    (Low/Moderate/Elevated/Severe) from the combined risk_off + black_swan
+    probability. Same bearish bucket `scenario_extremes` already uses for
+    `highest_risk` -- this just names the magnitude instead of the scenario."""
+    if not scenarios:
+        return None
+    bearish_pct = sum(s["probability_pct"] for s in scenarios if s["key"] in _BEARISH_SCENARIO_KEYS)
+    for threshold, label in _THREAT_THRESHOLDS:
+        if bearish_pct >= threshold:
+            return label
+    return _DEFAULT_THREAT_LEVEL
 
 
 class ScenarioEngine:
