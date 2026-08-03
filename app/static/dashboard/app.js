@@ -2204,6 +2204,9 @@ async function renderReports() {
     if (ir.watchdog_note) {
       nodes.push(el("p", { class: "sub" }, ir.watchdog_note));
     }
+    if (ir.data_quality_note) {
+      nodes.push(el("p", { class: "sub" }, ir.data_quality_note));
+    }
     nodes.push(...section("Market Drivers", ir.market_drivers));
     nodes.push(...section("Sector Rotation", ir.sector_rotation));
     nodes.push(...section("Historical Comparison", ir.historical_comparison));

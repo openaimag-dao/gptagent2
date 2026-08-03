@@ -1,3 +1,5 @@
+from pydantic import ValidationError
+
 from app.database.models import (
     AssetClass,
     AssetPrice,
@@ -10,14 +12,17 @@ from app.database.models import (
 )
 from app.services.analysis.regime import MarketRegime
 from app.services.analysis.report import (
+    _format_data_quality_note,
     _format_replay_comparison,
     _format_watchdog_citation,
     build_institutional_report,
     build_user_prompt,
     derive_risk_level,
+    recover_analysis_fields,
     strip_json_fence,
     watchdog_report_input,
 )
+from app.services.analysis.schemas import AIAnalysisContent
 
 
 def test_derive_risk_level_high_for_risk_off():
@@ -320,3 +325,95 @@ def test_build_institutional_report_is_honest_when_watchdog_is_missing():
     ir = build_institutional_report(report, sector_breadth=None, watchdog=None)
 
     assert ir["watchdog_note"] is None
+
+
+def _valid_analysis_payload(**overrides) -> dict:
+    payload = {
+        "what_changed": "BTC broke above 65k.",
+        "why": "ETF inflows accelerated.",
+        "who_is_driving": "Spot ETF inflows.",
+        "institutional_behavior": "Whale accumulation observed.",
+        "macro_explanation": "DXY weakening.",
+        "historical_comparison": "Similar to March 2024.",
+        "liquidity_and_risk": "Liquidity improving.",
+        "main_risks": "Overleveraged futures market.",
+        "key_events_today": "FOMC minutes at 14:00 ET.",
+        "scenarios": "Soft landing favored.",
+        "actionable_insights": "Consider scaling into strength.",
+        "probability_bullish_pct": 60,
+        "probability_bearish_pct": 20,
+        "probability_neutral_pct": 20,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _validation_error(payload: dict) -> ValidationError:
+    try:
+        AIAnalysisContent.model_validate(payload)
+    except ValidationError as exc:
+        return exc
+    raise AssertionError("expected a ValidationError")
+
+
+def test_recover_analysis_fields_replaces_only_the_invalid_string_field():
+    payload = _valid_analysis_payload(main_risks=12345)
+
+    recovered, failed = recover_analysis_fields(payload, _validation_error(payload))
+
+    assert failed == ["main_risks"]
+    assert recovered["main_risks"] == (
+        "Not available this cycle -- the AI model returned an invalid value for this field."
+    )
+    assert recovered["what_changed"] == "BTC broke above 65k."
+    AIAnalysisContent.model_validate(recovered)
+
+
+def test_recover_analysis_fields_replaces_out_of_range_probability_with_zero():
+    payload = _valid_analysis_payload(probability_bullish_pct=150)
+
+    recovered, failed = recover_analysis_fields(payload, _validation_error(payload))
+
+    assert failed == ["probability_bullish_pct"]
+    assert recovered["probability_bullish_pct"] == 0
+    AIAnalysisContent.model_validate(recovered)
+
+
+def test_recover_analysis_fields_handles_multiple_failures_including_a_missing_key():
+    payload = _valid_analysis_payload(main_risks=None, probability_bearish_pct=-5)
+    del payload["scenarios"]
+
+    recovered, failed = recover_analysis_fields(payload, _validation_error(payload))
+
+    assert failed == ["main_risks", "probability_bearish_pct", "scenarios"]
+    AIAnalysisContent.model_validate(recovered)
+
+
+def test_format_data_quality_note_returns_none_without_recovered_fields():
+    assert _format_data_quality_note(None) is None
+    assert _format_data_quality_note([]) is None
+
+
+def test_format_data_quality_note_names_the_recovered_fields():
+    text = _format_data_quality_note(["main_risks", "scenarios"])
+
+    assert "2 narrative field(s)" in text
+    assert "main_risks, scenarios" in text
+
+
+def test_build_institutional_report_includes_data_quality_note_when_fields_were_recovered():
+    report = _report(
+        institutional_summary={"scenarios": [], "analysis_recovered_fields": ["main_risks"]}
+    )
+
+    ir = build_institutional_report(report, sector_breadth=None)
+
+    assert "main_risks" in ir["data_quality_note"]
+
+
+def test_build_institutional_report_is_honest_when_no_fields_were_recovered():
+    report = _report()
+
+    ir = build_institutional_report(report, sector_breadth=None)
+
+    assert ir["data_quality_note"] is None

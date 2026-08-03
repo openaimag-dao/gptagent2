@@ -171,6 +171,8 @@ def format_report(report: Report | None, institutional_report: dict | None = Non
         lines.append(f"Risk Detail: {ir['risk_detail']}")
     if ir.get("watchdog_note"):
         lines.append(ir["watchdog_note"])
+    if ir.get("data_quality_note"):
+        lines.append(ir["data_quality_note"])
     if analysis.get("main_risks"):
         lines.append(f"Also: {analysis['main_risks']}")
     lines.extend(
