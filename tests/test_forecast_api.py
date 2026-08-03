@@ -56,15 +56,36 @@ async def test_history_endpoint_serializes_snapshots():
         current_price=100.0,
         target_price=103.0,
         direction="Bullish",
+        probability_pct=70,
+        confidence_tier="Medium",
         realized_price=None,
         error_pct=None,
         evaluated_at=None,
     )
     engine = AsyncMock()
     engine.get_latest_history.return_value = [snapshot]
+    engine.summarize_accuracy.return_value = None
     with patch("app.api.forecast.build_forecast_engine", return_value=engine):
         result = await forecast.get_forecast_history("BTC")
 
     assert result["symbol"] == "BTC"
     assert result["forecasts"][0]["target_price"] == 103.0
     assert result["forecasts"][0]["realized_price"] is None
+    assert result["forecasts"][0]["confidence_tier"] == "Medium"
+    assert result["accuracy_by_horizon"]["24h"] == {
+        "evaluated_count": 0,
+        "avg_abs_error_pct": None,
+    }
+
+
+async def test_history_endpoint_reports_real_accuracy_when_graded():
+    engine = AsyncMock()
+    engine.get_latest_history.return_value = []
+    engine.summarize_accuracy.return_value = {"evaluated_count": 12, "avg_abs_error_pct": 0.8}
+    with patch("app.api.forecast.build_forecast_engine", return_value=engine):
+        result = await forecast.get_forecast_history("BTC")
+
+    assert result["accuracy_by_horizon"]["24h"] == {
+        "evaluated_count": 12,
+        "avg_abs_error_pct": 0.8,
+    }

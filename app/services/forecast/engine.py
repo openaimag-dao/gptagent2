@@ -269,6 +269,126 @@ def _correlation_confidence(correlations: list, symbol: str) -> int | None:
     return round(min(100.0, (sum(matches) / len(matches)) * 100))
 
 
+# Below this many graded forecasts, this symbol/horizon's own average error
+# is too noisy to act on -- treated the same as "no track record yet,"
+# never as evidence of poor accuracy. Mirrors
+# app/services/conviction/engine.py's identical _MIN_QUALITY_SAMPLE_SIZE
+# reasoning, applied to price-forecast error instead of Brier score.
+_MIN_TRACK_RECORD_SAMPLE_SIZE = 10
+
+
+def price_forecast_quality_multiplier(
+    avg_abs_error_pct: float | None,
+    evaluated_count: int | None,
+    expected_volatility_pct: float | None,
+    min_sample_size: int = _MIN_TRACK_RECORD_SAMPLE_SIZE,
+) -> float | None:
+    """Pure function: a symbol/horizon's own historical average |error%| ->
+    a 0.0-1.0 discount, or None when there isn't enough graded history to
+    judge yet (mirrors classify_conviction's Brier-score fold-in, but for
+    price-target accuracy instead of direction calibration).
+
+    The "no better than noise" baseline is this forecast's own
+    `expected_volatility_pct` (ATR as %-of-price) -- a real already-computed
+    number, not an arbitrary constant: a price target that's on average
+    off by more than the symbol's own typical daily move carries no more
+    information than guessing within its natural volatility band. 0% error
+    -> 1.0; error at or beyond the volatility band -> 0.0."""
+    if (
+        avg_abs_error_pct is None
+        or evaluated_count is None
+        or evaluated_count < min_sample_size
+        or expected_volatility_pct is None
+        or expected_volatility_pct <= 0
+    ):
+        return None
+    return round(max(0.0, min(1.0, 1 - avg_abs_error_pct / expected_volatility_pct)), 3)
+
+
+async def grade_price_forecasts(
+    session_factory: async_sessionmaker[AsyncSession], symbol: str, model: type
+) -> int:
+    """Fills in `realized_price`/`error_pct`/`evaluated_at` on every
+    ungraded `PriceForecastSnapshot` row whose horizon has actually
+    elapsed in stored history -- mirrors
+    app.services.learning.engine.evaluate_predictions()'s index-by-
+    timestamp join exactly (same reasoning: a forecast only becomes
+    gradable once real history reaches that far, never guessed). Returns
+    how many rows were graded this call."""
+    async with session_factory() as session:
+        ungraded = list(
+            await session.scalars(
+                select(PriceForecastSnapshot).where(
+                    PriceForecastSnapshot.symbol == symbol,
+                    PriceForecastSnapshot.reference_timestamp.is_not(None),
+                    PriceForecastSnapshot.evaluated_at.is_(None),
+                )
+            )
+        )
+    if not ungraded:
+        return 0
+
+    rows = await get_series(session_factory, model, symbol, Timeframe.DAILY)
+    index_by_timestamp = {r.timestamp: i for i, r in enumerate(rows)}
+
+    graded = 0
+    async with session_factory() as session:
+        for snapshot in ungraded:
+            idx = index_by_timestamp.get(snapshot.reference_timestamp)
+            if idx is None:
+                continue
+            horizon_periods = HORIZONS.get(snapshot.horizon)
+            if horizon_periods is None:
+                continue
+            target_idx = idx + horizon_periods
+            if target_idx >= len(rows):
+                continue  # horizon hasn't elapsed in stored history yet
+
+            realized_price = float(rows[target_idx].close)
+            target_price = float(snapshot.target_price)
+            if target_price == 0:
+                continue
+            error_pct = 100 * (realized_price - target_price) / target_price
+
+            db_row = await session.get(PriceForecastSnapshot, snapshot.id)
+            db_row.realized_price = realized_price
+            db_row.error_pct = round(error_pct, 4)
+            db_row.evaluated_at = datetime.now(UTC)
+            graded += 1
+        await session.commit()
+    return graded
+
+
+async def summarize_forecast_accuracy(
+    session_factory: async_sessionmaker[AsyncSession], symbol: str, horizon: str, limit: int = 50
+) -> dict | None:
+    """Real, measured accuracy over this symbol/horizon's own graded
+    forecast history -- never a simulated number. None (not zero) when
+    nothing has been graded yet."""
+    async with session_factory() as session:
+        graded = list(
+            await session.scalars(
+                select(PriceForecastSnapshot)
+                .where(
+                    PriceForecastSnapshot.symbol == symbol,
+                    PriceForecastSnapshot.horizon == horizon,
+                    PriceForecastSnapshot.evaluated_at.is_not(None),
+                )
+                .order_by(PriceForecastSnapshot.evaluated_at.desc())
+                .limit(limit)
+            )
+        )
+    if not graded:
+        return None
+    errors = [abs(float(g.error_pct)) for g in graded if g.error_pct is not None]
+    if not errors:
+        return None
+    return {
+        "evaluated_count": len(errors),
+        "avg_abs_error_pct": round(sum(errors) / len(errors), 4),
+    }
+
+
 class ForecastEngine:
     def __init__(
         self,
@@ -451,23 +571,50 @@ class ForecastEngine:
 
         consensus = watchdog.consensus if watchdog is not None else None
 
+        expected_volatility_pct = (
+            round(atr / current_price * 100, 2) if atr is not None and current_price else None
+        )
+
+        # Self-learning: how accurate has THIS symbol/horizon's own price
+        # target actually been historically? Deliberately kept separate from
+        # `confidence` above (which measures direction calibration) --
+        # honestly None until enough forecasts have actually been graded.
+        accuracy = await summarize_forecast_accuracy(
+            self._session_factory, config.symbol, horizon_label
+        )
+        track_record_multiplier = price_forecast_quality_multiplier(
+            accuracy["avg_abs_error_pct"] if accuracy else None,
+            accuracy["evaluated_count"] if accuracy else None,
+            expected_volatility_pct,
+        )
+        track_record = {
+            "evaluated_count": accuracy["evaluated_count"] if accuracy else 0,
+            "avg_abs_error_pct": accuracy["avg_abs_error_pct"] if accuracy else None,
+            "quality_multiplier": track_record_multiplier,
+            "adjusted_confidence_pct": (
+                round(conviction["effective_confidence_pct"] * track_record_multiplier)
+                if track_record_multiplier is not None
+                else None
+            ),
+        }
+
         payload = {
             "symbol": config.symbol,
             "horizon": horizon_label,
             "computed_at": datetime.now(UTC).isoformat(),
+            "reference_timestamp": latest.timestamp.isoformat(),
             "current_price": current_price,
             "target_price": round(target_price, 8),
             "expected_change_pct": round(avg_forward_return_pct, 4),
             "direction": direction_label,
             "probability_pct": confidence_pct,
             "confidence": conviction,
+            "track_record": track_record,
             "expected_range": {
                 "low": round(current_price - atr, 8) if atr is not None else None,
                 "high": round(current_price + atr, 8) if atr is not None else None,
             },
-            "expected_volatility_pct": round(atr / current_price * 100, 2)
-            if atr is not None and current_price
-            else None,
+            "expected_volatility_pct": expected_volatility_pct,
             "trend_strength": float(technical_snapshot.trend_strength)
             if technical_snapshot is not None and technical_snapshot.trend_strength is not None
             else None,
@@ -485,10 +632,12 @@ class ForecastEngine:
             "sample_size": probability_snapshot.sample_size,
         }
 
-        await self._persist(payload)
+        await self._persist(payload, latest.timestamp, conviction["tier"])
         return payload
 
-    async def _persist(self, payload: dict) -> None:
+    async def _persist(
+        self, payload: dict, reference_timestamp: datetime, confidence_tier: str
+    ) -> None:
         async with self._session_factory() as session:
             session.add(
                 PriceForecastSnapshot(
@@ -499,9 +648,11 @@ class ForecastEngine:
                     expected_change_pct=payload["expected_change_pct"],
                     direction=payload["direction"],
                     probability_pct=payload["probability_pct"],
+                    confidence_tier=confidence_tier,
                     checkpoints=payload["price_path"],
                     distribution=payload["probability_distribution"],
                     key_levels=payload["key_levels"],
+                    reference_timestamp=reference_timestamp,
                 )
             )
             await session.commit()
@@ -515,6 +666,9 @@ class ForecastEngine:
                 .limit(limit)
             )
             return list(result)
+
+    async def summarize_accuracy(self, symbol: str, horizon: str) -> dict | None:
+        return await summarize_forecast_accuracy(self._session_factory, symbol.upper(), horizon)
 
 
 def build_forecast_engine() -> ForecastEngine:

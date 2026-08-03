@@ -20,7 +20,7 @@ from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.committee.engine import CommitteeEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.features.engine import FeatureEngine
-from app.services.forecast.engine import HORIZONS, build_forecast_engine
+from app.services.forecast.engine import HORIZONS, build_forecast_engine, grade_price_forecasts
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.registry import find_symbol_config
 from app.services.history.schemas import Timeframe
@@ -96,6 +96,7 @@ BREAKOUT_JOB_ID = "compute_breakout_intelligence"
 WEEKLY_REVIEW_JOB_ID = "broadcast_weekly_review"
 MONTHLY_PERFORMANCE_JOB_ID = "broadcast_monthly_performance"
 FORECAST_JOB_ID = "compute_forecast"
+FORECAST_GRADING_JOB_ID = "grade_forecasts"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -505,8 +506,8 @@ async def compute_forecast_job() -> None:
     symbol, matching ConvictionEngine's/PortfolioAdvisorEngine's own
     defaults). Persists one PriceForecastSnapshot per horizon so
     `next_refresh_at` (this job's own APScheduler next_run_time) and the
-    dashboard's countdown are meaningful, and so the follow-up prediction-
-    history/self-learning grading job has real rows to grade."""
+    dashboard's countdown are meaningful, and so the grading job below has
+    real rows to grade."""
     engine = build_forecast_engine()
     for horizon in HORIZONS:
         try:
@@ -515,6 +516,23 @@ async def compute_forecast_job() -> None:
                 logger.info("Forecast %s/%s: insufficient data this cycle", "BTC", horizon)
         except Exception:
             logger.exception("Forecast computation failed for BTC/%s", horizon)
+
+
+async def grade_forecasts_job() -> None:
+    """AI Forecast Center self-learning: fills in realized_price/error_pct
+    on every PriceForecastSnapshot whose horizon has actually elapsed in
+    stored BTC history, so future ForecastEngine.compute() calls have a
+    real track record to fold into `track_record`. BTC only for now,
+    matching compute_forecast_job."""
+    config = find_symbol_config("BTC")
+    if config is None:
+        return
+    try:
+        graded = await grade_price_forecasts(get_session_factory(), "BTC", config.model)
+        if graded:
+            logger.info("Forecast grading: %d BTC forecast(s) graded", graded)
+    except Exception:
+        logger.exception("Forecast grading job failed")
 
 
 async def test_hypotheses_job() -> None:
@@ -782,6 +800,14 @@ def start_scheduler() -> AsyncIOScheduler:
         compute_forecast_job,
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
         id=FORECAST_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        grade_forecasts_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        id=FORECAST_GRADING_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,

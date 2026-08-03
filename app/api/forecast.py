@@ -31,10 +31,18 @@ async def get_forecast(symbol: str, horizon: str = Query("24h")) -> dict:
 
 @router.get("/{symbol}/history")
 async def get_forecast_history(symbol: str, limit: int = Query(20, le=100)) -> dict:
+    symbol = symbol.upper()
     engine = build_forecast_engine()
-    snapshots = await engine.get_latest_history(symbol.upper(), limit)
+    snapshots = await engine.get_latest_history(symbol, limit)
+
+    accuracy_by_horizon = {}
+    for horizon in HORIZONS:
+        summary = await engine.summarize_accuracy(symbol, horizon)
+        accuracy_by_horizon[horizon] = summary or {"evaluated_count": 0, "avg_abs_error_pct": None}
+
     return {
-        "symbol": symbol.upper(),
+        "symbol": symbol,
+        "accuracy_by_horizon": accuracy_by_horizon,
         "forecasts": [
             {
                 "horizon": s.horizon,
@@ -42,6 +50,8 @@ async def get_forecast_history(symbol: str, limit: int = Query(20, le=100)) -> d
                 "current_price": float(s.current_price),
                 "target_price": float(s.target_price),
                 "direction": s.direction,
+                "probability_pct": s.probability_pct,
+                "confidence_tier": s.confidence_tier,
                 "realized_price": float(s.realized_price) if s.realized_price is not None else None,
                 "error_pct": float(s.error_pct) if s.error_pct is not None else None,
                 "evaluated_at": s.evaluated_at.isoformat() if s.evaluated_at is not None else None,

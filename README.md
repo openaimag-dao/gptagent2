@@ -2239,24 +2239,50 @@ app/static/dashboard/app.js, style.css -- renderForecastCenter(), prepended
                                      so no other page is affected
 ```
 
-### 5. Follow-up (deliberately deferred)
+### 5. Prediction history & self-learning (follow-up)
 
-Prediction history (predicted vs actual vs error%) and the self-learning
-feedback loop need `PriceForecastSnapshot` rows to have existed for at
-least one horizon's duration before there's anything real to grade --
-shipping that today would just be an empty table. The `realized_price`/
-`error_pct`/`evaluated_at` columns are already reserved so that follow-up
-is pure code, not a second migration.
+`grade_price_forecasts()` (app/services/forecast/engine.py) fills in
+`realized_price`/`error_pct`/`evaluated_at` on every `PriceForecastSnapshot`
+row whose horizon has actually elapsed in stored history -- mirrors
+`app.services.learning.engine.evaluate_predictions()`'s index-by-timestamp
+join exactly (a forecast only becomes gradable once real history reaches
+that far, never guessed). Runs as `grade_forecasts_job` on the existing
+analysis cadence, right alongside `compute_forecast_job`.
+
+Two new nullable columns on `price_forecast_snapshots` (migration 0027)
+make this possible: `reference_timestamp` (the exact history candle the
+forecast was computed from -- the join key) and `confidence_tier` (so the
+history table can show Predicted/Actual/Error%/Confidence without
+re-deriving it).
+
+Self-learning: `price_forecast_quality_multiplier()` turns a symbol/
+horizon's own measured average |error%| into a 0.0-1.0 discount, using
+that forecast's own `expected_volatility_pct` (ATR as %-of-price) as the
+"no better than noise" baseline -- a real already-computed number, not an
+arbitrary constant, mirroring the Brier-vs-uninformative-baseline pattern
+`ConvictionEngine` already uses for direction calibration. Surfaced as a
+new `track_record` field on every forecast (`evaluated_count`,
+`avg_abs_error_pct`, `quality_multiplier`, `adjusted_confidence_pct`),
+kept deliberately separate from the existing `confidence` field (direction
+calibration) since the two measure different things. `GET /api/forecast/
+{symbol}/history` now also returns `accuracy_by_horizon`. The dashboard's
+"Prediction History & Self-Learning" section shows the accuracy summary
+per horizon plus the full graded history table.
 
 ### 6. Test results & verification
 
-970 -> 994 tests, all passing; `ruff check`/`format` clean (only the same
+970 -> 1005 tests, all passing; `ruff check`/`format` clean (only the same
 15 pre-existing, unrelated `UP042` findings untouched). Verified against a
 real local Postgres + Redis with real synced BTC history (not mocks): all
 four horizons returned distinct, real target prices/paths/distributions;
 the dashboard hero card rendered correctly in a real browser (Playwright),
 horizon tabs switched instantly without a full-page reload, and the "next
-AI update" countdown ticked correctly.
+AI update" countdown ticked correctly. The follow-up grading loop was
+verified against a real forecast row with its `reference_timestamp`
+rewound to an already-stored earlier candle (simulating elapsed time
+without waiting real days): `grade_forecasts_job` correctly found it,
+computed a real error%, and persisted it, all visible end-to-end in the
+dashboard's new history table and accuracy cards.
 
 ## Known operational limitation: Yahoo Finance
 
