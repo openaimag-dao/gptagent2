@@ -1111,11 +1111,19 @@ class PriceForecastSnapshot(Base):
     target price, checkpoints and distribution are a deterministic
     statistical model over ProbabilityEngine's own empirical
     `avg_forward_return_pct` and ATR -- never a fabricated or LLM-guessed
-    price. `realized_price`/`error_pct`/`evaluated_at` are reserved,
-    nullable columns for the follow-up prediction-history/self-learning
-    grading job -- deliberately added now so that job needs no second
-    migration, only new code once `horizon` has actually elapsed for a
-    row."""
+    price.
+
+    `reference_timestamp` is the exact history candle this forecast was
+    computed from -- lets the grading job (mirrors
+    app.services.learning.engine.evaluate_predictions()'s index-by-
+    timestamp join) look up what actually happened `horizon` later and
+    fill in `realized_price`/`error_pct`/`evaluated_at`, instead of only
+    ever guessing from wall-clock `computed_at`. All four stay NULL until
+    the grading job has actually found enough elapsed history to grade
+    this row -- never a fabricated placeholder. `confidence_tier` is the
+    same `classify_conviction()` tier already shown on the live forecast,
+    persisted here too so the self-learning history table can show
+    Predicted/Actual/Error%/Confidence without re-deriving it."""
 
     __tablename__ = "price_forecast_snapshots"
 
@@ -1127,10 +1135,15 @@ class PriceForecastSnapshot(Base):
     expected_change_pct: Mapped[float] = mapped_column(Numeric(10, 4))
     direction: Mapped[str] = mapped_column(String(20))
     probability_pct: Mapped[int] = mapped_column()
+    confidence_tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
     checkpoints: Mapped[list] = mapped_column(JSON, default=list)
     distribution: Mapped[list] = mapped_column(JSON, default=list)
     key_levels: Mapped[dict] = mapped_column(JSON, default=dict)
-    # Reserved for the follow-up grading job -- always NULL until then.
+    reference_timestamp: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    # Filled in by the grading job once `horizon` has actually elapsed --
+    # always NULL until then.
     realized_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
     error_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

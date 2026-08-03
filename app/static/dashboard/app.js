@@ -306,7 +306,72 @@ function forecastKeyLevels(levels) {
   ]);
 }
 
-function buildForecastCard(payload, onHorizonChange) {
+function forecastTrackRecordLine(trackRecord) {
+  if (!trackRecord || trackRecord.evaluated_count === 0) {
+    return el(
+      "p",
+      { class: "sub" },
+      "Track record: not enough graded forecasts yet for this symbol/horizon."
+    );
+  }
+  if (trackRecord.quality_multiplier == null) {
+    return el(
+      "p",
+      { class: "sub" },
+      `Track record: ${trackRecord.evaluated_count} graded (avg error ${trackRecord.avg_abs_error_pct}%) -- not yet enough to adjust confidence.`
+    );
+  }
+  return el(
+    "p",
+    { class: "sub" },
+    `Track record: ${trackRecord.evaluated_count} graded, avg error ${trackRecord.avg_abs_error_pct}% -- ` +
+      `self-learning discount x${trackRecord.quality_multiplier} (adjusted confidence ${trackRecord.adjusted_confidence_pct}%)`
+  );
+}
+
+function forecastHistorySection(history) {
+  const nodes = [el("h3", {}, "Prediction History & Self-Learning")];
+  if (!history) {
+    nodes.push(el("p", { class: "sub" }, "History not yet available."));
+    return nodes;
+  }
+
+  nodes.push(
+    el(
+      "div",
+      { class: "grid" },
+      Object.entries(history.accuracy_by_horizon || {}).map(([horizon, summary]) =>
+        card(
+          `${horizon} Accuracy`,
+          summary.evaluated_count > 0 ? `${summary.avg_abs_error_pct}% avg error` : "n/a",
+          summary.evaluated_count > 0 ? `${summary.evaluated_count} graded` : "not enough history yet"
+        )
+      )
+    )
+  );
+
+  if (!history.forecasts || !history.forecasts.length) {
+    nodes.push(el("p", { class: "sub" }, "No forecasts stored yet."));
+    return nodes;
+  }
+
+  nodes.push(
+    table(
+      ["Horizon", "Computed At", "Predicted", "Actual", "Error %", "Confidence"],
+      history.forecasts.map((f) => [
+        f.horizon,
+        new Date(f.computed_at).toLocaleString(),
+        fmtNum(f.target_price),
+        f.realized_price != null ? fmtNum(f.realized_price) : "pending",
+        f.error_pct != null ? fmtPct(f.error_pct) : "pending",
+        f.confidence_tier || "n/a",
+      ])
+    )
+  );
+  return nodes;
+}
+
+function buildForecastCard(payload, onHorizonChange, historyNodes) {
   const style = FORECAST_DIRECTION_STYLE[payload.direction] || FORECAST_DIRECTION_STYLE.Neutral;
   const tier = payload.confidence ? payload.confidence.tier : null;
   const confidenceLabel = tier ? `${FORECAST_TIER_LABELS[tier] || tier} (${tier})` : "n/a";
@@ -356,6 +421,8 @@ function buildForecastCard(payload, onHorizonChange) {
     card("Market Regime", payload.regime || "n/a"),
     card("Risk Level", payload.risk_meter || "n/a"),
   ]);
+
+  const trackRecord = forecastTrackRecordLine(payload.track_record);
 
   const reasons = (payload.reasons || []).length
     ? el(
@@ -408,6 +475,7 @@ function buildForecastCard(payload, onHorizonChange) {
   root.appendChild(header);
   root.appendChild(hero);
   root.appendChild(heroStats);
+  root.appendChild(trackRecord);
   root.appendChild(el("h3", {}, "Price Path"));
   root.appendChild(forecastPricePath(payload));
   root.appendChild(el("h3", {}, "Why AI Thinks This"));
@@ -423,12 +491,17 @@ function buildForecastCard(payload, onHorizonChange) {
   if (keyLevels) root.appendChild(keyLevels);
   root.appendChild(el("h3", {}, "What Can Change The Forecast"));
   root.appendChild(whatCanChange);
+  for (const node of historyNodes || []) root.appendChild(node);
   root.appendChild(footer);
   return root;
 }
 
 async function renderForecastCenter() {
   const container = el("div", { class: "forecast-center-wrap" });
+  // Fetched once (not per horizon-tab switch): the history table already
+  // covers every horizon, and re-fetching it on every tab click would be
+  // wasted work for data that doesn't depend on which tab is selected.
+  const history = await safe("/api/forecast/BTC/history");
 
   async function load(horizon) {
     const payload = await safe(`/api/forecast/BTC?horizon=${horizon}`);
@@ -439,7 +512,7 @@ async function renderForecastCenter() {
       );
       return;
     }
-    container.appendChild(buildForecastCard(payload, load));
+    container.appendChild(buildForecastCard(payload, load, forecastHistorySection(history)));
   }
 
   await load("24h");

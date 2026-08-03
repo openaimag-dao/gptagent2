@@ -1,4 +1,5 @@
 import math
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,6 +16,9 @@ from app.services.forecast.engine import (
     compute_probability_distribution,
     derive_regime_label,
     derive_risk_meter,
+    grade_price_forecasts,
+    price_forecast_quality_multiplier,
+    summarize_forecast_accuracy,
 )
 
 
@@ -148,6 +152,7 @@ def _session_factory():
     session = AsyncMock()
     session.add = MagicMock()
     session.scalar = AsyncMock(return_value=None)
+    session.scalars = AsyncMock(return_value=[])
     session.__aenter__.return_value = session
     return MagicMock(return_value=session), session
 
@@ -206,7 +211,7 @@ async def test_compute_returns_none_without_probability_snapshot():
 
 async def test_compute_builds_full_payload_and_persists():
     engine, deps, session = _build_engine()
-    history_row = SimpleNamespace(close=100.0, atr=2.0)
+    history_row = SimpleNamespace(close=100.0, atr=2.0, timestamp=datetime(2026, 8, 2, tzinfo=UTC))
     probability_snapshot = SimpleNamespace(
         prob_up_pct=70,
         prob_down_pct=10,
@@ -243,5 +248,118 @@ async def test_compute_builds_full_payload_and_persists():
     assert payload["key_levels"]["resistance_1"] == 105.0
     assert payload["confidence_breakdown"][0]["name"] == "Technical Analysis"
     assert payload["confidence_breakdown"][0]["confidence_pct"] == 80
+    assert payload["reference_timestamp"] == history_row.timestamp.isoformat()
+    assert payload["track_record"] == {
+        "evaluated_count": 0,
+        "avg_abs_error_pct": None,
+        "quality_multiplier": None,
+        "adjusted_confidence_pct": None,
+    }
     session.add.assert_called_once()
     session.commit.assert_awaited()
+
+
+def test_price_forecast_quality_multiplier_none_without_enough_track_record():
+    assert price_forecast_quality_multiplier(None, None, 1.0) is None
+    assert price_forecast_quality_multiplier(0.5, None, 1.0) is None
+    assert price_forecast_quality_multiplier(0.5, 5, 1.0) is None
+    assert price_forecast_quality_multiplier(0.5, 20, None) is None
+    assert price_forecast_quality_multiplier(0.5, 20, 0.0) is None
+
+
+def test_price_forecast_quality_multiplier_perfect_accuracy_is_one():
+    assert price_forecast_quality_multiplier(0.0, 20, 1.0) == 1.0
+
+
+def test_price_forecast_quality_multiplier_at_or_beyond_volatility_band_is_zero():
+    assert price_forecast_quality_multiplier(1.0, 20, 1.0) == 0.0
+    assert price_forecast_quality_multiplier(2.0, 20, 1.0) == 0.0
+
+
+def test_price_forecast_quality_multiplier_scales_between_extremes():
+    multiplier = price_forecast_quality_multiplier(0.5, 20, 1.0)
+    assert multiplier == 0.5
+
+
+def _forecast_session(scalars_return, get_return=None):
+    session = AsyncMock()
+    session.scalars = AsyncMock(return_value=scalars_return)
+    session.get = AsyncMock(return_value=get_return)
+    session.commit = AsyncMock()
+    session.__aenter__.return_value = session
+    return MagicMock(return_value=session), session
+
+
+async def test_grade_price_forecasts_returns_zero_without_ungraded_rows():
+    session_factory, session = _forecast_session([])
+    with patch("app.services.forecast.engine.get_series", AsyncMock()) as mock_get_series:
+        graded = await grade_price_forecasts(session_factory, "BTC", object())
+    assert graded == 0
+    mock_get_series.assert_not_called()
+
+
+async def test_grade_price_forecasts_skips_a_horizon_that_hasnt_elapsed_yet():
+    ts0 = datetime(2026, 8, 1, tzinfo=UTC)
+    rows = [SimpleNamespace(timestamp=ts0, close=100.0)]
+    ungraded = SimpleNamespace(id=1, reference_timestamp=ts0, horizon="24h", target_price=103.0)
+    db_row = SimpleNamespace(realized_price=None, error_pct=None, evaluated_at=None)
+    session_factory, session = _forecast_session([ungraded], db_row)
+
+    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+        graded = await grade_price_forecasts(session_factory, "BTC", object())
+
+    assert graded == 0
+    assert db_row.realized_price is None
+    session.get.assert_not_awaited()
+
+
+async def test_grade_price_forecasts_grades_an_elapsed_row():
+    ts0 = datetime(2026, 8, 1, tzinfo=UTC)
+    rows = [
+        SimpleNamespace(timestamp=ts0, close=100.0),
+        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0),
+    ]
+    ungraded = SimpleNamespace(id=1, reference_timestamp=ts0, horizon="24h", target_price=103.0)
+    db_row = SimpleNamespace(realized_price=None, error_pct=None, evaluated_at=None)
+    session_factory, session = _forecast_session([ungraded], db_row)
+
+    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+        graded = await grade_price_forecasts(session_factory, "BTC", object())
+
+    assert graded == 1
+    assert db_row.realized_price == 105.0
+    assert db_row.error_pct == round(100 * (105.0 - 103.0) / 103.0, 4)
+    assert db_row.evaluated_at is not None
+    session.commit.assert_awaited()
+
+
+async def test_grade_price_forecasts_skips_an_unmatched_reference_timestamp():
+    rows = [SimpleNamespace(timestamp=datetime(2026, 8, 1, tzinfo=UTC), close=100.0)]
+    ungraded = SimpleNamespace(
+        id=1,
+        reference_timestamp=datetime(2020, 1, 1, tzinfo=UTC),
+        horizon="24h",
+        target_price=103.0,
+    )
+    session_factory, session = _forecast_session([ungraded])
+
+    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+        graded = await grade_price_forecasts(session_factory, "BTC", object())
+
+    assert graded == 0
+    session.get.assert_not_awaited()
+
+
+async def test_summarize_forecast_accuracy_none_without_graded_rows():
+    session_factory, _ = _forecast_session([])
+    assert await summarize_forecast_accuracy(session_factory, "BTC", "24h") is None
+
+
+async def test_summarize_forecast_accuracy_averages_absolute_error():
+    graded_rows = [
+        SimpleNamespace(error_pct=1.0),
+        SimpleNamespace(error_pct=-3.0),
+    ]
+    session_factory, _ = _forecast_session(graded_rows)
+    summary = await summarize_forecast_accuracy(session_factory, "BTC", "24h")
+    assert summary == {"evaluated_count": 2, "avg_abs_error_pct": 2.0}
