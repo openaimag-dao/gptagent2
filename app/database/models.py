@@ -1103,3 +1103,37 @@ class ScannerAlert(Base):
     first_triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     last_updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PriceForecastSnapshot(Base):
+    """AI Forecast Center -- one row per (symbol, horizon, computed_at)
+    forecast (app/services/forecast/engine.py's ForecastEngine). The
+    target price, checkpoints and distribution are a deterministic
+    statistical model over ProbabilityEngine's own empirical
+    `avg_forward_return_pct` and ATR -- never a fabricated or LLM-guessed
+    price. `realized_price`/`error_pct`/`evaluated_at` are reserved,
+    nullable columns for the follow-up prediction-history/self-learning
+    grading job -- deliberately added now so that job needs no second
+    migration, only new code once `horizon` has actually elapsed for a
+    row."""
+
+    __tablename__ = "price_forecast_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    horizon: Mapped[str] = mapped_column(String(10), index=True)
+    current_price: Mapped[float] = mapped_column(Numeric(24, 8))
+    target_price: Mapped[float] = mapped_column(Numeric(24, 8))
+    expected_change_pct: Mapped[float] = mapped_column(Numeric(10, 4))
+    direction: Mapped[str] = mapped_column(String(20))
+    probability_pct: Mapped[int] = mapped_column()
+    checkpoints: Mapped[list] = mapped_column(JSON, default=list)
+    distribution: Mapped[list] = mapped_column(JSON, default=list)
+    key_levels: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Reserved for the follow-up grading job -- always NULL until then.
+    realized_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    error_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

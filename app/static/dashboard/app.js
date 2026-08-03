@@ -223,15 +223,239 @@ async function safe(path) {
 
 // ---- page renderers ----
 
+// AI Forecast Center -- the Overview page's hero card. Fully self-contained:
+// owns its own horizon-tab state and re-fetches only its own subtree on tab
+// switch (rather than re-invoking the whole-page render()), and ticks its
+// own "next AI update" countdown off next_refresh_at, the same real
+// APScheduler timestamp Watchdog's "Next Scan" card already uses -- never a
+// fabricated countdown. The tick function checks `el.isConnected` each
+// second and self-clears once the page navigates away, since render()
+// replaces #content wholesale with no per-page teardown hook to attach to.
+const FORECAST_HORIZON_HOURS = { "24h": 24, "3d": 72, "7d": 168, "30d": 720 };
+const FORECAST_TIER_LABELS = {
+  Weak: "Low", Medium: "Medium", Strong: "High", "Very Strong": "High", Institutional: "High",
+};
+const FORECAST_DIRECTION_STYLE = {
+  "Strong Bullish": { arrow: "↑", emoji: "🟢", cls: "up" },
+  Bullish: { arrow: "↑", emoji: "🟢", cls: "up" },
+  Neutral: { arrow: "→", emoji: "⚪", cls: "neutral" },
+  Bearish: { arrow: "↓", emoji: "🔴", cls: "down" },
+  "Strong Bearish": { arrow: "↓", emoji: "🔴", cls: "down" },
+};
+
+function forecastPricePath(payload) {
+  const hours = FORECAST_HORIZON_HOURS[payload.horizon] || 24;
+  const rows = [["Now", payload.current_price, null]].concat(
+    (payload.price_path || []).map((p) => [
+      `${Math.round(hours * p.fraction)}h`,
+      p.price,
+      p.change_pct,
+    ])
+  );
+  return el(
+    "div",
+    { class: "forecast-path" },
+    rows.map(([label, price, changePct]) =>
+      el("div", { class: "forecast-path-point" }, [
+        el("div", { class: "forecast-path-label" }, label),
+        el("div", { class: "forecast-path-price" }, fmtNum(price)),
+        changePct != null ? el("div", { class: `sub ${changeClass(changePct)}` }, fmtPct(changePct)) : null,
+      ])
+    )
+  );
+}
+
+function forecastConsensusSection(consensus) {
+  if (!consensus) return el("p", { class: "sub" }, "AI Consensus: not yet computed.");
+  const rows = [];
+  for (const agent of consensus.bullish_agents || []) rows.push([agent, "Bullish", "up"]);
+  for (const agent of consensus.bearish_agents || []) rows.push([agent, "Bearish", "down"]);
+  for (const agent of consensus.neutral_agents || []) rows.push([agent, "Neutral", "neutral"]);
+  for (const agent of consensus.unavailable_agents || []) rows.push([agent, "No data", "neutral"]);
+  const dominant = ["bullish_pct", "bearish_pct", "neutral_pct"].reduce((a, b) =>
+    consensus[a] >= consensus[b] ? a : b
+  );
+  const dominantLabel = { bullish_pct: "Bullish", bearish_pct: "Bearish", neutral_pct: "Neutral" }[dominant];
+  return el("div", {}, [
+    el(
+      "div",
+      { class: "grid" },
+      rows.map(([agent, label, cls]) =>
+        el("div", { class: "card" }, [
+          el("div", { class: "label" }, agent.replace(/_/g, " ")),
+          el("div", { class: `value ${cls}` }, label),
+        ])
+      )
+    ),
+    el("p", {}, [
+      el("strong", {}, "Final Consensus: "),
+      `${dominantLabel} (${consensus.agreement_score}% agreement)`,
+    ]),
+  ]);
+}
+
+function forecastKeyLevels(levels) {
+  if (!levels) return null;
+  return el("div", { class: "grid" }, [
+    card("Support 1", fmtNum(levels.support_1)),
+    card("Support 2", fmtNum(levels.support_2)),
+    card("Resistance 1", fmtNum(levels.resistance_1)),
+    card("Resistance 2", fmtNum(levels.resistance_2)),
+    card("Invalidation Level", fmtNum(levels.invalidation_level)),
+    card("Breakout Level", fmtNum(levels.breakout_level)),
+  ]);
+}
+
+function buildForecastCard(payload, onHorizonChange) {
+  const style = FORECAST_DIRECTION_STYLE[payload.direction] || FORECAST_DIRECTION_STYLE.Neutral;
+  const tier = payload.confidence ? payload.confidence.tier : null;
+  const confidenceLabel = tier ? `${FORECAST_TIER_LABELS[tier] || tier} (${tier})` : "n/a";
+
+  const root = el("div", { class: "forecast-center" });
+
+  const header = el("div", { class: "forecast-header" }, [
+    el("div", {}, [
+      el("div", { class: "forecast-eyebrow" }, "AI FORECAST CENTER"),
+      el("div", { class: "forecast-symbol" }, `${payload.symbol} · ${payload.horizon}`),
+    ]),
+    el(
+      "div",
+      { class: "forecast-tabs" },
+      Object.keys(FORECAST_HORIZON_HOURS).map((h) => {
+        const btn = el(
+          "button",
+          { class: `forecast-tab${h === payload.horizon ? " active" : ""}` },
+          h
+        );
+        btn.addEventListener("click", () => onHorizonChange(h));
+        return btn;
+      })
+    ),
+  ]);
+
+  const hero = el("div", { class: "forecast-hero" }, [
+    el("div", { class: "forecast-hero-block" }, [
+      el("div", { class: "forecast-stat-label" }, "Current Price"),
+      el("div", { class: "forecast-price" }, fmtNum(payload.current_price)),
+    ]),
+    el("div", { class: `forecast-arrow ${style.cls}` }, style.arrow),
+    el("div", { class: "forecast-hero-block" }, [
+      el("div", { class: "forecast-stat-label" }, `AI Forecast (${payload.horizon})`),
+      el("div", { class: "forecast-price" }, fmtNum(payload.target_price)),
+      el("div", { class: `forecast-direction ${style.cls}` }, `${style.emoji} ${payload.direction}`),
+    ]),
+  ]);
+
+  const heroStats = el("div", { class: "grid" }, [
+    card("Expected Change", fmtPct(payload.expected_change_pct), null, changeClass(payload.expected_change_pct)),
+    card("Probability", `${payload.probability_pct}%`),
+    card("Confidence", confidenceLabel),
+    card("Expected Range", payload.expected_range ? `${fmtNum(payload.expected_range.low)} - ${fmtNum(payload.expected_range.high)}` : "n/a"),
+    card("Expected Volatility", payload.expected_volatility_pct != null ? `${payload.expected_volatility_pct}%` : "n/a"),
+    card("Trend Strength", payload.trend_strength != null ? payload.trend_strength.toFixed(1) : "n/a"),
+    card("Market Regime", payload.regime || "n/a"),
+    card("Risk Level", payload.risk_meter || "n/a"),
+  ]);
+
+  const reasons = (payload.reasons || []).length
+    ? el(
+        "ul",
+        { class: "structured-list" },
+        payload.reasons.map((r) =>
+          el("li", {}, `${r.name.replace(/_/g, " ")} (score ${r.points ?? "n/a"})`)
+        )
+      )
+    : el("p", { class: "sub" }, "No triggered indicators this cycle.");
+
+  const confidenceBreakdown = el(
+    "div",
+    { class: "grid" },
+    (payload.confidence_breakdown || []).map((row) =>
+      card(row.name, row.confidence_pct != null ? `${row.confidence_pct}%` : "unavailable")
+    )
+  );
+
+  const distribution = (payload.probability_distribution || []).length
+    ? el(
+        "div",
+        { class: "grid" },
+        payload.probability_distribution.map((b) => card(b.label, `${b.probability_pct}%`))
+      )
+    : el("p", { class: "sub" }, "Probability distribution needs ATR data, not yet available.");
+
+  const whatCanChange = (payload.what_can_change || []).length
+    ? el("ul", { class: "structured-list" }, payload.what_can_change.map((item) => el("li", {}, item)))
+    : el("p", { class: "sub" }, "No dynamic risk events flagged this cycle.");
+
+  const countdown = el("div", { class: "forecast-countdown sub" }, "");
+  const footer = el("div", { class: "forecast-footer" }, [
+    el("span", {}, `Last AI update: ${new Date(payload.computed_at).toLocaleTimeString()}`),
+    countdown,
+  ]);
+  if (payload.next_refresh_at) {
+    const nextRefresh = new Date(payload.next_refresh_at).getTime();
+    // Renders immediately regardless of DOM attachment (this element isn't
+    // appended to the page until after this function returns), then only
+    // keeps ticking -- and self-clears -- once it's actually connected.
+    const tick = () => {
+      const remaining = Math.max(0, Math.round((nextRefresh - Date.now()) / 1000));
+      countdown.textContent = `Next AI update in ${remaining}s`;
+      if (countdown.isConnected) setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
+  root.appendChild(header);
+  root.appendChild(hero);
+  root.appendChild(heroStats);
+  root.appendChild(el("h3", {}, "Price Path"));
+  root.appendChild(forecastPricePath(payload));
+  root.appendChild(el("h3", {}, "Why AI Thinks This"));
+  root.appendChild(reasons);
+  root.appendChild(el("h3", {}, "Confidence Breakdown"));
+  root.appendChild(confidenceBreakdown);
+  root.appendChild(el("h3", {}, "Probability Distribution"));
+  root.appendChild(distribution);
+  root.appendChild(el("h3", {}, "AI Consensus"));
+  root.appendChild(forecastConsensusSection(payload.consensus));
+  root.appendChild(el("h3", {}, "Key Levels"));
+  const keyLevels = forecastKeyLevels(payload.key_levels);
+  if (keyLevels) root.appendChild(keyLevels);
+  root.appendChild(el("h3", {}, "What Can Change The Forecast"));
+  root.appendChild(whatCanChange);
+  root.appendChild(footer);
+  return root;
+}
+
+async function renderForecastCenter() {
+  const container = el("div", { class: "forecast-center-wrap" });
+
+  async function load(horizon) {
+    const payload = await safe(`/api/forecast/BTC?horizon=${horizon}`);
+    container.innerHTML = "";
+    if (!payload) {
+      container.appendChild(
+        el("p", { class: "error" }, "AI Forecast Center: not enough data yet for BTC.")
+      );
+      return;
+    }
+    container.appendChild(buildForecastCard(payload, load));
+  }
+
+  await load("24h");
+  return container;
+}
+
 async function renderOverview() {
-  const [market, regime, signals, score] = await Promise.all([
+  const [forecastCenter, market, regime, signals, score] = await Promise.all([
+    renderForecastCenter(),
     safe("/api/market"),
     safe("/api/regime"),
     safe("/api/signals"),
     safe("/api/global-score"),
   ]);
 
-  const nodes = [el("h2", {}, "Overview")];
+  const nodes = [forecastCenter, el("h2", {}, "Overview")];
   const top = el("div", { class: "grid" });
   if (regime) top.appendChild(card("Regime", regime.regime.replace(/_/g, " ")));
   if (signals) top.appendChild(card("Bull / Bear", `${signals.bull_score} / ${signals.bear_score}`, `net ${signals.net_score}, ${signals.confidence_pct}% confidence`));

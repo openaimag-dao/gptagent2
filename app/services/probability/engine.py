@@ -104,15 +104,18 @@ class ProbabilityEngine:
         return snapshot
 
     async def get_latest(
-        self, symbol: str, timeframe: Timeframe = Timeframe.DAILY
+        self, symbol: str, timeframe: Timeframe = Timeframe.DAILY, horizon: int | None = None
     ) -> ProbabilitySnapshot | None:
         async with self._session_factory() as session:
+            conditions = [
+                ProbabilitySnapshot.symbol == symbol,
+                ProbabilitySnapshot.timeframe == timeframe.value,
+            ]
+            if horizon is not None:
+                conditions.append(ProbabilitySnapshot.horizon_periods == horizon)
             return await session.scalar(
                 select(ProbabilitySnapshot)
-                .where(
-                    ProbabilitySnapshot.symbol == symbol,
-                    ProbabilitySnapshot.timeframe == timeframe.value,
-                )
+                .where(*conditions)
                 .order_by(ProbabilitySnapshot.computed_at.desc())
                 .limit(1)
             )

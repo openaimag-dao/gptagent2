@@ -2161,6 +2161,103 @@ Verified live in Railway production post-deploy: `/api/watchdog/brief`,
 returned real, non-fabricated data; the scheduled report-generation job ran
 cleanly with no errors immediately after deploy.
 
+## AI Forecast Center
+
+A large hero card, always the first thing shown on the dashboard's Overview
+page: a $ price target, an interpolated price path, a bucketed probability
+distribution, an AI Consensus vote tally, Market Regime/Risk gauges, Key
+Levels, "What can change the forecast," and a live countdown to the next AI
+update -- built entirely out of numbers other engines already compute. New
+package: `app/services/forecast/engine.py`.
+
+### 1. The math (deterministic, never fabricated)
+
+Two real inputs drive everything: `ProbabilityEngine`'s empirical
+`avg_forward_return_pct` for the requested horizon (the mean), and ATR --
+this project's one existing $-volatility primitive, already used by
+Portfolio Advisor for stop/take-profit bands (the standard deviation).
+
+- **Price target** = `current_price * (1 + avg_forward_return_pct / 100)`.
+- **Price path** (Now/6h/12h/18h/24h for the 24h horizon; proportional
+  checkpoints for 3d/7d/30d) interpolates the same mean return by
+  `sqrt(time_fraction)` -- the standard assumption that a random walk's
+  variance grows linearly with time.
+- **Probability distribution** (4 $ buckets) is a normal approximation
+  around the price target using ATR as volatility, via the standard normal
+  CDF (`math.erf`, stdlib, no new dependency) -- documented in
+  `compute_probability_distribution`'s own docstring as a transparent
+  statistical model, not a black-box output.
+- **24h/3d/7d/30d horizons** are just `horizon=1/3/7/30` on
+  `ProbabilityEngine`'s existing `Timeframe.DAILY` (already calendar days)
+  -- no new multi-horizon engine.
+
+### 2. Reused, not rebuilt
+
+- **Regime/risk/consensus/committee** context is read straight off the
+  latest `WatchdogSnapshot` rather than re-invoking Consensus/Committee/
+  Regime/GlobalScore from scratch.
+- **Confidence** tier reuses `ConvictionEngine`'s `classify_conviction` --
+  including its Prediction-Quality-Lab Brier-score fold-in -- unchanged.
+- **Key Levels** reuse `TechnicalAnalysisEngine`'s own support/resistance.
+- **"What can change the forecast"** reuses `EconomicCalendarEngine.
+  get_upcoming()` and the Consensus/Committee `invalidation_risk` narrative.
+- **Confidence Breakdown** (Technical/News/Sentiment/Macro/Whales/On-chain/
+  Correlations) is honestly gated on real data availability: On-chain
+  always reports unavailable today (`OnChainIntelligenceEngine` is a
+  documented no-data-source scaffold) rather than a fabricated number.
+
+### 3. New files
+
+```
+app/services/forecast/engine.py    -- ForecastEngine + pure math functions
+app/api/forecast.py                -- GET /api/forecast/{symbol}?horizon=
+                                       24h|3d|7d|30d, GET /{symbol}/history
+alembic/versions/0026_forecast_center.py -- price_forecast_snapshots table
+tests/test_forecast_engine.py
+tests/test_forecast_api.py
+```
+
+### 4. Modified files
+
+```
+app/database/models.py           -- PriceForecastSnapshot (realized_price/
+                                     error_pct/evaluated_at reserved, nullable,
+                                     for the follow-up grading job)
+app/services/probability/engine.py -- get_latest() gains an optional
+                                     horizon filter
+app/services/analysis/report.py  -- untouched; derive_risk_meter (new,
+                                     in forecast/engine.py) layers an
+                                     "Extreme" tier on top without changing
+                                     derive_risk_level's existing contract
+app/scheduler/jobs.py            -- compute_forecast_job, BTC only for now,
+                                     on the existing analysis_interval_minutes
+                                     cadence
+app/main.py                      -- registers forecast_router
+app/static/dashboard/app.js, style.css -- renderForecastCenter(), prepended
+                                     inside renderOverview(); new .forecast-*
+                                     glassmorphism/animation classes, scoped
+                                     so no other page is affected
+```
+
+### 5. Follow-up (deliberately deferred)
+
+Prediction history (predicted vs actual vs error%) and the self-learning
+feedback loop need `PriceForecastSnapshot` rows to have existed for at
+least one horizon's duration before there's anything real to grade --
+shipping that today would just be an empty table. The `realized_price`/
+`error_pct`/`evaluated_at` columns are already reserved so that follow-up
+is pure code, not a second migration.
+
+### 6. Test results & verification
+
+970 -> 994 tests, all passing; `ruff check`/`format` clean (only the same
+15 pre-existing, unrelated `UP042` findings untouched). Verified against a
+real local Postgres + Redis with real synced BTC history (not mocks): all
+four horizons returned distinct, real target prices/paths/distributions;
+the dashboard hero card rendered correctly in a real browser (Playwright),
+horizon tabs switched instantly without a full-page reload, and the "next
+AI update" countdown ticked correctly.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is
