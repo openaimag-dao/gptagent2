@@ -42,12 +42,8 @@ def compute_correlation(
     prices_a = [closes_a[d] for d in common_dates]
     prices_b = [closes_b[d] for d in common_dates]
 
-    returns_a = [
-        (prices_a[i] - prices_a[i - 1]) / prices_a[i - 1] for i in range(1, len(prices_a))
-    ]
-    returns_b = [
-        (prices_b[i] - prices_b[i - 1]) / prices_b[i - 1] for i in range(1, len(prices_b))
-    ]
+    returns_a = [(prices_a[i] - prices_a[i - 1]) / prices_a[i - 1] for i in range(1, len(prices_a))]
+    returns_b = [(prices_b[i] - prices_b[i - 1]) / prices_b[i - 1] for i in range(1, len(prices_b))]
 
     if len(returns_a) < _MIN_COMMON_DATES - 1 or np.std(returns_a) == 0 or np.std(returns_b) == 0:
         return None
@@ -59,9 +55,24 @@ def compute_correlation(
     return correlation, len(returns_a)
 
 
-async def _daily_closes(
-    session: AsyncSession, symbol: str, since: datetime
-) -> dict[str, float]:
+def compute_correlation_strength(
+    correlations: list[Correlation], window_days: int = 30
+) -> int | None:
+    """Pure function: a 0-100 "how correlated is everything right now" read
+    -- the average absolute Pearson correlation across every real pair this
+    project already tracks (`DEFAULT_PAIRS`) at the given window. Reuses the
+    exact correlation values `CorrelationEngine.compute_and_store` already
+    persisted -- no new pairwise computation. High = markets moving in
+    lockstep (diversification offers little protection); low = markets
+    decoupled. None (not fabricated) when no correlation has been computed
+    yet at this window."""
+    matches = [abs(float(c.correlation)) for c in correlations if c.window_days == window_days]
+    if not matches:
+        return None
+    return round(min(100.0, (sum(matches) / len(matches)) * 100))
+
+
+async def _daily_closes(session: AsyncSession, symbol: str, since: datetime) -> dict[str, float]:
     """One price per UTC calendar day: the last observation recorded that day."""
     query = text(
         """

@@ -164,6 +164,100 @@ function svgLineChart(values, { width = 600, height = 160 } = {}) {
   return svg;
 }
 
+// 8-axis radar/spider chart over real 0-100 scores -- purely a second
+// visualization of numbers already computed elsewhere (GlobalMarketScore +
+// ExecutiveSummaryEngine's market_health), no new scoring. `axes` is
+// [{label, value}]; a null value renders at the center (0), never guessed.
+function svgRadarChart(axes, { size = 320 } = {}) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${size} ${size}`);
+  svg.setAttribute("class", "radar-chart");
+  const center = size / 2;
+  const maxRadius = size / 2 - 44;
+  const n = axes.length;
+  const angleFor = (i) => (Math.PI * 2 * i) / n - Math.PI / 2;
+  const point = (r, i) => {
+    const a = angleFor(i);
+    return [center + r * Math.cos(a), center + r * Math.sin(a)];
+  };
+
+  for (const pct of [25, 50, 75, 100]) {
+    const r = (pct / 100) * maxRadius;
+    const points = axes.map((_, i) => point(r, i).map((v) => v.toFixed(1)).join(",")).join(" ");
+    const ring = document.createElementNS(SVG_NS, "polygon");
+    ring.setAttribute("points", points);
+    ring.setAttribute("class", "radar-grid");
+    svg.appendChild(ring);
+  }
+
+  axes.forEach((axis, i) => {
+    const [x2, y2] = point(maxRadius, i);
+    const line = document.createElementNS(SVG_NS, "line");
+    line.setAttribute("x1", center);
+    line.setAttribute("y1", center);
+    line.setAttribute("x2", x2.toFixed(1));
+    line.setAttribute("y2", y2.toFixed(1));
+    line.setAttribute("class", "radar-axis");
+    svg.appendChild(line);
+
+    const [lx, ly] = point(maxRadius + 20, i);
+    const text = document.createElementNS(SVG_NS, "text");
+    text.setAttribute("x", lx.toFixed(1));
+    text.setAttribute("y", ly.toFixed(1));
+    text.setAttribute("class", "radar-label");
+    text.setAttribute("text-anchor", "middle");
+    text.setAttribute("dominant-baseline", "middle");
+    text.textContent = axis.label;
+    svg.appendChild(text);
+  });
+
+  const valuePoints = axes
+    .map((axis, i) => {
+      const value = axis.value == null ? 0 : Math.max(0, Math.min(100, axis.value));
+      return point((value / 100) * maxRadius, i)
+        .map((v) => v.toFixed(1))
+        .join(",");
+    })
+    .join(" ");
+  const poly = document.createElementNS(SVG_NS, "polygon");
+  poly.setAttribute("points", valuePoints);
+  poly.setAttribute("class", "radar-value");
+  svg.appendChild(poly);
+
+  return svg;
+}
+
+// AI Radar section for the Overview page. Axes reuse real already-computed
+// scores: Momentum/Macro/Liquidity/Risk from GlobalMarketScore (`score`),
+// News/Sentiment/Volatility from ExecutiveSummaryEngine's own market_health,
+// and Whales from GlobalMarketScore's institutional_activity_score (the
+// closest real "big money" proxy this project computes -- there is no
+// dedicated whale-specific 0-100 score to reuse instead).
+function renderAiRadar(score, execSummary) {
+  const marketHealth = execSummary ? execSummary.market_health : null;
+  const axes = [
+    { label: "Momentum", value: score ? score.trend_strength_score : null },
+    { label: "News", value: marketHealth ? marketHealth.news_quality : null },
+    { label: "Sentiment", value: marketHealth ? marketHealth.sentiment : null },
+    { label: "Whales", value: score ? score.institutional_activity_score : null },
+    { label: "Macro", value: score ? score.macro_pressure_score : null },
+    { label: "Liquidity", value: score ? score.liquidity_score : null },
+    { label: "Volatility", value: marketHealth ? marketHealth.volatility : null },
+    { label: "Risk", value: score ? score.risk_score : null },
+  ];
+  if (!axes.some((a) => a.value != null)) {
+    return el("p", { class: "sub" }, "AI Radar: not enough data yet.");
+  }
+  return el("div", { class: "ai-radar-wrap" }, [
+    svgRadarChart(axes),
+    el(
+      "div",
+      { class: "grid" },
+      axes.map((a) => card(a.label, a.value != null ? `${Math.round(a.value)}/100` : "n/a"))
+    ),
+  ]);
+}
+
 // Renders an arbitrary JSON value (nested dicts/lists included) as a
 // readable definition list instead of a raw JSON.stringify() blob -- used
 // wherever an API response's shape isn't flat/stable enough for a fixed
@@ -595,10 +689,12 @@ const EXEC_MARKET_HEALTH_FIELDS = [
   ["Liquidity", "liquidity"],
   ["Volatility", "volatility"],
   ["Momentum", "momentum"],
+  ["Trend Strength", "trend_strength"],
   ["Sentiment", "sentiment"],
   ["Institutional Activity", "institutional_activity"],
   ["On-chain Activity", "onchain_activity"],
   ["News Quality", "news_quality"],
+  ["Correlation Strength", "correlation_strength"],
 ];
 
 const EXEC_ACTION_STYLE = {
@@ -700,14 +796,16 @@ async function renderExecutiveSummary() {
 }
 
 async function renderOverview() {
-  const [forecastCenter, execSummary, market, regime, signals, score] = await Promise.all([
-    renderForecastCenter(),
-    renderExecutiveSummary(),
-    safe("/api/market"),
-    safe("/api/regime"),
-    safe("/api/signals"),
-    safe("/api/global-score"),
-  ]);
+  const [forecastCenter, execSummary, market, regime, signals, score, execSummaryData] =
+    await Promise.all([
+      renderForecastCenter(),
+      renderExecutiveSummary(),
+      safe("/api/market"),
+      safe("/api/regime"),
+      safe("/api/signals"),
+      safe("/api/global-score"),
+      safe("/api/executive-summary/BTC"),
+    ]);
 
   const nodes = [forecastCenter, execSummary, el("h2", {}, "Overview")];
   const top = el("div", { class: "grid" });
@@ -728,6 +826,9 @@ async function renderOverview() {
     ].forEach(([label, key]) => scoreGrid.appendChild(scoreBar(label, score[key])));
     nodes.push(scoreGrid);
   }
+
+  nodes.push(el("h2", {}, "AI Radar"));
+  nodes.push(renderAiRadar(score, execSummaryData));
 
   if (market && market.quotes) {
     nodes.push(el("h2", {}, "Market Snapshot"));

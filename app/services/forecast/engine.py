@@ -32,6 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import EconomicCalendarEvent, PriceForecastSnapshot, WatchdogSnapshot
+from app.services.agents.pattern_agent import _recency_weighted_direction
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import MarketRegime, RegimeDetector
 from app.services.analysis.report import derive_risk_level
@@ -45,6 +46,7 @@ from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
 from app.services.market.repository import MarketRepository
 from app.services.onchain.engine import OnChainIntelligenceEngine
+from app.services.patterns.engine import PatternEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.quality.engine import PredictionQualityEngine
 from app.services.sentiment.engine import SentimentEngine
@@ -571,6 +573,7 @@ class ForecastEngine:
         correlation_engine: CorrelationEngine,
         whale_engine: WhaleIntelligenceEngine,
         onchain_engine: OnChainIntelligenceEngine,
+        pattern_engine: PatternEngine,
     ) -> None:
         self._session_factory = session_factory
         self._probability_engine = probability_engine
@@ -582,6 +585,7 @@ class ForecastEngine:
         self._correlation_engine = correlation_engine
         self._whale_engine = whale_engine
         self._onchain_engine = onchain_engine
+        self._pattern_engine = pattern_engine
 
     async def _latest_watchdog_snapshot(self) -> WatchdogSnapshot | None:
         async with self._session_factory() as session:
@@ -590,12 +594,23 @@ class ForecastEngine:
             )
 
     async def _confidence_breakdown(
-        self, symbol: str, technical_confidence: float | None, watchdog: WatchdogSnapshot | None
+        self,
+        symbol: str,
+        technical_confidence: float | None,
+        watchdog: WatchdogSnapshot | None,
+        momentum_score: float | None,
     ) -> list[ConfidenceRow]:
         sentiment_snapshot = await self._sentiment_engine.get_latest()
         correlations = await self._correlation_engine.get_latest()
         whale_snapshot = await self._whale_engine.get_snapshot(symbol)
         onchain_snapshot = await self._onchain_engine.get_snapshot(symbol)
+        pattern_signals = await self._pattern_engine.get_latest(
+            symbol, timeframe=Timeframe.DAILY, limit=10
+        )
+        _, pattern_confidence_raw = _recency_weighted_direction(pattern_signals)
+        pattern_confidence = (
+            round(pattern_confidence_raw) if pattern_confidence_raw is not None else None
+        )
 
         rows = [
             ConfidenceRow(
@@ -623,6 +638,24 @@ class ForecastEngine:
             ConfidenceRow("Whales", _whale_confidence(whale_snapshot)),
             ConfidenceRow("On-chain", _onchain_confidence(onchain_snapshot)),
             ConfidenceRow("Correlations", _correlation_confidence(correlations, symbol)),
+            # Momentum reuses the exact same 0-100 score already shown on the
+            # forecast payload's own `momentum_score` field -- distance from
+            # its 50 (neutral) center is a real confidence proxy, the same
+            # transform `_distance_from_neutral` already applies to News/
+            # Sentiment's own centered scores.
+            ConfidenceRow("Momentum", _distance_from_neutral(momentum_score)),
+            ConfidenceRow("Pattern", pattern_confidence),
+            # Risk reuses GlobalScoreEngine's own risk_score, already copied
+            # onto WatchdogSnapshot each cycle -- distance from its 50
+            # (neutral) center, same transform as Momentum/News/Sentiment.
+            ConfidenceRow(
+                "Risk",
+                _distance_from_neutral(
+                    float(watchdog.risk_score)
+                    if watchdog is not None and watchdog.risk_score is not None
+                    else None
+                ),
+            ),
         ]
         return rows
 
@@ -714,6 +747,7 @@ class ForecastEngine:
             if technical_snapshot is not None and technical_snapshot.confidence is not None
             else None,
             watchdog,
+            momentum_score,
         )
         what_can_change = await self._what_can_change(watchdog, config.symbol)
 
@@ -903,4 +937,5 @@ def build_forecast_engine() -> ForecastEngine:
         CorrelationEngine(session_factory),
         WhaleIntelligenceEngine(session_factory),
         OnChainIntelligenceEngine(),
+        PatternEngine(session_factory),
     )

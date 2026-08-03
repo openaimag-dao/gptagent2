@@ -182,7 +182,9 @@ def _build_engine(watchdog=None):
         "whale_engine": AsyncMock(),
         "onchain_engine": AsyncMock(),
         "etf_engine": AsyncMock(),
+        "correlation_engine": AsyncMock(),
     }
+    deps["correlation_engine"].get_latest.return_value = []
     engine = ExecutiveSummaryEngine(
         session_factory,
         deps["global_score_engine"],
@@ -192,6 +194,7 @@ def _build_engine(watchdog=None):
         deps["whale_engine"],
         deps["onchain_engine"],
         deps["etf_engine"],
+        deps["correlation_engine"],
     )
     return engine, deps
 
@@ -234,6 +237,10 @@ async def test_compute_builds_full_payload():
     deps["whale_engine"].get_snapshot.return_value = {"available": False}
     deps["onchain_engine"].get_snapshot.return_value = {"available": False, "metrics": {}}
     deps["etf_engine"].get_flow_proxy.return_value = {"available": False}
+    deps["correlation_engine"].get_latest.return_value = [
+        SimpleNamespace(symbol_a="BTC", symbol_b="NASDAQ", window_days=30, correlation=0.6),
+        SimpleNamespace(symbol_a="BTC", symbol_b="DXY", window_days=30, correlation=-0.4),
+    ]
 
     payload = await engine.compute("BTC")
 
@@ -247,4 +254,6 @@ async def test_compute_builds_full_payload():
     assert payload["market_health"]["institutional_activity"] == 65
     assert payload["market_health"]["onchain_activity"] is None
     assert payload["market_health"]["news_quality"] == 65
+    assert payload["market_health"]["trend_strength"] == 45.0
+    assert payload["market_health"]["correlation_strength"] == 50  # avg(0.6, 0.4) * 100
     assert "Buy" in payload["summary"]
