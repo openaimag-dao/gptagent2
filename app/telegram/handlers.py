@@ -32,7 +32,6 @@ from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
 from app.services.hypothesis.engine import HypothesisEngine
 from app.services.hypothesis.templates import HypothesisTemplate
-from app.services.knowledge.engine import KnowledgeEngine
 from app.services.learning.engine import LearningEngine
 from app.services.market.repository import MarketRepository
 from app.services.memory.engine import CATEGORY_NAMES, MemoryEngine
@@ -597,9 +596,11 @@ async def cmd_knowledge(message: Message, command: CommandObject) -> None:
         await _answer(message, f"No historical data available for {symbol}/{timeframe_arg}.")
         return
 
-    engine = KnowledgeEngine(get_session_factory())
-    analogs = await engine.find_analogs(config.symbol, config.model, timeframe)
-    await _answer(message, format_knowledge(config.symbol, analogs))
+    engine = SimilarMarketEngine(get_session_factory())
+    matches = await engine.find_similar_periods(
+        config.symbol, config.model, timeframe, k=5, include_nearby_events=True
+    )
+    await _answer(message, format_knowledge(config.symbol, matches))
 
 
 @router.message(Command("brain"))

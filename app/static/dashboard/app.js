@@ -1532,8 +1532,13 @@ async function renderSimilarity() {
       results.appendChild(el("h2", {}, "Nearest Historical Analogs"));
       results.appendChild(
         table(
-          ["Date", "RSI", "Forward return"],
-          knowledge.analogs.map((a) => [a.timestamp.slice(0, 10), a.rsi.toFixed(1), fmtPct(a.forward_return_pct)])
+          ["Date", "RSI", "Forward return (7d)", "Nearby event(s)"],
+          knowledge.analogs.map((a) => [
+            a.timestamp.slice(0, 10),
+            a.rsi.toFixed(1),
+            fmtPct(a.forward_returns_pct["7d"]),
+            a.nearby_events.length ? a.nearby_events.map((e) => e.title).join(", ") : "-",
+          ])
         )
       );
     } catch (err) {

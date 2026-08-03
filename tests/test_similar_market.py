@@ -1,8 +1,14 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.analysis.regime import MarketRegime
-from app.services.similar_market.engine import _reconstruct_regime_at, build_historical_lesson
+from app.services.history.schemas import Timeframe
+from app.services.similar_market.engine import (
+    SimilarMarketEngine,
+    _reconstruct_regime_at,
+    build_historical_lesson,
+)
 
 _TS = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -130,3 +136,79 @@ def test_build_historical_lesson_reports_no_persistence_when_direction_flips_imm
         lesson["typical_duration"]
         == "No consistent persistence pattern across the tested horizons."
     )
+
+
+def _history_rows(n: int, base: datetime = datetime(2020, 1, 1, tzinfo=UTC)) -> list:
+    # Row 0 is engineered to be the closest RSI match to the "current"
+    # (last) row -- everything in between is far away so find_similar_
+    # episodes() picks row 0 unambiguously with k=1.
+    rows = []
+    for i in range(n):
+        rsi = 30.0 if i == 0 else (32.0 if i == n - 1 else 80.0)
+        rows.append(
+            SimpleNamespace(
+                timestamp=base + timedelta(days=i), rsi=rsi, volatility=None, return_pct=0.01
+            )
+        )
+    return rows
+
+
+def _empty_regime_index() -> dict:
+    return {"BTC": {}, "SPX": {}, "VIX": {}, "DXY": {}, "GOLD": {}, "US10Y": {}, "FEDRATE": {}}
+
+
+def _event_session_factory(events: list):
+    session = AsyncMock()
+    session.scalars = AsyncMock(return_value=events)
+    session.__aenter__.return_value = session
+    return MagicMock(return_value=session), session
+
+
+async def test_find_similar_periods_omits_nearby_events_and_skips_the_query_by_default():
+    session_factory, session = _event_session_factory([])
+    engine = SimilarMarketEngine(session_factory)
+
+    with (
+        patch(
+            "app.services.similar_market.engine.get_series",
+            AsyncMock(return_value=_history_rows(32)),
+        ),
+        patch(
+            "app.services.similar_market.engine._build_regime_index",
+            AsyncMock(return_value=_empty_regime_index()),
+        ),
+    ):
+        matches = await engine.find_similar_periods("ETH", object, Timeframe.DAILY, k=1)
+
+    assert len(matches) == 1
+    assert "nearby_events" not in matches[0]
+    session.scalars.assert_not_awaited()  # no HistoricalEvent query when not requested
+
+
+async def test_find_similar_periods_attaches_nearby_events_within_the_window_when_requested():
+    match_timestamp = datetime(2020, 1, 1, tzinfo=UTC)
+    events = [
+        SimpleNamespace(title="Fed rate decision", event_date=match_timestamp + timedelta(days=4)),
+        SimpleNamespace(title="Far away event", event_date=match_timestamp + timedelta(days=60)),
+    ]
+    session_factory, session = _event_session_factory(events)
+    engine = SimilarMarketEngine(session_factory)
+
+    with (
+        patch(
+            "app.services.similar_market.engine.get_series",
+            AsyncMock(return_value=_history_rows(32, base=match_timestamp)),
+        ),
+        patch(
+            "app.services.similar_market.engine._build_regime_index",
+            AsyncMock(return_value=_empty_regime_index()),
+        ),
+    ):
+        matches = await engine.find_similar_periods(
+            "ETH", object, Timeframe.DAILY, k=1, include_nearby_events=True
+        )
+
+    assert len(matches) == 1
+    assert matches[0]["date"] == match_timestamp
+    assert [e["title"] for e in matches[0]["nearby_events"]] == ["Fed rate decision"]
+    session.scalars.assert_awaited_once()

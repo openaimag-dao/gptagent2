@@ -349,17 +349,23 @@ def format_breakout(symbol: str, event: BreakoutEvent | None) -> str:
     return "\n".join(lines)
 
 
-def format_knowledge(symbol: str, analogs: list[dict]) -> str:
-    if not analogs:
+def format_knowledge(symbol: str, matches: list[dict]) -> str:
+    """v12.0 P2 -- matches are now SimilarMarketEngine's own match shape
+    (with `nearby_events` attached via `include_nearby_events=True`), not a
+    separately-computed KnowledgeEngine analog list; the two engines ran
+    the identical RSI/volatility search independently, so this now reuses
+    the one search SimilarMarketEngine already runs."""
+    if not matches:
         return f"No similar historical episodes found yet for {symbol}."
     lines = [f"*{symbol} HISTORICAL SIMILARITY*", ""]
-    for analog in analogs:
-        date_str = analog["timestamp"].date().isoformat()
-        forward = analog["forward_return_pct"]
+    for match in matches:
+        date_str = match["date"].date().isoformat()
+        forward = match["forward_returns_pct"].get("7d")
         forward_str = f"{forward:+.2f}%" if forward is not None else "n/a"
-        line = f"{date_str} (RSI {analog['rsi']:.1f}): next move {forward_str}"
-        if analog["nearby_events"]:
-            titles = ", ".join(e["title"] for e in analog["nearby_events"])
+        line = f"{date_str} (RSI {match['rsi']:.1f}): next move {forward_str}"
+        nearby = match.get("nearby_events") or []
+        if nearby:
+            titles = ", ".join(e["title"] for e in nearby)
             line += f" -- {titles}"
         lines.append(line)
     return "\n".join(lines)

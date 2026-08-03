@@ -6,8 +6,8 @@ from app.database.session import get_session_factory
 from app.services.backtest.conditions import Condition
 from app.services.history.registry import find_symbol_config
 from app.services.history.schemas import Timeframe
-from app.services.knowledge.engine import KnowledgeEngine
 from app.services.knowledge.rules import RuleEngine
+from app.services.similar_market.engine import SimilarMarketEngine
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -120,9 +120,11 @@ async def get_knowledge(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid timeframe: {timeframe}") from exc
 
-    engine = KnowledgeEngine(get_session_factory())
-    analogs = await engine.find_analogs(config.symbol, config.model, tf, k=k)
-    if not analogs:
+    engine = SimilarMarketEngine(get_session_factory())
+    matches = await engine.find_similar_periods(
+        config.symbol, config.model, tf, k=k, include_nearby_events=True
+    )
+    if not matches:
         raise HTTPException(
             status_code=404,
             detail=(
@@ -136,13 +138,13 @@ async def get_knowledge(
         "timeframe": timeframe,
         "analogs": [
             {
-                "timestamp": a["timestamp"].isoformat(),
-                "rsi": a["rsi"],
-                "volatility": a["volatility"],
-                "distance": a["distance"],
-                "forward_return_pct": a["forward_return_pct"],
-                "nearby_events": a["nearby_events"],
+                "timestamp": m["date"].isoformat(),
+                "rsi": m["rsi"],
+                "volatility": m["volatility"],
+                "similarity": m["similarity"],
+                "forward_returns_pct": m["forward_returns_pct"],
+                "nearby_events": m["nearby_events"],
             }
-            for a in analogs
+            for m in matches
         ],
     }
