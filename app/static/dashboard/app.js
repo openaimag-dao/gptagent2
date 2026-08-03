@@ -2173,6 +2173,21 @@ async function renderSignals() {
     nodes.push(
       el("p", {}, conviction.signal ? `Signal: ${conviction.signal.tier} (${conviction.signal.effective_confidence_pct}%)` : "n/a")
     );
+    if (conviction.probability) {
+      const p = conviction.probability;
+      nodes.push(
+        el("p", {}, `${p.symbol} probability: ${p.tier} (${p.effective_confidence_pct}%, sample size ${p.sample_size})`)
+      );
+      if (p.quality_multiplier != null) {
+        nodes.push(
+          el(
+            "p",
+            { class: "sub" },
+            `Track record discount: x${p.quality_multiplier} (Prediction Quality Lab's own Brier score for this symbol/timeframe)`
+          )
+        );
+      }
+    }
   }
   return nodes;
 }

@@ -7,6 +7,7 @@ from app.services.history.schemas import Timeframe
 from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
 from app.services.probability.engine import ProbabilityEngine
+from app.services.quality.engine import PredictionQualityEngine
 from app.services.signals.engine import SignalEngine
 
 router = APIRouter(prefix="/api/conviction", tags=["conviction"])
@@ -19,7 +20,9 @@ def _build_engine() -> ConvictionEngine:
         session_factory, market_repository, NewsRepository(session_factory)
     )
     probability_engine = ProbabilityEngine(session_factory)
-    return ConvictionEngine(signal_engine, probability_engine)
+    return ConvictionEngine(
+        signal_engine, probability_engine, PredictionQualityEngine(session_factory)
+    )
 
 
 @router.get("")
