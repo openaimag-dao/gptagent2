@@ -11,10 +11,12 @@ from app.database.models import (
 from app.services.analysis.regime import MarketRegime
 from app.services.analysis.report import (
     _format_replay_comparison,
+    _format_watchdog_citation,
     build_institutional_report,
     build_user_prompt,
     derive_risk_level,
     strip_json_fence,
+    watchdog_report_input,
 )
 
 
@@ -261,3 +263,60 @@ def test_build_institutional_report_appends_replay_comparison_to_historical_comp
     assert (
         "Vs. 24h ago (Replay): regime shifted bull -> bear; risk +5." in ir["historical_comparison"]
     )
+
+
+def test_watchdog_report_input_returns_none_without_a_snapshot():
+    assert watchdog_report_input(None) is None
+
+
+def test_watchdog_report_input_shapes_only_the_needed_fields():
+    snapshot = type(
+        "FakeWatchdogSnapshot",
+        (),
+        {
+            "market_health": "Watch",
+            "committee_recommendation": "SELL (moderate conviction)",
+            "highest_risk": "Macro liquidity tightening",
+        },
+    )()
+
+    result = watchdog_report_input(snapshot)
+
+    assert result == {
+        "market_health": "Watch",
+        "committee_recommendation": "SELL (moderate conviction)",
+    }
+
+
+def test_format_watchdog_citation_returns_none_without_data():
+    assert _format_watchdog_citation(None) is None
+    assert _format_watchdog_citation({"market_health": "Watch"}) is None
+
+
+def test_format_watchdog_citation_cites_market_health_and_committee():
+    watchdog = {"market_health": "Watch", "committee_recommendation": "SELL (moderate conviction)"}
+
+    text = _format_watchdog_citation(watchdog)
+
+    assert text == (
+        "Watchdog's last cycle reads Watch -- Investment Committee: SELL (moderate conviction)."
+    )
+
+
+def test_build_institutional_report_includes_watchdog_note():
+    report = _report()
+    watchdog = {"market_health": "Watch", "committee_recommendation": "SELL (moderate conviction)"}
+
+    ir = build_institutional_report(report, sector_breadth=None, watchdog=watchdog)
+
+    assert ir["watchdog_note"] == (
+        "Watchdog's last cycle reads Watch -- Investment Committee: SELL (moderate conviction)."
+    )
+
+
+def test_build_institutional_report_is_honest_when_watchdog_is_missing():
+    report = _report()
+
+    ir = build_institutional_report(report, sector_breadth=None, watchdog=None)
+
+    assert ir["watchdog_note"] is None

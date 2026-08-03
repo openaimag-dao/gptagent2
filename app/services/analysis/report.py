@@ -163,6 +163,41 @@ def _format_replay_comparison(replay_comparison: dict | None) -> str | None:
     return f"Vs. {hours_ago}h ago (Replay): " + "; ".join(parts) + "."
 
 
+def _format_watchdog_citation(watchdog: dict | None) -> str | None:
+    """v12.0 P2 "Add Watchdog citation to Reports" -- Watchdog runs its own
+    5-agent Investment Committee vote on its own scheduled cycle
+    (WatchdogSnapshot.market_health/committee_recommendation), but the
+    institutional report never referenced it: the report's own agent run
+    only tallies a raw Consensus score, it never convenes a full Committee
+    vote of its own. This is a read-only citation of Watchdog's last cycle
+    (explicitly labeled as such, since it runs on its own schedule, not
+    this report's), not a second Committee vote -- and deliberately never
+    cites Watchdog's highest_risk/biggest_opportunity, since those are
+    scenario_extremes() over the same Scenario Engine snapshot this report
+    already reads above; citing them here would restate the same number
+    under a different label, not add new information.
+    """
+    if not watchdog or not watchdog.get("committee_recommendation"):
+        return None
+    return (
+        f"Watchdog's last cycle reads {watchdog['market_health']} -- "
+        f"Investment Committee: {watchdog['committee_recommendation']}."
+    )
+
+
+def watchdog_report_input(watchdog_snapshot) -> dict | None:
+    """Shapes a WatchdogSnapshot row into the small dict
+    build_institutional_report()/_format_watchdog_citation() need -- shared
+    by every call site (API, Telegram, scheduled broadcast) so the field
+    list lives in one place."""
+    if watchdog_snapshot is None:
+        return None
+    return {
+        "market_health": watchdog_snapshot.market_health,
+        "committee_recommendation": watchdog_snapshot.committee_recommendation,
+    }
+
+
 def _format_risk_detail(global_score: dict | None) -> str | None:
     """v12.0 "Reports should reference Risk Engine detail" -- GlobalScoreEngine
     already computes risk-on/risk-off/liquidity/macro-pressure sub-scores for
@@ -186,6 +221,7 @@ def build_institutional_report(
     report: Report,
     sector_breadth: list[dict] | None = None,
     replay_comparison: dict | None = None,
+    watchdog: dict | None = None,
 ) -> dict:
     """Restructures a persisted Report into the institutional-research shape
     v8.0 calls for -- Executive Summary, Biggest Opportunity, Biggest Risk,
@@ -193,10 +229,11 @@ def build_institutional_report(
     What to Watch Next. Every field is a direct read or template composition
     of report.analysis/report.institutional_summary (both already produced
     by generate_and_store()) plus, for sector rotation, the Market Scanner's
-    already-computed sector breadth, and for historical comparison, Replay's
-    own regime/health/risk delta (get_replay_comparison()) -- no new LLM
-    call, no fabricated figures, no second computation of anything Scenario
-    Engine already did.
+    already-computed sector breadth, for historical comparison, Replay's
+    own regime/health/risk delta (get_replay_comparison()), and for the
+    Watchdog citation, WatchdogEngine's own last-cycle snapshot -- no new
+    LLM call, no fabricated figures, no second computation of anything
+    Scenario Engine already did.
     """
     analysis = report.analysis
     scenarios = (report.institutional_summary or {}).get("scenarios")
@@ -238,12 +275,14 @@ def build_institutional_report(
         historical_comparison = f"{historical_comparison} {replay_note}"
 
     risk_detail = _format_risk_detail((report.institutional_summary or {}).get("global_score"))
+    watchdog_note = _format_watchdog_citation(watchdog)
 
     return {
         "executive_summary": executive_summary or "No summary available.",
         "biggest_opportunity": biggest_opportunity or "No bullish scenario currently dominant.",
         "biggest_risk": highest_risk or "No bearish scenario currently dominant.",
         "risk_detail": risk_detail,
+        "watchdog_note": watchdog_note,
         "main_risks": analysis.get("main_risks", "n/a"),
         "market_drivers": market_drivers,
         "institutional_behavior": analysis.get("institutional_behavior", "n/a"),

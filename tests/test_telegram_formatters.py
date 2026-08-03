@@ -748,6 +748,25 @@ def test_format_report_includes_risk_detail_when_present():
     assert "Risk Detail: Risk-On 65 / Risk-Off 35 | Liquidity 70 | Macro pressure 50" in text
 
 
+def test_format_report_includes_watchdog_note_when_present():
+    institutional_report = {
+        "executive_summary": "Risk On regime, low risk.",
+        "biggest_opportunity": "Soft Landing (55%) -- growth continues.",
+        "biggest_risk": "Risk Off (20%) -- de-risking.",
+        "risk_detail": None,
+        "watchdog_note": "Watchdog's last cycle reads Watch -- Investment Committee: SELL.",
+        "market_drivers": "n/a",
+        "sector_rotation": "n/a",
+        "historical_comparison": "n/a",
+        "ai_conclusion": "n/a",
+        "what_to_watch_next": "n/a",
+        "main_risks": "n/a",
+        "institutional_behavior": "n/a",
+    }
+    text = format_report(_sample_report(), institutional_report)
+    assert "Watchdog's last cycle reads Watch -- Investment Committee: SELL." in text
+
+
 def test_format_replay_none():
     assert "No market snapshot" in format_replay(None)
 

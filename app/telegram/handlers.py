@@ -15,7 +15,7 @@ from app.services.agents.orchestrator import build_agent_orchestrator
 from app.services.alerts.rules import VALID_METRICS, VALID_OPERATORS, build_alert_rule_engine
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
-from app.services.analysis.report import build_institutional_report
+from app.services.analysis.report import build_institutional_report, watchdog_report_input
 from app.services.backtest.conditions import Condition
 from app.services.backtest.engine import BacktestEngine
 from app.services.backtest.strategy_engine import StrategyLabEngine
@@ -479,7 +479,11 @@ async def cmd_report(message: Message) -> None:
     session_factory = get_session_factory()
     sector_breadth = await build_market_scanner_engine().get_latest_sector_breadth()
     replay_comparison = await get_replay_comparison(session_factory)
-    institutional_report = build_institutional_report(report, sector_breadth, replay_comparison)
+    watchdog_snapshot = await build_watchdog_engine().get_latest_snapshot()
+    watchdog = watchdog_report_input(watchdog_snapshot)
+    institutional_report = build_institutional_report(
+        report, sector_breadth, replay_comparison, watchdog
+    )
     await _answer(message, format_report(report, institutional_report))
 
 
