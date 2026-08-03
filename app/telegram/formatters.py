@@ -354,6 +354,49 @@ def format_breakout(symbol: str, event: BreakoutEvent | None) -> str:
     return "\n".join(lines)
 
 
+def format_features(symbol: str, row) -> str:
+    """Feature Engine had zero end-user surface -- Telegram/dashboard never
+    showed beta, cointegration, market breadth, multi-window momentum or
+    funding-rate/open-interest momentum, all real data computed on every
+    scheduled cycle for BTC/ETH/SOL/NASDAQ/SPX/DJI/RUT and the Magnificent
+    7 (see FEATURE_SYMBOLS in app/scheduler/jobs.py) and silently discarded.
+    Read-only formatting of an already-computed FeatureSnapshot."""
+    if row is None or not row.features:
+        return f"No feature data available for {symbol} yet."
+    f = row.features
+    lines = [f"*{symbol} FEATURES*", ""]
+
+    momentum_parts = [
+        f"{k[len('momentum_') : -len('d_pct')]}d {v:+.2f}%"
+        for k, v in sorted(f.items())
+        if k.startswith("momentum_")
+    ]
+    if momentum_parts:
+        lines.append("Momentum: " + " | ".join(momentum_parts))
+
+    for key, value in f.items():
+        if key.startswith("beta_vs_"):
+            lines.append(f"Beta vs {key[len('beta_vs_') :].upper()}: {value:.2f}")
+        elif key.startswith("cointegration_vs_"):
+            benchmark = key[len("cointegration_vs_") :].upper()
+            stationary = "cointegrated" if value["is_stationary"] else "not cointegrated"
+            lines.append(
+                f"Cointegration vs {benchmark}: hedge ratio {value['hedge_ratio']:.3f}, "
+                f"{stationary} (stat {value['statistic']:.2f})"
+            )
+
+    if "market_breadth_mag7_pct" in f:
+        lines.append(f"Magnificent 7 breadth: {f['market_breadth_mag7_pct']:+.2f}%")
+    if "funding_rate_momentum_pct" in f:
+        lines.append(f"Funding rate momentum: {f['funding_rate_momentum_pct']:+.2f}%")
+    if "open_interest_change_pct" in f:
+        lines.append(f"Open interest change: {f['open_interest_change_pct']:+.2f}%")
+
+    lines.append("")
+    lines.append(f"Computed at: {row.computed_at.isoformat()[:16].replace('T', ' ')}")
+    return "\n".join(lines)
+
+
 def format_knowledge(symbol: str, matches: list[dict]) -> str:
     """v12.0 P2 -- matches are now SimilarMarketEngine's own match shape
     (with `nearby_events` attached via `include_nearby_events=True`), not a
