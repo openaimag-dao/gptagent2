@@ -14,6 +14,15 @@ own empirical probability (which IS symbol-specific) as the closest thing
 this project has to two independent reads to check for agreement on a
 given symbol -- not a claim that the macro signal was computed "for" that
 symbol.
+
+Where it IS symbol-specific: RankingEngine already measures, per target
+symbol, which of those same Signal Engine factors has real historical/
+current predictive edge for that symbol (walk-forward backtested, not
+guessed) -- but nothing outside Opportunities/Scanner ever cited it. If a
+RankingEngine snapshot exists for this symbol, its top-ranked factor's edge
+and current triggered state (read straight off the SignalSnapshot already
+fetched below) are surfaced as `ranking_note` -- corroborating or
+undermining evidence, never a new computation.
 """
 
 from dataclasses import dataclass
@@ -26,6 +35,7 @@ from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
+from app.services.ranking.engine import RankingEngine
 from app.services.signals.engine import SignalEngine
 
 # Stop-loss set this many ATRs from the reference price -- a standard,
@@ -55,6 +65,7 @@ class PortfolioAdvice:
     risk_reward_ratio: float | None = None
     position_size_quantity: float | None = None
     position_size_note: str | None = None
+    ranking_note: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -71,7 +82,27 @@ class PortfolioAdvice:
             "risk_reward_ratio": self.risk_reward_ratio,
             "position_size_quantity": self.position_size_quantity,
             "position_size_note": self.position_size_note,
+            "ranking_note": self.ranking_note,
         }
+
+
+def _format_ranking_note(top_factor: dict | None, top_factor_triggered: bool | None) -> str | None:
+    """Pure function: RankingEngine's top-ranked factor for this symbol (if
+    a snapshot exists) + whether that factor is currently triggered on the
+    SignalSnapshot already fetched for this advice -- read-only composition
+    of two already-computed things, never a new backtest or signal read."""
+    if top_factor is None or top_factor.get("current_importance_pct") is None:
+        return None
+    name = top_factor["factor"].replace("_", " ")
+    edge = top_factor["current_importance_pct"]
+    state = (
+        "currently active"
+        if top_factor_triggered
+        else "not currently active"
+        if top_factor_triggered is not None
+        else "current state unknown"
+    )
+    return f"Best-attested factor for this symbol: {name} ({edge}% edge over a coin flip), {state}."
 
 
 def compute_advice(
@@ -86,6 +117,8 @@ def compute_advice(
     prob_flat_pct: int,
     portfolio_value: float | None = None,
     risk_pct: float = _DEFAULT_RISK_PCT,
+    top_factor: dict | None = None,
+    top_factor_triggered: bool | None = None,
 ) -> PortfolioAdvice:
     """Pure function: real, already-computed signal/probability/ATR/equity
     values -> a PortfolioAdvice. Never fabricates a number it wasn't given."""
@@ -151,6 +184,7 @@ def compute_advice(
         risk_reward_ratio=risk_reward_ratio,
         position_size_quantity=position_size_quantity,
         position_size_note=position_size_note,
+        ranking_note=_format_ranking_note(top_factor, top_factor_triggered),
     )
 
 
@@ -161,11 +195,13 @@ class PortfolioAdvisorEngine:
         signal_engine: SignalEngine,
         probability_engine: ProbabilityEngine,
         portfolio_engine: PortfolioEngine,
+        ranking_engine: RankingEngine | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._signal_engine = signal_engine
         self._probability_engine = probability_engine
         self._portfolio_engine = portfolio_engine
+        self._ranking_engine = ranking_engine
 
     async def advise(
         self,
@@ -195,6 +231,16 @@ class PortfolioAdvisorEngine:
             if not health.get("empty"):
                 portfolio_value = health.get("total_value")
 
+        top_factor: dict | None = None
+        top_factor_triggered: bool | None = None
+        if self._ranking_engine is not None:
+            ranking_snapshot = await self._ranking_engine.get_latest(config.symbol)
+            if ranking_snapshot is not None and ranking_snapshot.rankings:
+                top_factor = ranking_snapshot.rankings[0]
+                factor_info = signal_snapshot.factors.get(top_factor["factor"])
+                if factor_info is not None:
+                    top_factor_triggered = factor_info.get("triggered")
+
         latest = rows[-1]
         return compute_advice(
             symbol=config.symbol,
@@ -207,4 +253,6 @@ class PortfolioAdvisorEngine:
             prob_flat_pct=probability_snapshot.prob_flat_pct,
             portfolio_value=portfolio_value,
             risk_pct=risk_pct,
+            top_factor=top_factor,
+            top_factor_triggered=top_factor_triggered,
         )

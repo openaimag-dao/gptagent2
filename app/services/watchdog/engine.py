@@ -731,6 +731,7 @@ def build_watchdog_engine() -> WatchdogEngine:
     from app.services.portfolio.advisor import PortfolioAdvisorEngine
     from app.services.portfolio.engine import PortfolioEngine
     from app.services.probability.engine import ProbabilityEngine
+    from app.services.ranking.engine import RankingEngine
     from app.services.signals.engine import SignalEngine
     from app.services.technical.provider import TechnicalAnalysisProvider
 
@@ -749,7 +750,11 @@ def build_watchdog_engine() -> WatchdogEngine:
     portfolio_engine = PortfolioEngine(session_factory, market_repository)
     probability_engine = ProbabilityEngine(session_factory)
     portfolio_advisor = PortfolioAdvisorEngine(
-        session_factory, signal_engine, probability_engine, portfolio_engine
+        session_factory,
+        signal_engine,
+        probability_engine,
+        portfolio_engine,
+        RankingEngine(session_factory),
     )
     replay_engine = MarketReplayEngine(
         session_factory,

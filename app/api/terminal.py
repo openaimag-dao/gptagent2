@@ -38,7 +38,11 @@ def _build_engine() -> TerminalEngine:
     portfolio_engine = PortfolioEngine(session_factory, market_repository)
     probability_engine = ProbabilityEngine(session_factory)
     portfolio_advisor = PortfolioAdvisorEngine(
-        session_factory, signal_engine, probability_engine, portfolio_engine
+        session_factory,
+        signal_engine,
+        probability_engine,
+        portfolio_engine,
+        RankingEngine(session_factory),
     )
     feature_engine = FeatureEngine(session_factory, market_repository)
     breakout_engine = BreakoutEngine(session_factory, regime_detector, feature_engine)

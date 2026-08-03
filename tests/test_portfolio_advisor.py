@@ -1,7 +1,11 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.services.portfolio.advisor import PortfolioAdvisorEngine, compute_advice
+from app.services.portfolio.advisor import (
+    PortfolioAdvisorEngine,
+    _format_ranking_note,
+    compute_advice,
+)
 
 
 def test_compute_advice_buy_when_signal_and_probability_both_bullish():
@@ -174,3 +178,76 @@ async def test_portfolio_advisor_engine_returns_none_when_probability_missing():
 
     assert result is None
     probability_engine.get_latest.assert_awaited_once()
+
+
+def test_format_ranking_note_returns_none_without_a_ranking_snapshot():
+    assert _format_ranking_note(None, None) is None
+
+
+def test_format_ranking_note_returns_none_when_factor_has_no_edge():
+    assert (
+        _format_ranking_note({"factor": "nasdaq_up", "current_importance_pct": None}, True) is None
+    )
+
+
+def test_format_ranking_note_cites_factor_edge_and_triggered_state():
+    top_factor = {"factor": "nasdaq_up", "current_importance_pct": 15.2}
+
+    triggered = _format_ranking_note(top_factor, True)
+    not_triggered = _format_ranking_note(top_factor, False)
+    unknown = _format_ranking_note(top_factor, None)
+
+    assert triggered == (
+        "Best-attested factor for this symbol: nasdaq up (15.2% edge over a coin flip), "
+        "currently active."
+    )
+    assert "not currently active" in not_triggered
+    assert "current state unknown" in unknown
+
+
+async def test_portfolio_advisor_engine_cites_ranking_note_when_available():
+    signal_engine = AsyncMock()
+    signal_engine.get_latest.return_value = SimpleNamespace(
+        net_score=3, factors={"nasdaq_up": {"points": 2, "triggered": True}}
+    )
+    probability_engine = AsyncMock()
+    probability_engine.get_latest.return_value = SimpleNamespace(
+        prob_up_pct=60, prob_down_pct=20, prob_flat_pct=20
+    )
+    ranking_engine = AsyncMock()
+    ranking_engine.get_latest.return_value = SimpleNamespace(
+        rankings=[{"factor": "nasdaq_up", "current_importance_pct": 15.2}]
+    )
+
+    engine = PortfolioAdvisorEngine(
+        AsyncMock(), signal_engine, probability_engine, AsyncMock(), ranking_engine
+    )
+
+    fake_row = SimpleNamespace(close=100.0, atr=5.0)
+    with patch("app.services.portfolio.advisor.get_series", AsyncMock(return_value=[fake_row])):
+        result = await engine.advise("BTC")
+
+    ranking_engine.get_latest.assert_awaited_once_with("BTC")
+    assert result.ranking_note == (
+        "Best-attested factor for this symbol: nasdaq up (15.2% edge over a coin flip), "
+        "currently active."
+    )
+
+
+async def test_portfolio_advisor_engine_is_honest_without_a_ranking_engine():
+    signal_engine = AsyncMock()
+    signal_engine.get_latest.return_value = SimpleNamespace(
+        net_score=3, factors={"nasdaq_up": {"points": 2, "triggered": True}}
+    )
+    probability_engine = AsyncMock()
+    probability_engine.get_latest.return_value = SimpleNamespace(
+        prob_up_pct=60, prob_down_pct=20, prob_flat_pct=20
+    )
+
+    engine = PortfolioAdvisorEngine(AsyncMock(), signal_engine, probability_engine, AsyncMock())
+
+    fake_row = SimpleNamespace(close=100.0, atr=5.0)
+    with patch("app.services.portfolio.advisor.get_series", AsyncMock(return_value=[fake_row])):
+        result = await engine.advise("BTC")
+
+    assert result.ranking_note is None

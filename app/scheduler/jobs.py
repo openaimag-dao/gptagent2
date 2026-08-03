@@ -184,7 +184,11 @@ def build_replay_engine() -> MarketReplayEngine:
     )
     portfolio_engine = PortfolioEngine(session_factory, market_repository)
     portfolio_advisor = PortfolioAdvisorEngine(
-        session_factory, signal_engine, ProbabilityEngine(session_factory), portfolio_engine
+        session_factory,
+        signal_engine,
+        ProbabilityEngine(session_factory),
+        portfolio_engine,
+        RankingEngine(session_factory),
     )
     return MarketReplayEngine(
         session_factory,
@@ -213,7 +217,11 @@ def build_terminal_engine() -> TerminalEngine:
     portfolio_engine = PortfolioEngine(session_factory, market_repository)
     probability_engine = ProbabilityEngine(session_factory)
     portfolio_advisor = PortfolioAdvisorEngine(
-        session_factory, signal_engine, probability_engine, portfolio_engine
+        session_factory,
+        signal_engine,
+        probability_engine,
+        portfolio_engine,
+        RankingEngine(session_factory),
     )
     feature_engine = FeatureEngine(session_factory, market_repository)
     breakout_engine = BreakoutEngine(session_factory, regime_detector, feature_engine)

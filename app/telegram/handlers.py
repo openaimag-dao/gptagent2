@@ -880,7 +880,11 @@ def _build_terminal_engine() -> TerminalEngine:
     portfolio_engine = PortfolioEngine(session_factory, market_repository)
     probability_engine = ProbabilityEngine(session_factory)
     portfolio_advisor = PortfolioAdvisorEngine(
-        session_factory, signal_engine, probability_engine, portfolio_engine
+        session_factory,
+        signal_engine,
+        probability_engine,
+        portfolio_engine,
+        RankingEngine(session_factory),
     )
     feature_engine = FeatureEngine(session_factory, market_repository)
     breakout_engine = BreakoutEngine(session_factory, regime_detector, feature_engine)
@@ -1184,6 +1188,7 @@ async def cmd_advice(message: Message, command: CommandObject) -> None:
         SignalEngine(session_factory, market_repository, news_repository),
         ProbabilityEngine(session_factory),
         portfolio_engine,
+        RankingEngine(session_factory),
     )
     advice = await advisor.advise(symbol, timeframe, portfolio_id=portfolio.id)
     await _answer(
@@ -1430,7 +1435,11 @@ async def cmd_replay(message: Message) -> None:
     )
     portfolio_engine = PortfolioEngine(session_factory, market_repository)
     portfolio_advisor = PortfolioAdvisorEngine(
-        session_factory, signal_engine, ProbabilityEngine(session_factory), portfolio_engine
+        session_factory,
+        signal_engine,
+        ProbabilityEngine(session_factory),
+        portfolio_engine,
+        RankingEngine(session_factory),
     )
     engine = MarketReplayEngine(
         session_factory,
