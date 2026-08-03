@@ -305,12 +305,51 @@ def price_forecast_quality_multiplier(
     return round(max(0.0, min(1.0, 1 - avg_abs_error_pct / expected_volatility_pct)), 3)
 
 
+_DIRECTION_SIGN: dict[str, int] = {
+    "Strong Bullish": 1,
+    "Bullish": 1,
+    "Neutral": 0,
+    "Bearish": -1,
+    "Strong Bearish": -1,
+}
+
+
+def grade_direction(direction: str, current_price: float, realized_price: float) -> bool | None:
+    """Pure function: did this forecast's own directional call match the
+    real sign of price change from `current_price` (the reference row's
+    close) to `realized_price`? Honestly `None` for a "Neutral" call --
+    a neutral read makes no directional claim, so there's nothing to
+    grade right or wrong."""
+    predicted_sign = _DIRECTION_SIGN.get(direction)
+    if not predicted_sign:
+        return None
+    if realized_price > current_price:
+        realized_sign = 1
+    elif realized_price < current_price:
+        realized_sign = -1
+    else:
+        realized_sign = 0
+    return predicted_sign == realized_sign
+
+
+def grade_confidence(error_pct: float, expected_volatility_pct: float | None) -> bool | None:
+    """Pure function: did the real error stay within this forecast's own
+    ATR-derived expected volatility band -- the same "no better than
+    noise" baseline `price_forecast_quality_multiplier` already uses?
+    None (not fabricated) when no real volatility band exists for this
+    row."""
+    if expected_volatility_pct is None or expected_volatility_pct <= 0:
+        return None
+    return abs(error_pct) <= expected_volatility_pct
+
+
 async def grade_price_forecasts(
     session_factory: async_sessionmaker[AsyncSession], symbol: str, model: type
 ) -> int:
-    """Fills in `realized_price`/`error_pct`/`evaluated_at` on every
-    ungraded `PriceForecastSnapshot` row whose horizon has actually
-    elapsed in stored history -- mirrors
+    """Fills in `realized_price`/`error_pct`/`direction_correct`/
+    `confidence_correct`/`evaluated_at` on every ungraded
+    `PriceForecastSnapshot` row whose horizon has actually elapsed in
+    stored history -- mirrors
     app.services.learning.engine.evaluate_predictions()'s index-by-
     timestamp join exactly (same reasoning: a forecast only becomes
     gradable once real history reaches that far, never guessed). Returns
@@ -350,9 +389,21 @@ async def grade_price_forecasts(
                 continue
             error_pct = 100 * (realized_price - target_price) / target_price
 
+            current_price = float(snapshot.current_price)
+            reference_atr = rows[idx].atr
+            expected_volatility_pct = (
+                round(float(reference_atr) / current_price * 100, 4)
+                if reference_atr is not None and current_price
+                else None
+            )
+
             db_row = await session.get(PriceForecastSnapshot, snapshot.id)
             db_row.realized_price = realized_price
             db_row.error_pct = round(error_pct, 4)
+            db_row.direction_correct = grade_direction(
+                snapshot.direction, current_price, realized_price
+            )
+            db_row.confidence_correct = grade_confidence(error_pct, expected_volatility_pct)
             db_row.evaluated_at = datetime.now(UTC)
             graded += 1
         await session.commit()

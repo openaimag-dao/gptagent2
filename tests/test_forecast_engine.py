@@ -16,6 +16,8 @@ from app.services.forecast.engine import (
     compute_probability_distribution,
     derive_regime_label,
     derive_risk_meter,
+    grade_confidence,
+    grade_direction,
     grade_price_forecasts,
     price_forecast_quality_multiplier,
     summarize_forecast_accuracy,
@@ -313,14 +315,60 @@ async def test_grade_price_forecasts_skips_a_horizon_that_hasnt_elapsed_yet():
     session.get.assert_not_awaited()
 
 
+def test_grade_direction_bullish_correct():
+    assert grade_direction("Bullish", 100.0, 105.0) is True
+
+
+def test_grade_direction_bullish_wrong():
+    assert grade_direction("Strong Bullish", 100.0, 95.0) is False
+
+
+def test_grade_direction_bearish_correct():
+    assert grade_direction("Bearish", 100.0, 95.0) is True
+
+
+def test_grade_direction_neutral_is_honestly_ungraded():
+    assert grade_direction("Neutral", 100.0, 105.0) is None
+
+
+def test_grade_direction_unchanged_price_fails_directional_call():
+    assert grade_direction("Bullish", 100.0, 100.0) is False
+
+
+def test_grade_confidence_within_volatility_band():
+    assert grade_confidence(1.5, 2.0) is True
+
+
+def test_grade_confidence_beyond_volatility_band():
+    assert grade_confidence(3.5, 2.0) is False
+
+
+def test_grade_confidence_none_without_volatility_band():
+    assert grade_confidence(1.0, None) is None
+    assert grade_confidence(1.0, 0) is None
+
+
 async def test_grade_price_forecasts_grades_an_elapsed_row():
     ts0 = datetime(2026, 8, 1, tzinfo=UTC)
     rows = [
-        SimpleNamespace(timestamp=ts0, close=100.0),
-        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0),
+        SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0),
+        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0, atr=2.0),
     ]
-    ungraded = SimpleNamespace(id=1, reference_timestamp=ts0, horizon="24h", target_price=103.0)
-    db_row = SimpleNamespace(realized_price=None, error_pct=None, evaluated_at=None)
+    ungraded = SimpleNamespace(
+        id=1,
+        reference_timestamp=ts0,
+        horizon="24h",
+        target_price=103.0,
+        current_price=100.0,
+        direction="Bullish",
+    )
+    db_row = SimpleNamespace(
+        realized_price=None,
+        error_pct=None,
+        direction_correct=None,
+        confidence_correct=None,
+        evaluated_at=None,
+    )
     session_factory, session = _forecast_session([ungraded], db_row)
 
     with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
@@ -329,6 +377,8 @@ async def test_grade_price_forecasts_grades_an_elapsed_row():
     assert graded == 1
     assert db_row.realized_price == 105.0
     assert db_row.error_pct == round(100 * (105.0 - 103.0) / 103.0, 4)
+    assert db_row.direction_correct is True  # predicted Bullish, realized 105 > 100 current_price
+    assert db_row.confidence_correct is not None
     assert db_row.evaluated_at is not None
     session.commit.assert_awaited()
 

@@ -2415,6 +2415,111 @@ async function renderQuality() {
   return nodes;
 }
 
+// Prediction Accuracy -- every graded prediction (already computed by
+// app.services.forecast.engine.grade_price_forecasts()), aggregated into
+// Daily/Weekly/Monthly/Asset views via /api/accuracy. No new grading here,
+// only display of what the grading job already persisted.
+function accuracyStatCards(stats) {
+  return el("div", { class: "grid" }, [
+    card("Evaluated", stats.evaluated_count),
+    card("Direction Accuracy", stats.direction_accuracy_pct != null ? `${stats.direction_accuracy_pct}%` : "n/a"),
+    card("Avg Abs Error", stats.avg_abs_error_pct != null ? `${stats.avg_abs_error_pct}%` : "n/a"),
+    card("Confidence Accuracy", stats.confidence_accuracy_pct != null ? `${stats.confidence_accuracy_pct}%` : "n/a"),
+  ]);
+}
+
+function accuracyPeriodTable(buckets) {
+  if (!buckets.length) return el("p", { class: "sub" }, "No graded predictions in this window yet.");
+  return table(
+    ["Period", "Count", "Direction Accuracy", "Avg Abs Error", "Confidence Accuracy"],
+    buckets.map((b) => [
+      b.period,
+      b.evaluated_count,
+      b.direction_accuracy_pct != null ? `${b.direction_accuracy_pct}%` : "n/a",
+      b.avg_abs_error_pct != null ? `${b.avg_abs_error_pct}%` : "n/a",
+      b.confidence_accuracy_pct != null ? `${b.confidence_accuracy_pct}%` : "n/a",
+    ])
+  );
+}
+
+async function renderAccuracy() {
+  const nodes = [el("h2", {}, "Prediction Accuracy")];
+  const data = await safe("/api/accuracy");
+  if (!data || data.overall.evaluated_count === 0) {
+    nodes.push(
+      el(
+        "p",
+        { class: "error" },
+        "No graded predictions yet -- forecasts are graded once their horizon has actually elapsed in stored history."
+      )
+    );
+    return nodes;
+  }
+
+  nodes.push(el("h2", {}, "Overall"));
+  nodes.push(accuracyStatCards(data.overall));
+
+  if (data.daily.length > 1) {
+    nodes.push(el("h2", {}, "Avg Abs Error % Trend (Daily)"));
+    nodes.push(svgLineChart(data.daily.map((b) => b.avg_abs_error_pct)));
+    nodes.push(el("h2", {}, "Direction Accuracy % Trend (Daily)"));
+    nodes.push(svgLineChart(data.daily.map((b) => b.direction_accuracy_pct)));
+  }
+
+  nodes.push(el("h2", {}, "Daily Accuracy"));
+  nodes.push(accuracyPeriodTable(data.daily));
+  nodes.push(el("h2", {}, "Weekly Accuracy"));
+  nodes.push(accuracyPeriodTable(data.weekly));
+  nodes.push(el("h2", {}, "Monthly Accuracy"));
+  nodes.push(accuracyPeriodTable(data.monthly));
+
+  nodes.push(el("h2", {}, "Asset Accuracy"));
+  if (!data.by_asset.length) {
+    nodes.push(el("p", { class: "sub" }, "No graded predictions yet for any asset."));
+  } else {
+    nodes.push(
+      table(
+        ["Symbol", "Count", "Direction Accuracy", "Avg Abs Error", "Confidence Accuracy"],
+        data.by_asset.map((a) => [
+          a.symbol,
+          a.evaluated_count,
+          a.direction_accuracy_pct != null ? `${a.direction_accuracy_pct}%` : "n/a",
+          a.avg_abs_error_pct != null ? `${a.avg_abs_error_pct}%` : "n/a",
+          a.confidence_accuracy_pct != null ? `${a.confidence_accuracy_pct}%` : "n/a",
+        ])
+      )
+    );
+  }
+
+  nodes.push(el("h2", {}, "Recent Graded Predictions"));
+  if (!data.recent.length) {
+    nodes.push(el("p", { class: "sub" }, "Nothing graded yet."));
+  } else {
+    nodes.push(
+      table(
+        ["Symbol", "Horizon", "Evaluated At", "Predicted", "Actual", "Error %", "Direction", "Confidence", "Tier"],
+        data.recent.map((r) => [
+          r.symbol,
+          r.horizon,
+          new Date(r.evaluated_at).toLocaleString(),
+          fmtNum(r.target_price),
+          r.realized_price != null ? fmtNum(r.realized_price) : "n/a",
+          r.error_pct != null ? fmtPct(r.error_pct) : "n/a",
+          r.direction_correct == null
+            ? "n/a"
+            : el("span", { class: r.direction_correct ? "up" : "down" }, r.direction_correct ? "Correct" : "Wrong"),
+          r.confidence_correct == null
+            ? "n/a"
+            : el("span", { class: r.confidence_correct ? "up" : "down" }, r.confidence_correct ? "Correct" : "Wrong"),
+          r.confidence_tier || "n/a",
+        ])
+      )
+    );
+  }
+
+  return nodes;
+}
+
 async function renderAdvice() {
   const nodes = [el("h2", {}, "Portfolio Advice")];
   const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
@@ -3231,7 +3336,7 @@ const PAGES = {
   patterns: renderPatterns, breakout: renderBreakout, features: renderFeatures, liquidity: renderLiquidity, sentiment: renderSentiment,
   calendar: renderCalendar, similarity: renderSimilarity, brain: renderBrain,
   research: renderResearch, strategies: renderStrategies,
-  probability: renderProbability, learning: renderLearning, quality: renderQuality,
+  probability: renderProbability, learning: renderLearning, quality: renderQuality, accuracy: renderAccuracy,
   scenarios: renderScenarios,
   whatif: renderWhatif,
   whales: renderWhales, etf: renderEtf, onchain: renderOnchain,
