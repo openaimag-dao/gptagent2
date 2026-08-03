@@ -1021,17 +1021,32 @@ def test_format_knowledge_no_analogs():
 
 
 def test_format_knowledge_uses_consistent_historical_similarity_header():
-    analogs = [
+    matches = [
         {
-            "timestamp": datetime(2025, 6, 1, tzinfo=UTC),
+            "date": datetime(2025, 6, 1, tzinfo=UTC),
             "rsi": 72.5,
-            "forward_return_pct": 3.2,
+            "forward_returns_pct": {"7d": 3.2},
             "nearby_events": [],
         }
     ]
-    text = format_knowledge("BTC", analogs)
+    text = format_knowledge("BTC", matches)
     assert "*BTC HISTORICAL SIMILARITY*" in text
     assert "2025-06-01" in text
+    assert "+3.20%" in text
+
+
+def test_format_knowledge_includes_nearby_events():
+    matches = [
+        {
+            "date": datetime(2025, 6, 1, tzinfo=UTC),
+            "rsi": 72.5,
+            "forward_returns_pct": {"7d": None},
+            "nearby_events": [{"title": "Fed rate decision", "event_date": "2025-06-02"}],
+        }
+    ]
+    text = format_knowledge("BTC", matches)
+    assert "Fed rate decision" in text
+    assert "next move n/a" in text
 
 
 def test_format_weekly_review():

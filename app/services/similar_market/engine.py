@@ -1,12 +1,15 @@
 import logging
 from collections import Counter
+from datetime import timedelta
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import (
     AssetClass,
     AssetPrice,
     CryptoHistory,
+    HistoricalEvent,
     MacroHistory,
     MarketHistory,
     SimilarMarketMatch,
@@ -23,6 +26,7 @@ logger = logging.getLogger(__name__)
 _MIN_HISTORY_LENGTH = 30
 _DEFAULT_K = 25
 _FORWARD_HORIZONS = (1, 3, 7, 30)
+_DEFAULT_EVENT_WINDOW_DAYS = 14
 
 # Symbols detect_regime() needs to reconstruct a historical regime tag for a
 # past date -- reused as-is, never reimplemented, so a historical regime tag
@@ -183,12 +187,21 @@ class SimilarMarketEngine:
     """Finds the K most similar historical periods to a symbol's current
     conditions and reports what happened 1/3/7/30 periods later, plus (where
     reconstructible) the historical market regime and BTC/NASDAQ's own move
-    that day -- extends the Sprint 3 Knowledge Engine's analog search rather
-    than duplicating it.
+    that day. v12.0 P2 -- also absorbs the Sprint 3 Knowledge Engine's only
+    unique value (curated nearby-event lookup, opt-in via
+    `include_nearby_events`) since both engines ran the identical RSI/
+    volatility distance search (`find_similar_episodes`) against the same
+    series independently; this is now the one place that search runs.
     """
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+
+    async def _all_events(self) -> list[HistoricalEvent]:
+        async with self._session_factory() as session:
+            return list(
+                await session.scalars(select(HistoricalEvent).order_by(HistoricalEvent.event_date))
+            )
 
     async def find_similar_periods(
         self,
@@ -196,6 +209,8 @@ class SimilarMarketEngine:
         model: type,
         timeframe: Timeframe = Timeframe.DAILY,
         k: int = _DEFAULT_K,
+        include_nearby_events: bool = False,
+        event_window_days: int = _DEFAULT_EVENT_WINDOW_DAYS,
     ) -> list[dict]:
         rows = await get_series(self._session_factory, model, symbol, timeframe)
         if len(rows) < _MIN_HISTORY_LENGTH:
@@ -223,6 +238,14 @@ class SimilarMarketEngine:
         btc_index = regime_index["BTC"] if symbol != "BTC" else {r.timestamp: r for r in rows}
         nasdaq_index = regime_index["SPX"]
 
+        # Nearby-event lookup (ex-Knowledge Engine): fetched once per call,
+        # not once per match, and only when a caller actually wants to
+        # display it -- the many machine-consumption callers (Explanation/
+        # Watchdog/Replay/Terminal) never pass this, so they pay no extra
+        # query for a field they never read.
+        events = await self._all_events() if include_nearby_events else []
+        window = timedelta(days=event_window_days)
+
         # Similarity score: invert the z-score distance into a bounded 0-100
         # read (closer historical episode -> higher score). Distances are
         # unbounded in principle, so this saturates rather than going negative.
@@ -235,33 +258,38 @@ class SimilarMarketEngine:
             btc_row = btc_index.get(episode["timestamp"])
             nasdaq_row = nasdaq_index.get(episode["timestamp"])
 
-            matches.append(
-                {
-                    "date": episode["timestamp"],
-                    "similarity": similarity,
-                    "market_regime": regime.value if regime is not None else None,
-                    "rsi": episode["rsi"],
-                    "volatility": episode["volatility"],
-                    "btc_result_pct": (
-                        round(float(btc_row.return_pct) * 100, 2)
-                        if btc_row is not None and btc_row.return_pct is not None
+            match = {
+                "date": episode["timestamp"],
+                "similarity": similarity,
+                "market_regime": regime.value if regime is not None else None,
+                "rsi": episode["rsi"],
+                "volatility": episode["volatility"],
+                "btc_result_pct": (
+                    round(float(btc_row.return_pct) * 100, 2)
+                    if btc_row is not None and btc_row.return_pct is not None
+                    else None
+                ),
+                "nasdaq_result_pct": (
+                    round(float(nasdaq_row.return_pct) * 100, 2)
+                    if nasdaq_row is not None and nasdaq_row.return_pct is not None
+                    else None
+                ),
+                "forward_returns_pct": {
+                    f"{h}d": (
+                        round(forward_by_horizon[h][idx] * 100, 2)
+                        if forward_by_horizon[h][idx] is not None
                         else None
-                    ),
-                    "nasdaq_result_pct": (
-                        round(float(nasdaq_row.return_pct) * 100, 2)
-                        if nasdaq_row is not None and nasdaq_row.return_pct is not None
-                        else None
-                    ),
-                    "forward_returns_pct": {
-                        f"{h}d": (
-                            round(forward_by_horizon[h][idx] * 100, 2)
-                            if forward_by_horizon[h][idx] is not None
-                            else None
-                        )
-                        for h in _FORWARD_HORIZONS
-                    },
-                }
-            )
+                    )
+                    for h in _FORWARD_HORIZONS
+                },
+            }
+            if include_nearby_events:
+                match["nearby_events"] = [
+                    {"title": e.title, "event_date": e.event_date.isoformat()}
+                    for e in events
+                    if abs(e.event_date - episode["timestamp"]) <= window
+                ]
+            matches.append(match)
         return matches
 
     async def find_and_store(

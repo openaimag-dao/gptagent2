@@ -28,7 +28,7 @@ from app.services.consensus.engine import compute_consensus
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.schemas import Timeframe
-from app.services.knowledge.engine import KnowledgeEngine, build_grounding_text
+from app.services.knowledge.engine import build_grounding_text
 from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
 from app.services.portfolio.advisor import PortfolioAdvisorEngine
@@ -36,6 +36,7 @@ from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.scenarios.engine import compute_scenarios, scenario_extremes
 from app.services.signals.engine import SignalEngine
+from app.services.similar_market.engine import SimilarMarketEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
 
 logger = logging.getLogger(__name__)
@@ -426,7 +427,7 @@ class ReportGenerator:
         correlation_engine: CorrelationEngine,
         regime_detector: RegimeDetector,
         signal_engine: SignalEngine,
-        knowledge_engine: KnowledgeEngine | None = None,
+        similar_market_engine: SimilarMarketEngine | None = None,
         global_score_engine: GlobalScoreEngine | None = None,
         etf_engine: ETFIntelligenceEngine | None = None,
         whale_engine: WhaleIntelligenceEngine | None = None,
@@ -439,7 +440,7 @@ class ReportGenerator:
         self._correlation_engine = correlation_engine
         self._regime_detector = regime_detector
         self._signal_engine = signal_engine
-        self._knowledge_engine = knowledge_engine or KnowledgeEngine(session_factory)
+        self._similar_market_engine = similar_market_engine or SimilarMarketEngine(session_factory)
         self._global_score_engine = global_score_engine or GlobalScoreEngine(
             session_factory, market_repository, regime_detector, signal_engine
         )
@@ -467,13 +468,13 @@ class ReportGenerator:
             )
 
         try:
-            analogs = await self._knowledge_engine.find_analogs(
-                "BTC", CryptoHistory, Timeframe.DAILY
+            similar_matches = await self._similar_market_engine.find_similar_periods(
+                "BTC", CryptoHistory, Timeframe.DAILY, k=5, include_nearby_events=True
             )
         except Exception:
-            logger.warning("Knowledge engine lookup failed; continuing without it", exc_info=True)
-            analogs = []
-        historical_grounding = build_grounding_text("BTC", analogs)
+            logger.warning("Similar market lookup failed; continuing without it", exc_info=True)
+            similar_matches = []
+        historical_grounding = build_grounding_text("BTC", similar_matches)
 
         global_score_row = await self._global_score_engine.compute_and_store()
         global_score = _serialize_global_score(global_score_row)

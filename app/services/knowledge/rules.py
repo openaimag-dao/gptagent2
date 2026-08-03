@@ -1,8 +1,9 @@
 """User-submitted trading theories/rules, automatically backtested against
 real stored history via the Backtest Engine. Distinct from
-`knowledge.engine.KnowledgeEngine` (nearest-historical-analog search) --
-this is the user-knowledge-base concept, kept in the same package since both
-answer "what does history say," just from different starting points.
+`app.services.similar_market.engine.SimilarMarketEngine` (nearest-
+historical-analog search) -- this is the user-knowledge-base concept, kept
+in the same package since both answer "what does history say," just from
+different starting points.
 """
 
 import logging
