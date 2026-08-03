@@ -374,6 +374,10 @@ ul.structured-list { margin: 3px 0 0; padding-left: 18px; }
 .exec-summary h3 { font-size: 14px; margin: 20px 0 10px; color: var(--text); }
 .exec-summary .grid { margin-bottom: 12px; }
 
+/* "Why AI Thinks This" -- Final Prediction bias label above the Engine
+   Breakdown table. */
+.final-prediction-bias { font-size: 22px; font-weight: 700; }
+
 @media (max-width: 800px) {
   #nav-toggle { display: block; }
   body { flex-direction: column; }

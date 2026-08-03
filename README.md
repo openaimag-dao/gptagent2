@@ -2352,6 +2352,69 @@ dashboard panel was confirmed rendering correctly in a real browser
 Bearish Factors, Market Health bars, and AI Action badge all showing real,
 distinct values.
 
+## Why AI Thinks This
+
+The "Why" dashboard page is now "Why AI Thinks This" -- a full per-engine
+breakdown of the current prediction, so it's fully traceable back to the
+real numbers behind it (`app/services/explainability/engine.py`, extends
+`GET /api/explanation/{symbol}`).
+
+### 1. Engine Breakdown -- Signal/Confidence/Weight/Explanation
+
+For each of Technical Analysis, News, On-chain, Whales, Macro, Sentiment,
+Correlations, and Historical Patterns, `ExplainabilityEngine.build()`
+composes:
+
+- **Signal** and **Weight** for Technical Analysis/News/Sentiment/Macro
+  straight off the latest `WatchdogSnapshot.consensus` (the same
+  persisted Consensus vote tally Forecast Center and Executive Summary
+  already read) -- which bullish/bearish/neutral bucket the agent landed
+  in, and its real % share of the vote weight. No re-invoking the agent
+  orchestrator.
+- **Confidence** reuses `ForecastEngine`'s own `_confidence_breakdown()`
+  formulas, imported directly rather than re-implemented -- with one
+  correction: Macro's confidence now reads `GlobalScoreEngine`'s own
+  `macro_pressure_score` (a genuine macro-specific number) instead of the
+  whole-market `WatchdogSnapshot.confidence_score` Forecast Center's row
+  happens to reuse there.
+- **On-chain** is honestly reported unavailable, with the real reason
+  string (`OnChainIntelligenceEngine` is a documented no-data-source
+  scaffold) -- never a fabricated score.
+- **Whales/Correlations/Historical Patterns** have no dedicated Consensus
+  agent vote, so Weight is honestly `None` for them. Their Signal/
+  Explanation are composed from real fields instead: Whale Intelligence's
+  own derivatives classification and funding rate; the real 30-day
+  Pearson correlations from `CorrelationEngine`, strongest first;
+  `ExplanationEngine`'s own historical analog matches, with a directional
+  read derived honestly from the sign of their average forward return.
+
+### 2. Final Prediction
+
+A new `final_prediction` field anchors the page: the Consensus bullish/
+bearish spread run through the same `classify_direction_label()` Forecast
+Center already uses, plus the real Committee decision/recommendation from
+`WatchdogSnapshot` -- so the page states the prediction once, then breaks
+down every engine that fed it.
+
+### 3. No duplicate logic, no new persistence
+
+`ExplanationEngine.build()` is called once, unmodified, for the existing
+evidence pack (still shown below the new breakdown); `engine_breakdown`
+and `final_prediction` are added to that same dict, nothing is
+recomputed. Every input is already-persisted data another engine's own
+scheduler job computes every analysis cycle -- no new migration, no new
+scheduler job.
+
+### 4. Test results & verification
+
+1028 -> 1041 tests, all passing; `ruff check`/`format` clean. Verified
+against a real local Postgres + Redis: `/api/explanation/BTC` returned a
+genuine 8-row breakdown computed from a live-scheduled `WatchdogSnapshot`
+(real Consensus/Committee/Sentiment/Technical/Whale data), and the
+dashboard page rendered correctly in a real browser (Playwright) with
+Final Prediction and Engine Breakdown at the top, correctly colored by
+signal, above the pre-existing supplementary sections.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is

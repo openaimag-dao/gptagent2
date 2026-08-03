@@ -1762,8 +1762,45 @@ async function renderScanner() {
   return nodes;
 }
 
+// "Why AI Thinks This" -- per-engine Signal/Confidence/Weight/Explanation
+// breakdown, so the final prediction is fully traceable back to the real
+// numbers behind it. `d.engine_breakdown`/`d.final_prediction` come from
+// ExplainabilityEngine (app/services/explainability/engine.py); everything
+// below that in this page is the pre-existing flat evidence pack this page
+// already showed, kept as supplementary detail.
+const WHY_SIGNAL_CLASS = { Bullish: "up", Bearish: "down", Neutral: "neutral" };
+
+function whyFinalPrediction(finalPrediction) {
+  if (!finalPrediction || !finalPrediction.bias) {
+    return el("p", { class: "sub" }, "Final prediction not yet computed this cycle.");
+  }
+  const cls = WHY_SIGNAL_CLASS[finalPrediction.bias] || "neutral";
+  const parts = [el("span", { class: `final-prediction-bias ${cls}` }, finalPrediction.bias)];
+  if (finalPrediction.agreement_score != null) {
+    parts.push(` (${finalPrediction.agreement_score}% agent agreement)`);
+  }
+  if (finalPrediction.committee_recommendation) {
+    parts.push(el("div", { class: "sub" }, `Committee: ${finalPrediction.committee_recommendation}`));
+  }
+  return el("div", {}, parts);
+}
+
+function whyEngineBreakdown(rows) {
+  if (!rows || !rows.length) return el("p", { class: "sub" }, "Engine breakdown not yet available.");
+  return table(
+    ["Engine", "Signal", "Confidence", "Weight", "Explanation"],
+    rows.map((r) => [
+      r.name,
+      r.signal ? el("span", { class: WHY_SIGNAL_CLASS[r.signal] || "neutral" }, r.signal) : "unavailable",
+      r.confidence != null ? `${r.confidence}%` : "unavailable",
+      r.weight != null ? `${r.weight}%` : "n/a",
+      r.explanation || "n/a",
+    ])
+  );
+}
+
 async function renderExplanation() {
-  const nodes = [el("h2", {}, "Why")];
+  const nodes = [el("h2", {}, "Why AI Thinks This")];
   const input = el("input", { type: "text", value: "BTC", placeholder: "Symbol" });
   const btn = el("button", {}, "Load");
   nodes.push(el("div", { class: "controls" }, [input, btn]));
@@ -1774,6 +1811,10 @@ async function renderExplanation() {
     results.innerHTML = "";
     try {
       const d = await fetchJSON(`/api/explanation/${encodeURIComponent(input.value)}`);
+      results.appendChild(el("h2", {}, "Final Prediction"));
+      results.appendChild(whyFinalPrediction(d.final_prediction));
+      results.appendChild(el("h2", {}, "Engine Breakdown"));
+      results.appendChild(whyEngineBreakdown(d.engine_breakdown));
       if (d.indicators.length) {
         results.appendChild(el("h2", {}, "Triggered indicators"));
         results.appendChild(
@@ -1788,7 +1829,10 @@ async function renderExplanation() {
         results.appendChild(
           table(
             ["Driver", "Value"],
-            Object.entries(d.macro_drivers).map(([k, v]) => [k.replace(/_/g, " "), v == null ? "n/a" : String(v)])
+            Object.entries(d.macro_drivers).map(([k, v]) => [
+              k.replace(/_/g, " "),
+              v == null ? "n/a" : typeof v === "object" ? JSON.stringify(v) : String(v),
+            ])
           )
         );
       }
@@ -1832,9 +1876,6 @@ async function renderExplanation() {
         results.appendChild(
           card(d.alternative_view.name, `${d.alternative_view.probability_pct}%`, d.alternative_view.rationale)
         );
-      }
-      if (!results.children.length) {
-        results.appendChild(el("p", { class: "sub" }, "Not enough data computed yet to explain this read."));
       }
     } catch (err) {
       results.appendChild(errorBox(err));
