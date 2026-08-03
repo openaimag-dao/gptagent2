@@ -250,6 +250,30 @@ def test_format_advice_buy_with_levels():
     assert "Position size: 10.0" in text
 
 
+def test_format_advice_includes_ranking_note_when_present():
+    advice = {
+        "symbol": "BTC",
+        "timeframe": "1d",
+        "recommendation": "BUY",
+        "reasoning": "reasoning",
+        "signal_net_score": 3,
+        "probability": {"up": 60, "down": 20, "flat": 20},
+        "entry_reference_price": 100.0,
+        "atr": 5.0,
+        "stop_loss_price": None,
+        "take_profit_price": None,
+        "risk_reward_ratio": None,
+        "position_size_quantity": None,
+        "position_size_note": None,
+        "ranking_note": (
+            "Best-attested factor for this symbol: nasdaq up (15.2% edge over a coin flip), "
+            "currently active."
+        ),
+    }
+    text = format_advice(advice, "BTC", "1d")
+    assert "Best-attested factor for this symbol: nasdaq up" in text
+
+
 def test_format_advice_hold_no_levels():
     advice = {
         "symbol": "BTC",

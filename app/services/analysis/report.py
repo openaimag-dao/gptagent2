@@ -34,6 +34,7 @@ from app.services.news.repository import NewsRepository
 from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
+from app.services.ranking.engine import RankingEngine
 from app.services.scenarios.engine import compute_scenarios, scenario_extremes
 from app.services.signals.engine import SignalEngine
 from app.services.similar_market.engine import SimilarMarketEngine
@@ -535,6 +536,7 @@ class ReportGenerator:
             signal_engine,
             ProbabilityEngine(session_factory),
             PortfolioEngine(session_factory, market_repository),
+            RankingEngine(session_factory),
         )
 
     async def generate_and_store(self, report_type: str = "scheduled") -> Report:

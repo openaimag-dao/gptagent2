@@ -1140,6 +1140,9 @@ def format_advice(advice: dict | None, symbol: str, timeframe_arg: str) -> str:
         lines.append(
             f"Position size: {advice['position_size_quantity']} -- {advice['position_size_note']}"
         )
+    if advice.get("ranking_note"):
+        lines.append("")
+        lines.append(advice["ranking_note"])
     return "\n".join(lines)
 
 

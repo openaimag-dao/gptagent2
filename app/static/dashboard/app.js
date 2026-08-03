@@ -2001,6 +2001,9 @@ async function renderAdvice() {
           el("p", { class: "sub" }, `Position size: ${a.position_size_quantity} -- ${a.position_size_note}`)
         );
       }
+      if (a.ranking_note) {
+        results.appendChild(el("p", { class: "sub" }, a.ranking_note));
+      }
     } catch (err) {
       results.appendChild(errorBox(err));
     }

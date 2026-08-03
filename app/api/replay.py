@@ -15,6 +15,7 @@ from app.services.news.repository import NewsRepository
 from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
+from app.services.ranking.engine import RankingEngine
 from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import (
     MarketReplayEngine,
@@ -48,7 +49,11 @@ def _build_engine() -> MarketReplayEngine:
     )
     portfolio_engine = PortfolioEngine(session_factory, market_repository)
     portfolio_advisor = PortfolioAdvisorEngine(
-        session_factory, signal_engine, ProbabilityEngine(session_factory), portfolio_engine
+        session_factory,
+        signal_engine,
+        ProbabilityEngine(session_factory),
+        portfolio_engine,
+        RankingEngine(session_factory),
     )
     return MarketReplayEngine(
         session_factory,

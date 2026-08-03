@@ -9,6 +9,7 @@ from app.services.news.repository import NewsRepository
 from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
+from app.services.ranking.engine import RankingEngine
 from app.services.signals.engine import SignalEngine
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
@@ -90,6 +91,7 @@ async def get_advice(
         SignalEngine(session_factory, market_repository, news_repository),
         ProbabilityEngine(session_factory),
         portfolio_engine,
+        RankingEngine(session_factory),
     )
     advice = await advisor.advise(symbol, tf, portfolio_id=portfolio.id, risk_pct=risk_pct)
     if advice is None:
