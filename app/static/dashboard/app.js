@@ -1302,7 +1302,7 @@ async function renderNews() {
   }
   nodes.push(
     table(
-      ["Time", "Category", "Sentiment", "Title", "Source"],
+      ["Time", "Category", "Sentiment", "Impact", "Title", "Source"],
       data.items.map((n) => [
         n.published_at ? n.published_at.slice(0, 16).replace("T", " ") : "n/a",
         n.category,
@@ -1311,6 +1311,7 @@ async function renderNews() {
           { class: n.sentiment === "bullish" ? "up" : n.sentiment === "bearish" ? "down" : "neutral" },
           n.sentiment
         ),
+        decisionPill(n.impact, n.impact === "high" ? "bad" : n.impact === "medium" ? "neutral" : "good"),
         el("a", { href: n.url, target: "_blank", rel: "noopener" }, n.title),
         n.source,
       ])
