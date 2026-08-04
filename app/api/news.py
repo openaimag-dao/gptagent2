@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Query
 
 from app.database.session import get_session_factory
+from app.services.agents.news_agent import estimate_impact
 from app.services.news.repository import NewsRepository
 from app.services.news.schemas import NewsCategory
 
@@ -32,6 +33,7 @@ async def get_recent_news(
                 "summary": item.summary,
                 "sentiment": item.sentiment.value,
                 "sentiment_score": float(item.sentiment_score),
+                "impact": estimate_impact(float(item.sentiment_score), item.category.value),
                 "published_at": item.published_at.isoformat() if item.published_at else None,
                 "fetched_at": item.fetched_at.isoformat(),
             }
