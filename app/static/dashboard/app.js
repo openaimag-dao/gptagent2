@@ -1188,14 +1188,64 @@ async function renderTerminal() {
 }
 
 async function renderMacro() {
-  const agents = await safe("/api/agents");
+  const [agents, market, sentiment] = await Promise.all([
+    safe("/api/agents"),
+    safe("/api/market"),
+    safe("/api/sentiment"),
+  ]);
   const nodes = [el("h2", {}, "Macro")];
-  if (agents && agents.macro) {
-    nodes.push(el("pre", { class: "summary" }, agents.macro.summary));
-    nodes.push(el("p", { class: "sub" }, agents.macro.data.note));
-  } else {
+  if (!agents || !agents.macro) {
     nodes.push(el("p", { class: "error" }, "Macro agent unavailable."));
+    return nodes;
   }
+
+  // Cross-references MacroAgent's own DXY/Gold/Silver/Oil/VIX/US10Y/US30Y/
+  // FedRate reads with equity indices and BTC dominance already collected
+  // by the market aggregator, and Fear & Greed already computed by
+  // SentimentEngine -- no new computation, just one combined table instead
+  // of three separate page visits.
+  const quotesBySymbol = {};
+  for (const q of (market && market.quotes) || []) quotesBySymbol[q.symbol] = q;
+
+  const rows = [];
+  for (const [symbol, a] of Object.entries(agents.macro.data.assets || {})) {
+    if (a) {
+      rows.push([
+        symbol,
+        fmtNum(a.price),
+        el("span", { class: changeClass(a.change_pct_24h) }, fmtPct(a.change_pct_24h)),
+      ]);
+    }
+  }
+  for (const symbol of ["SPX", "NASDAQ", "DJI"]) {
+    const q = quotesBySymbol[symbol];
+    if (q) {
+      rows.push([
+        symbol,
+        fmtNum(q.price),
+        el("span", { class: changeClass(q.change_pct_24h) }, fmtPct(q.change_pct_24h)),
+      ]);
+    }
+  }
+  const btcDominance = quotesBySymbol["BTC.D"];
+  if (btcDominance) {
+    rows.push(["BTC Dominance", `${fmtNum(btcDominance.price)}%`, "--"]);
+  }
+  if (sentiment && sentiment.fear_greed_classification) {
+    rows.push([
+      "Fear & Greed",
+      sentiment.fear_greed_value != null ? String(sentiment.fear_greed_value) : "n/a",
+      sentiment.fear_greed_classification,
+    ]);
+  }
+  if (rows.length) {
+    nodes.push(table(["Instrument", "Value", "24h % / Reading"], rows));
+  }
+
+  nodes.push(el("h3", {}, "AI Interpretation"));
+  nodes.push(el("p", {}, agents.macro.data.liquidity_analysis));
+  nodes.push(el("p", {}, agents.macro.data.risk_assessment));
+  nodes.push(el("p", { class: "sub" }, agents.macro.data.note));
   return nodes;
 }
 
