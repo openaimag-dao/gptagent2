@@ -632,7 +632,7 @@ def start_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(
         collect_market_data_job,
-        trigger=IntervalTrigger(minutes=settings.market_data_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.market_data_interval_minutes, jitter=60),
         id=MARKET_DATA_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -640,7 +640,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         check_critical_alerts_job,
-        trigger=IntervalTrigger(minutes=settings.market_data_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.market_data_interval_minutes, jitter=60),
         id=CRITICAL_ALERT_CHECK_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -648,7 +648,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_technical_analysis_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=TECHNICAL_ANALYSIS_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -656,7 +656,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_watchdog_snapshot_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=WATCHDOG_SNAPSHOT_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -664,7 +664,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_market_scan_job,
-        trigger=IntervalTrigger(minutes=settings.scanner_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.scanner_interval_minutes, jitter=120),
         id=MARKET_SCAN_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -672,7 +672,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         collect_news_job,
-        trigger=IntervalTrigger(minutes=settings.news_collection_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.news_collection_interval_minutes, jitter=90),
         id=NEWS_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -680,7 +680,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_correlations_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=CORRELATION_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -688,7 +688,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         detect_regime_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=REGIME_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -696,7 +696,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_signals_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=SIGNAL_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -704,7 +704,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_global_score_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=GLOBAL_SCORE_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -712,7 +712,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_sentiment_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=SENTIMENT_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -720,7 +720,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_scenarios_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=SCENARIO_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -728,7 +728,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         snapshot_whale_etf_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=WHALE_ETF_SNAPSHOT_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -744,7 +744,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_features_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=FEATURE_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -752,7 +752,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         check_alerts_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=ALERT_CHECK_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -760,7 +760,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         check_alert_rules_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=ALERT_RULE_CHECK_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -768,7 +768,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         generate_report_job,
-        trigger=IntervalTrigger(minutes=settings.report_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.report_interval_minutes, jitter=300),
         id=REPORT_JOB_ID,
         args=["scheduled"],
         next_run_time=datetime.now(UTC),
@@ -798,7 +798,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_forecast_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=FORECAST_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -806,7 +806,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         grade_forecasts_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=FORECAST_GRADING_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -814,7 +814,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_market_replay_job,
-        trigger=IntervalTrigger(minutes=settings.replay_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.replay_interval_minutes, jitter=120),
         id=REPLAY_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
@@ -822,7 +822,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     scheduler.add_job(
         compute_breakout_job,
-        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes),
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=BREAKOUT_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
