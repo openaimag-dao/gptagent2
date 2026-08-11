@@ -688,6 +688,19 @@ def test_format_onchain_reports_unavailable_metrics():
     assert "mvrv" in text
 
 
+def test_format_onchain_shows_populated_metrics_and_remaining_gaps():
+    snapshot = {
+        "symbol": "ETH",
+        "available": True,
+        "reason": "TVL, stablecoin supply and DEX volume via DefiLlama.",
+        "metrics": {"tvl": 41_000_000_000.0, "sopr": None, "mvrv": None},
+    }
+    text = format_onchain(snapshot)
+    assert "tvl: 41000000000.0" in text
+    assert "Still unavailable: sopr, mvrv" in text
+    assert "Tracked metrics (all unavailable)" not in text
+
+
 def test_format_onchain_includes_solana_note():
     snapshot = {
         "symbol": "SOL",

@@ -1278,6 +1278,24 @@ GET /api/onchain/{symbol}
 /onchain [symbol]
 ```
 
+**Update -- DefiLlama wired in (BTC/ETH/SOL TVL, stablecoin supply, DEX
+volume):** `app/services/onchain/providers.py`'s `DefiLlamaClient` calls
+DefiLlama's free, keyless API for real `tvl`/`stablecoin_supply`/
+`dex_volume` per chain (cached 5 minutes via `RedisCooldownCache`).
+`available` is now `True` whenever any of those come back this cycle,
+same convention as `WhaleIntelligenceEngine`. Every downstream consumer
+(ForecastEngine's Confidence Breakdown, Executive Summary's
+`market_health.onchain_activity`, ExplainabilityEngine's On-chain row,
+`WatchdogEngine.get_onchain_overview`, the dashboard's On-Chain
+Intelligence page, `/onchain` in Telegram) already read
+`available`/`reason`/`metrics` generically, so all of them reflect real
+DefiLlama data with no changes needed in any of them. The remaining
+wallet-level metrics -- exchange netflow/reserves, whale wallet
+activity, active/new addresses, dormancy, SOPR, MVRV, NUPL, coin days
+destroyed, large transfers, bridge activity -- still genuinely need
+`GLASSNODE_API_KEY` or (for Solana) `HELIUS_API_KEY`, neither of which
+this update fabricates or substitutes for.
+
 ### Phase 4: AI Investment Committee
 
 `app/services/committee/engine.py` convenes the same 5 specialist
@@ -1823,9 +1841,10 @@ page.
   honestly `available: false`.
 - **On-Chain Overview**: whale positioning/funding/open interest from the
   real `WhaleIntelligenceEngine` (CoinGlass/CoinGecko-derivatives) when
-  configured; exchange flows/stablecoin flow/TVL always "Unavailable" --
-  `OnChainIntelligenceEngine` remains the honest scaffold it's always been
-  (no Glassnode/Helius client exists in this codebase).
+  configured; TVL and stablecoin supply are now real too, via
+  `OnChainIntelligenceEngine`'s DefiLlama client (see the Phase 3 update
+  above); exchange netflow still needs `GLASSNODE_API_KEY` (no
+  wallet-level client exists in this codebase).
 - **AI Status**: committee opinion, consensus split, prediction confidence,
   expected scenario, highest risk and biggest opportunity (the
   highest-probability bearish/bullish scenarios from the existing
@@ -1836,15 +1855,20 @@ page.
   rows, plus the human-readable auto-detected events below.
 - **Provider Status**: CoinGecko/FRED (real, DB-backed: last successful
   `AssetPrice` write per source, a Redis consecutive-failure counter as
-  "Reconnect Count"), Database (a live, timed `SELECT 1`), Telegram
-  (configured + last successful `AlertLog` broadcast), Brain (configured +
-  last `Report.generated_at`), Binance/DefiLlama (no client exists in this
-  codebase -- reported not-implemented), Helius (a settings key exists but
-  no client is wired in -- reported not-configured, matching
-  `OnChainIntelligenceEngine`'s own honesty). Latency is only live-probed
-  for Database -- probing external providers on every dashboard/Telegram
-  request would make the status page itself a source of rate-limit risk,
-  so CoinGecko/FRED health is instead inferred from write recency.
+  "Reconnect Count"), Database (a live, timed `SELECT 1`), DefiLlama (a
+  live, timed, free/keyless TVL fetch -- see the OnChain Intelligence
+  Phase 3 update above; unlike CoinGecko/FRED, DefiLlama has no scheduler
+  job feeding a "last write" timestamp to infer health from, and its
+  public API documents no strict rate limit, so a live probe is both
+  necessary and safe here), Telegram (configured + last successful
+  `AlertLog` broadcast), Brain (configured + last `Report.generated_at`),
+  Binance (no client exists in this codebase -- reported
+  not-implemented), Helius (a settings key exists but no wallet-level
+  client is wired in -- reported not-configured, matching
+  `OnChainIntelligenceEngine`'s own honesty). CoinGecko/FRED health is
+  still inferred from write recency rather than live-probed, since
+  probing a metered free tier on every dashboard/Telegram request would
+  make the status page itself a source of rate-limit risk.
 
 ### 5. Automatic Detection (Watchdog Events)
 

@@ -512,7 +512,16 @@ def format_onchain(snapshot: dict) -> str:
         lines.append("")
         lines.append(snapshot["solana_note"])
     lines.append("")
-    lines.append("Tracked metrics (all unavailable): " + ", ".join(snapshot["metrics"]))
+    metrics = snapshot["metrics"]
+    populated = {k: v for k, v in metrics.items() if v is not None}
+    if populated:
+        lines.append("Metrics:")
+        lines.extend(f"- {k}: {v}" for k, v in populated.items())
+        unavailable = [k for k in metrics if k not in populated]
+        if unavailable:
+            lines.append("Still unavailable: " + ", ".join(unavailable))
+    else:
+        lines.append("Tracked metrics (all unavailable): " + ", ".join(metrics))
     return "\n".join(lines)
 
 
@@ -940,7 +949,14 @@ def format_watchdog_onchain(onchain: dict) -> str:
         lines.append(f"Funding rate: {onchain['funding']}")
     if onchain.get("open_interest") is not None:
         lines.append(f"Open interest: {onchain['open_interest']}")
-    lines.append("Exchange flows / stablecoin flow / TVL: unavailable (no on-chain provider wired)")
+    if onchain.get("tvl") is not None:
+        lines.append(f"TVL: {onchain['tvl']:,.0f}")
+    if onchain.get("stablecoin_flow") is not None:
+        lines.append(f"Stablecoin supply: {onchain['stablecoin_flow']:,.0f}")
+    if onchain.get("exchange_flows") is not None:
+        lines.append(f"Exchange netflow: {onchain['exchange_flows']}")
+    else:
+        lines.append("Exchange netflow: unavailable (needs GLASSNODE_API_KEY)")
     return "\n".join(lines)
 
 
