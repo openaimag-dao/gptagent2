@@ -1,11 +1,18 @@
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.services.onchain.providers import DefiLlamaError
 from app.services.watchdog.provider_health import (
     get_provider_status,
     record_provider_failure,
     record_provider_success,
 )
+
+
+def _defillama(tvl=41_000_000_000.0):
+    client = AsyncMock()
+    client.get_tvl.return_value = tvl
+    return client
 
 
 def _session_factory(scalar_side_effect: list) -> MagicMock:
@@ -41,7 +48,7 @@ async def test_get_provider_status_returns_all_eight_providers():
     redis.get.return_value = None
 
     with patch("app.services.watchdog.provider_health.get_settings", return_value=_settings()):
-        providers = await get_provider_status(session_factory, redis)
+        providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
     names = {p["name"] for p in providers}
     assert names == {
@@ -56,24 +63,54 @@ async def test_get_provider_status_returns_all_eight_providers():
     }
 
 
-async def test_binance_and_defillama_always_report_not_implemented():
+async def test_binance_always_reports_not_implemented():
     session_factory = _session_factory([None, None, None, None])
     redis = AsyncMock()
     redis.get.return_value = None
 
     with patch("app.services.watchdog.provider_health.get_settings", return_value=_settings()):
-        providers = await get_provider_status(session_factory, redis)
+        providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
-    by_name = {p["name"]: p for p in providers}
-    assert by_name["Binance"]["configured"] is False
-    assert "No Binance client" in by_name["Binance"]["reason"]
-    assert by_name["DefiLlama"]["configured"] is False
-    assert "No DefiLlama client" in by_name["DefiLlama"]["reason"]
+    binance = next(p for p in providers if p["name"] == "Binance")
+    assert binance["configured"] is False
+    assert "No Binance client" in binance["reason"]
+
+
+async def test_defillama_healthy_when_tvl_fetch_succeeds():
+    session_factory = _session_factory([None, None, None, None])
+    redis = AsyncMock()
+    redis.get.return_value = None
+
+    with patch("app.services.watchdog.provider_health.get_settings", return_value=_settings()):
+        providers = await get_provider_status(
+            session_factory, redis, defillama=_defillama(tvl=41_000_000_000.0)
+        )
+
+    defillama = next(p for p in providers if p["name"] == "DefiLlama")
+    assert defillama["configured"] is True
+    assert defillama["healthy"] is True
+    assert defillama["latency_ms"] is not None
+
+
+async def test_defillama_unhealthy_when_request_fails():
+    session_factory = _session_factory([None, None, None, None])
+    redis = AsyncMock()
+    redis.get.return_value = None
+    defillama_client = AsyncMock()
+    defillama_client.get_tvl.side_effect = DefiLlamaError("rate limited")
+
+    with patch("app.services.watchdog.provider_health.get_settings", return_value=_settings()):
+        providers = await get_provider_status(session_factory, redis, defillama=defillama_client)
+
+    defillama = next(p for p in providers if p["name"] == "DefiLlama")
+    assert defillama["configured"] is True
+    assert defillama["healthy"] is False
+    assert "failed" in defillama["reason"]
 
 
 async def test_helius_reports_not_configured_even_with_api_key_set():
-    # A settings key existing is not the same as a client being wired in --
-    # see app.services.onchain.engine's own honest-scaffold pattern.
+    # A settings key existing is not the same as a wallet-level client being
+    # wired in -- see app.services.onchain.engine's own docstring.
     session_factory = _session_factory([None, None, None, None])
     redis = AsyncMock()
     redis.get.return_value = None
@@ -82,12 +119,12 @@ async def test_helius_reports_not_configured_even_with_api_key_set():
         "app.services.watchdog.provider_health.get_settings",
         return_value=_settings(helius_api_key="set"),
     ):
-        providers = await get_provider_status(session_factory, redis)
+        providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
     helius = next(p for p in providers if p["name"] == "Helius")
     assert helius["configured"] is True
     assert helius["healthy"] is False
-    assert "no on-chain client is wired in" in helius["reason"]
+    assert "no wallet-level on-chain client is wired in" in helius["reason"]
 
 
 async def test_fred_not_configured_when_no_api_key():
@@ -99,7 +136,7 @@ async def test_fred_not_configured_when_no_api_key():
         "app.services.watchdog.provider_health.get_settings",
         return_value=_settings(fred_api_key=None),
     ):
-        providers = await get_provider_status(session_factory, redis)
+        providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
     fred = next(p for p in providers if p["name"] == "FRED")
     assert fred["configured"] is False
@@ -114,7 +151,7 @@ async def test_coingecko_healthy_when_recently_updated():
     redis.get.return_value = "0"
 
     with patch("app.services.watchdog.provider_health.get_settings", return_value=_settings()):
-        providers = await get_provider_status(session_factory, redis)
+        providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
     coingecko = next(p for p in providers if p["name"] == "CoinGecko")
     assert coingecko["configured"] is True
@@ -130,7 +167,7 @@ async def test_coingecko_unhealthy_when_stale():
     redis.get.return_value = "3"
 
     with patch("app.services.watchdog.provider_health.get_settings", return_value=_settings()):
-        providers = await get_provider_status(session_factory, redis)
+        providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
     coingecko = next(p for p in providers if p["name"] == "CoinGecko")
     assert coingecko["healthy"] is False
@@ -146,7 +183,7 @@ async def test_telegram_not_configured_without_token():
         "app.services.watchdog.provider_health.get_settings",
         return_value=_settings(telegram_bot_token=None),
     ):
-        providers = await get_provider_status(session_factory, redis)
+        providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
     telegram = next(p for p in providers if p["name"] == "Telegram")
     assert telegram["configured"] is False
@@ -161,7 +198,7 @@ async def test_brain_configured_when_any_llm_key_present():
         "app.services.watchdog.provider_health.get_settings",
         return_value=_settings(gemini_api_key=None, anthropic_api_key="key"),
     ):
-        providers = await get_provider_status(session_factory, redis)
+        providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
     brain = next(p for p in providers if p["name"] == "Brain")
     assert brain["configured"] is True
@@ -173,7 +210,7 @@ async def test_database_health_reports_latency():
     redis.get.return_value = None
 
     with patch("app.services.watchdog.provider_health.get_settings", return_value=_settings()):
-        providers = await get_provider_status(session_factory, redis)
+        providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
     database = next(p for p in providers if p["name"] == "Database")
     assert database["configured"] is True
