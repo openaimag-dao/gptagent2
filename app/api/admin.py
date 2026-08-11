@@ -1,18 +1,39 @@
 import asyncio
+import hmac
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
+from app.config import get_settings
 from app.database.session import get_session_factory
 from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.history.events import seed_events
 from app.services.history.pipeline import run_sync, run_validation
 from app.services.history.registry import build_registry
 
-router = APIRouter(prefix="/api/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
+
+
+async def require_admin_key(x_admin_key: str | None = Header(default=None)) -> None:
+    """Every route on this router runs an alembic migration or triggers a
+    multi-year external-API backfill, and this router has no other access
+    control -- the database itself has no public access, so these
+    endpoints exist specifically to be reachable from this deployment's
+    public URL. ADMIN_API_KEY unset means "reject every request", never
+    "allow every request": there is no way to leave this open by
+    forgetting to configure it."""
+    settings = get_settings()
+    if (
+        not settings.admin_api_key
+        or not x_admin_key
+        or not hmac.compare_digest(x_admin_key, settings.admin_api_key)
+    ):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-Admin-Key header")
+
+
+router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin_key)])
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
