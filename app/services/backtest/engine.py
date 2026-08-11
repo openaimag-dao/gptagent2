@@ -3,7 +3,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.services.backtest.conditions import Condition, evaluate_rule
-from app.services.backtest.metrics import compute_backtest_metrics
+from app.services.backtest.metrics import apply_trading_costs, compute_backtest_metrics
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
@@ -47,7 +47,18 @@ class BacktestEngine:
         target_symbol: str,
         timeframe: Timeframe = Timeframe.DAILY,
         horizon: int = 1,
+        fill_lag_periods: int = 1,
+        fee_pct: float = 0.1,
+        slippage_pct: float = 0.05,
     ) -> dict | None:
+        """fill_lag_periods=1 (default) enters the trade at the close of the
+        bar AFTER the one where the rule fired, not the same bar's own close
+        -- a rule can only be confirmed once that bar's close is known, so
+        filling at that same close assumes an impossible zero-latency,
+        zero-slippage execution. fee_pct/slippage_pct are documented
+        round-trip cost assumptions applied to every trade -- see
+        apply_trading_costs. Set fill_lag_periods=0 only to reproduce the
+        old (unrealistic) same-bar-fill behavior for comparison."""
         target_config = find_symbol_config(target_symbol)
         if target_config is None:
             return None
@@ -76,8 +87,13 @@ class BacktestEngine:
         for i, row in enumerate(target_rows):
             rows_by_symbol = {s: series_by_symbol[s].get(row.timestamp) for s in symbols_needed}
             fired = evaluate_rule(rows_by_symbol, conditions)
-            if fired and forward_returns[i] is not None:
-                trade_returns.append(forward_returns[i])
+            if not fired:
+                continue
+            fill_index = i + fill_lag_periods
+            if fill_index < len(forward_returns) and forward_returns[fill_index] is not None:
+                trade_returns.append(forward_returns[fill_index])
+
+        trade_returns = apply_trading_costs(trade_returns, fee_pct, slippage_pct)
 
         metrics = compute_backtest_metrics(trade_returns)
         if metrics is None:
@@ -85,4 +101,7 @@ class BacktestEngine:
         metrics["target_symbol"] = target_symbol
         metrics["timeframe"] = timeframe.value
         metrics["horizon_periods"] = horizon
+        metrics["fill_lag_periods"] = fill_lag_periods
+        metrics["fee_pct"] = fee_pct
+        metrics["slippage_pct"] = slippage_pct
         return metrics

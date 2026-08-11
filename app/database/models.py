@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Numeric,
     String,
     Text,
@@ -1060,6 +1061,14 @@ class ScannerSnapshot(Base):
     queries for no benefit to them."""
 
     __tablename__ = "scanner_snapshots"
+    __table_args__ = (
+        # _history_by_symbol() (app/services/scanner/engine.py) filters every
+        # scan cycle on symbol IN (...) AND recorded_at >= since, across up to
+        # ~500 symbols and a 30-day lookback -- a composite index lets
+        # Postgres satisfy that with one index scan instead of intersecting
+        # the two single-column indexes below.
+        Index("ix_scanner_snapshots_symbol_recorded_at", "symbol", "recorded_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True)
