@@ -2,11 +2,20 @@ import pytest
 
 from app.services.backtest.conditions import Condition, evaluate_condition, evaluate_rule
 from app.services.backtest.metrics import (
+    apply_trading_costs,
+    compute_avg_loss_pct,
     compute_avg_return_pct,
+    compute_avg_win_pct,
     compute_backtest_metrics,
+    compute_cagr_pct,
+    compute_calmar_ratio,
+    compute_cvar_pct,
+    compute_expectancy_pct,
     compute_max_drawdown_pct,
     compute_profit_factor,
     compute_sharpe_ratio,
+    compute_sortino_ratio,
+    compute_var_pct,
     compute_win_rate_pct,
 )
 
@@ -69,7 +78,98 @@ def test_compute_backtest_metrics_shape():
         "max_drawdown_pct",
         "profit_factor",
         "sharpe_ratio",
+        "sortino_ratio",
+        "calmar_ratio",
+        "cagr_pct",
+        "var_95_pct",
+        "cvar_95_pct",
+        "expectancy_pct",
+        "avg_win_pct",
+        "avg_loss_pct",
     }
+
+
+def test_sortino_ignores_upside_variance():
+    # All gains but varying magnitude: downside deviation is 0 -> undefined.
+    assert compute_sortino_ratio([0.01, 0.02, 0.03]) is None
+
+
+def test_sortino_penalizes_only_losses():
+    result = compute_sortino_ratio([0.02, -0.01, 0.03, -0.02])
+    assert result is not None
+
+
+def test_sortino_needs_at_least_two_samples():
+    assert compute_sortino_ratio([0.01]) is None
+
+
+def test_calmar_none_without_drawdown():
+    assert compute_calmar_ratio([0.01, 0.02, 0.03]) is None
+
+
+def test_calmar_computes_with_drawdown():
+    result = compute_calmar_ratio([0.10, -0.10])
+    assert result is not None
+
+
+def test_cagr_empty_is_none():
+    assert compute_cagr_pct([]) is None
+
+
+def test_cagr_positive_for_winning_sequence():
+    result = compute_cagr_pct([0.01, 0.01, 0.01])
+    assert result is not None
+    assert result > 0
+
+
+def test_var_is_positive_magnitude_of_tail_loss():
+    result = compute_var_pct([-0.05, -0.02, 0.01, 0.02, 0.03], confidence=0.8)
+    assert result is not None
+    assert result > 0
+
+
+def test_var_needs_at_least_two_samples():
+    assert compute_var_pct([0.01]) is None
+
+
+def test_cvar_averages_the_worst_tail():
+    # confidence=0.75 over 4 samples -> cutoff = int(0.25 * 4) = 1 worst sample
+    result = compute_cvar_pct([-0.10, -0.05, 0.01, 0.02], confidence=0.75)
+    assert result == round(-100 * -0.10, 3)
+
+
+def test_cvar_averages_multiple_tail_samples():
+    # confidence=0.5 over 4 samples -> cutoff = int(0.5 * 4) = 2 worst samples
+    result = compute_cvar_pct([-0.10, -0.05, 0.01, 0.02], confidence=0.5)
+    assert result == round(-100 * (-0.10 - 0.05) / 2, 3)
+
+
+def test_expectancy_matches_avg_return():
+    returns = [0.02, -0.01, 0.03]
+    assert compute_expectancy_pct(returns) == compute_avg_return_pct(returns)
+
+
+def test_avg_win_and_avg_loss():
+    returns = [0.02, 0.04, -0.01, -0.03]
+    assert compute_avg_win_pct(returns) == round(100 * (0.02 + 0.04) / 2, 4)
+    assert compute_avg_loss_pct(returns) == round(-100 * (-0.01 - 0.03) / 2, 4)
+
+
+def test_avg_win_none_without_wins():
+    assert compute_avg_win_pct([-0.01, -0.02]) is None
+
+
+def test_avg_loss_none_without_losses():
+    assert compute_avg_loss_pct([0.01, 0.02]) is None
+
+
+def test_apply_trading_costs_subtracts_round_trip_cost():
+    result = apply_trading_costs([0.05, -0.02], fee_pct=0.1, slippage_pct=0.05)
+    assert result == [0.05 - 0.0015, -0.02 - 0.0015]
+
+
+def test_apply_trading_costs_empty_list():
+    assert apply_trading_costs([]) == []
 
 
 def test_evaluate_condition_gt():
