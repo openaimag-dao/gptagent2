@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     # ---- App ----
     app_env: str = "development"
     log_level: str = "INFO"
+    # Required to call POST /api/admin/* (sync-history, migrate) -- those
+    # endpoints run alembic migrations and trigger multi-year external data
+    # backfills, so they must never be reachable by an unauthenticated
+    # caller on a public deployment. None means "not configured", which
+    # app/api/admin.py treats as "reject every request" rather than "allow
+    # every request" -- see require_admin_key() there.
+    admin_api_key: str | None = None
 
     # ---- Infrastructure (sensible local/docker-compose defaults) ----
     database_url: str = "postgresql+asyncpg://market_intel:market_intel@localhost:5432/market_intel"

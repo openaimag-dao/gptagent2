@@ -5,6 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api import admin
+from app.config.settings import Settings
 
 
 @pytest.fixture(autouse=True)
@@ -12,6 +13,39 @@ def _reset_status():
     admin._status.update(state="idle", started_at=None, finished_at=None, error=None)
     yield
     admin._status.update(state="idle", started_at=None, finished_at=None, error=None)
+
+
+def _settings(**overrides) -> Settings:
+    return Settings(**overrides)
+
+
+async def test_require_admin_key_rejects_when_unconfigured():
+    with patch("app.api.admin.get_settings", return_value=_settings(admin_api_key=None)):
+        with pytest.raises(HTTPException) as exc_info:
+            await admin.require_admin_key(x_admin_key="anything")
+
+    assert exc_info.value.status_code == 401
+
+
+async def test_require_admin_key_rejects_missing_header():
+    with patch("app.api.admin.get_settings", return_value=_settings(admin_api_key="secret")):
+        with pytest.raises(HTTPException) as exc_info:
+            await admin.require_admin_key(x_admin_key=None)
+
+    assert exc_info.value.status_code == 401
+
+
+async def test_require_admin_key_rejects_wrong_key():
+    with patch("app.api.admin.get_settings", return_value=_settings(admin_api_key="secret")):
+        with pytest.raises(HTTPException) as exc_info:
+            await admin.require_admin_key(x_admin_key="wrong")
+
+    assert exc_info.value.status_code == 401
+
+
+async def test_require_admin_key_accepts_correct_key():
+    with patch("app.api.admin.get_settings", return_value=_settings(admin_api_key="secret")):
+        await admin.require_admin_key(x_admin_key="secret")  # must not raise
 
 
 async def test_trigger_starts_background_task_and_reports_running():
