@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from app.api.admin import require_admin_key
 from app.services.alerts.rules import VALID_METRICS, VALID_OPERATORS, build_alert_rule_engine
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
@@ -37,7 +38,7 @@ async def list_metrics() -> dict:
     return {"metrics": list(VALID_METRICS), "operators": list(VALID_OPERATORS)}
 
 
-@router.post("/rules")
+@router.post("/rules", dependencies=[Depends(require_admin_key)])
 async def create_rule(request: CreateAlertRuleRequest) -> dict:
     engine = build_alert_rule_engine()
     try:
@@ -61,7 +62,7 @@ async def get_rules(chat_id: str = Query(...)) -> dict:
     return {"rules": [_serialize_rule(r) for r in rules]}
 
 
-@router.delete("/rules/{rule_id}")
+@router.delete("/rules/{rule_id}", dependencies=[Depends(require_admin_key)])
 async def delete_rule(rule_id: int, chat_id: str = Query(...)) -> dict:
     engine = build_alert_rule_engine()
     removed = await engine.delete_rule(rule_id, chat_id)

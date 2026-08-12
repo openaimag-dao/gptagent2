@@ -27,6 +27,36 @@ async function fetchJSON(path, opts) {
   return body;
 }
 
+// A handful of state-mutating/LLM-cost endpoints (portfolio positions,
+// alert rules, research note generation) require the same X-Admin-Key
+// this deployment already uses for /api/admin/* -- prompted once and
+// cached in localStorage rather than baked into the page, since this is
+// a static file served to anyone who loads the dashboard URL.
+function getAdminKey() {
+  let key = localStorage.getItem("admin_key");
+  if (!key) {
+    key = window.prompt(
+      "This action requires the admin key configured on the server (ADMIN_API_KEY)."
+    );
+    if (key) localStorage.setItem("admin_key", key);
+  }
+  return key;
+}
+
+async function fetchJSONWithAdminKey(path, opts = {}) {
+  const key = getAdminKey();
+  const headers = { ...(opts.headers || {}), "X-Admin-Key": key || "" };
+  try {
+    return await fetchJSON(path, { ...opts, headers });
+  } catch (err) {
+    if (err.status === 401) {
+      localStorage.removeItem("admin_key");
+      alert("Invalid or missing admin key -- please try again.");
+    }
+    throw err;
+  }
+}
+
 function changeClass(v) {
   if (v == null) return "neutral";
   return v > 0 ? "up" : v < 0 ? "down" : "neutral";
@@ -2393,7 +2423,7 @@ async function renderResearch() {
     noteBox.innerHTML = "";
     noteBox.appendChild(el("p", { class: "loading" }, "Generating..."));
     try {
-      await fetchJSON("/api/research/notes/generate", { method: "POST" });
+      await fetchJSONWithAdminKey("/api/research/notes/generate", { method: "POST" });
       await loadNote();
     } catch (err) {
       noteBox.innerHTML = "";
@@ -3399,7 +3429,7 @@ async function renderPortfolio() {
   const addBtn = el("button", {}, "Add position");
   addBtn.addEventListener("click", async () => {
     try {
-      await fetchJSON("/api/portfolio/positions", {
+      await fetchJSONWithAdminKey("/api/portfolio/positions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3450,7 +3480,7 @@ async function renderAlerts() {
               const delBtn = el("button", {}, "Delete");
               delBtn.addEventListener("click", async () => {
                 try {
-                  await fetchJSON(
+                  await fetchJSONWithAdminKey(
                     `/api/alerts/rules/${r.id}?chat_id=${encodeURIComponent(chatId)}`,
                     { method: "DELETE" }
                   );
@@ -3510,7 +3540,7 @@ async function renderAlerts() {
       return;
     }
     try {
-      await fetchJSON("/api/alerts/rules", {
+      await fetchJSONWithAdminKey("/api/alerts/rules", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

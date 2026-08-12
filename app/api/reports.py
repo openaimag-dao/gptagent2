@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.admin import require_admin_key
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.analysis.correlation import CorrelationEngine
@@ -68,7 +69,7 @@ async def get_latest_report() -> dict:
     return await _serialize(report)
 
 
-@router.post("/generate")
+@router.post("/generate", dependencies=[Depends(require_admin_key)])
 async def generate_report() -> dict:
     """Generates a fresh report on demand (in addition to the scheduled cadence)."""
     generator = build_report_generator()

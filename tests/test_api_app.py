@@ -99,6 +99,61 @@ def test_openapi_schema_builds_without_error():
     assert len(schema["paths"]) >= len(EXPECTED_PREFIXES)
 
 
+def _dependency_callables(path: str, method: str) -> list:
+    for route in app.routes:
+        if getattr(route, "path", None) == path and method in getattr(route, "methods", set()):
+            return [d.call for d in route.dependant.dependencies]
+    raise AssertionError(f"no route registered for {method} {path}")
+
+
+# State-mutating (portfolio positions, alert rules) or LLM-cost (report/
+# research-note/brain generation) endpoints require the same X-Admin-Key
+# gate as /api/admin/* -- unlike that router, these aren't gated at the
+# router level (their GET siblings stay public for dashboard reads), so
+# each one needs its own dependencies=[Depends(require_admin_key)].
+_ADMIN_GATED_ROUTES = [
+    ("/api/portfolio/positions", "POST"),
+    ("/api/portfolio/positions/{position_id}", "DELETE"),
+    ("/api/alerts/rules", "POST"),
+    ("/api/alerts/rules/{rule_id}", "DELETE"),
+    ("/api/report/generate", "POST"),
+    ("/api/research/notes/generate", "POST"),
+    ("/api/brain/generate", "POST"),
+]
+
+# Reads (even of gated resources) and pure-compute endpoints with no $
+# cost and no persistent state mutation stay open, matching how the
+# dashboard and Telegram bot already use them unauthenticated.
+_UNGATED_ROUTES = [
+    ("/api/portfolio", "GET"),
+    ("/api/portfolio/advice/{symbol}", "GET"),
+    ("/api/alerts/rules", "GET"),
+    ("/api/alerts/history", "GET"),
+    ("/api/backtest", "POST"),
+    ("/api/strategy", "POST"),
+    ("/api/hypothesis/test", "POST"),
+    ("/api/hypothesis/test-all", "POST"),
+]
+
+
+def test_state_mutating_and_llm_cost_routes_require_admin_key():
+    from app.api.admin import require_admin_key
+
+    for path, method in _ADMIN_GATED_ROUTES:
+        assert require_admin_key in _dependency_callables(
+            path, method
+        ), f"{method} {path} must depend on require_admin_key"
+
+
+def test_read_and_pure_compute_routes_stay_public():
+    from app.api.admin import require_admin_key
+
+    for path, method in _UNGATED_ROUTES:
+        assert require_admin_key not in _dependency_callables(
+            path, method
+        ), f"{method} {path} should not require an admin key"
+
+
 def test_knowledge_rules_routes_registered_before_symbol_catch_all():
     """/api/knowledge/rules must be declared before /api/knowledge/{symbol} --
     Starlette matches routes in registration order, so a wrong order would
