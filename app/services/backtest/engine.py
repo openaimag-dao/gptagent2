@@ -4,12 +4,29 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.services.backtest.conditions import Condition, evaluate_rule
 from app.services.backtest.metrics import apply_trading_costs, compute_backtest_metrics
-from app.services.history.registry import find_symbol_config
+from app.services.history.registry import STOCK_TICKERS, find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
 from app.services.probability.engine import compute_forward_returns
 
 logger = logging.getLogger(__name__)
+
+
+def universe_caveat(target_symbol: str) -> str | None:
+    """None for every symbol except this project's fixed 7-company equities
+    roster, where it names the survivorship exposure: the roster is a
+    present-day selection of still-successful mega-caps applied
+    retroactively across all of history, so companies that failed or were
+    delisted before qualifying are absent from every backtest result."""
+    if target_symbol not in STOCK_TICKERS:
+        return None
+    return (
+        "This symbol is one of a fixed, present-day-selected mega-cap roster "
+        "(AAPL/MSFT/NVDA/TSLA/AMZN/META/GOOGL) applied retroactively across all of "
+        "history -- companies that failed or were delisted before qualifying for "
+        "that list are absent, so results should not be read as representative of "
+        "'large caps in general' historically, only of these specific survivors."
+    )
 
 
 def _row_to_dict(row) -> dict:
@@ -104,4 +121,5 @@ class BacktestEngine:
         metrics["fill_lag_periods"] = fill_lag_periods
         metrics["fee_pct"] = fee_pct
         metrics["slippage_pct"] = slippage_pct
+        metrics["universe_caveat"] = universe_caveat(target_symbol)
         return metrics

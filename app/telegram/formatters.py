@@ -1279,26 +1279,27 @@ def format_ranking(row) -> str:
 def format_backtest_result(result: dict | None) -> str:
     if result is None:
         return "No historical occurrences of this rule found."
-    return "\n".join(
-        [
-            f"*BACKTEST: {result['target_symbol']}* ({result['timeframe']}, "
-            f"{result['horizon_periods']}-period horizon)",
-            "",
-            f"Occurrences: {result['occurrences']}",
-            f"Win rate: {result['win_rate_pct']}%",
-            f"Avg return (expectancy): {result['avg_return_pct']}%",
-            f"Avg win / avg loss: {result['avg_win_pct']}% / {result['avg_loss_pct']}%",
-            f"Max drawdown: {result['max_drawdown_pct']}%",
-            f"Profit factor: {result['profit_factor']}",
-            f"Sharpe / Sortino / Calmar: {result['sharpe_ratio']} / "
-            f"{result['sortino_ratio']} / {result['calmar_ratio']}",
-            f"CAGR: {result['cagr_pct']}%",
-            f"VaR / CVaR (95%): {result['var_95_pct']}% / {result['cvar_95_pct']}%",
-            "",
-            f"Assumes {result['fill_lag_periods']}-period execution lag after signal, "
-            f"{result['fee_pct']}% fee + {result['slippage_pct']}% slippage per trade.",
-        ]
-    )
+    lines = [
+        f"*BACKTEST: {result['target_symbol']}* ({result['timeframe']}, "
+        f"{result['horizon_periods']}-period horizon)",
+        "",
+        f"Occurrences: {result['occurrences']}",
+        f"Win rate: {result['win_rate_pct']}%",
+        f"Avg return (expectancy): {result['avg_return_pct']}%",
+        f"Avg win / avg loss: {result['avg_win_pct']}% / {result['avg_loss_pct']}%",
+        f"Max drawdown: {result['max_drawdown_pct']}%",
+        f"Profit factor: {result['profit_factor']}",
+        f"Sharpe / Sortino / Calmar: {result['sharpe_ratio']} / "
+        f"{result['sortino_ratio']} / {result['calmar_ratio']}",
+        f"CAGR: {result['cagr_pct']}%",
+        f"VaR / CVaR (95%): {result['var_95_pct']}% / {result['cvar_95_pct']}%",
+        "",
+        f"Assumes {result['fill_lag_periods']}-period execution lag after signal, "
+        f"{result['fee_pct']}% fee + {result['slippage_pct']}% slippage per trade.",
+    ]
+    if result.get("universe_caveat"):
+        lines.append(f"\n⚠️ {result['universe_caveat']}")
+    return "\n".join(lines)
 
 
 def format_opportunities(opportunities: list[dict], top_factors: list[dict] | None = None) -> str:
