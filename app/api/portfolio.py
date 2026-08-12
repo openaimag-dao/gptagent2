@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from app.api.admin import require_admin_key
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.history.schemas import Timeframe
@@ -44,7 +45,7 @@ async def get_portfolio(name: str = Query("main")) -> dict:
     return {"portfolio_id": portfolio.id, "name": portfolio.name, **health}
 
 
-@router.post("/positions")
+@router.post("/positions", dependencies=[Depends(require_admin_key)])
 async def add_position(request: AddPositionRequest, name: str = Query("main")) -> dict:
     engine = _build_engine()
     portfolio = await engine.get_or_create(name)
@@ -57,7 +58,7 @@ async def add_position(request: AddPositionRequest, name: str = Query("main")) -
     return _serialize_position(position)
 
 
-@router.delete("/positions/{position_id}")
+@router.delete("/positions/{position_id}", dependencies=[Depends(require_admin_key)])
 async def remove_position(position_id: int) -> dict:
     engine = _build_engine()
     removed = await engine.remove_position(position_id)

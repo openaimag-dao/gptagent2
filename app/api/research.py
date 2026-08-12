@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from app.api.admin import require_admin_key
 from app.database.session import get_session_factory
 from app.services.history.schemas import Timeframe
 from app.services.research.engine import ResearchEngine
@@ -47,7 +48,7 @@ async def get_latest_research_note() -> dict:
     }
 
 
-@router.post("/notes/generate")
+@router.post("/notes/generate", dependencies=[Depends(require_admin_key)])
 async def generate_research_note(window_hours: int = Query(24, ge=1, le=168)) -> dict:
     engine = AIResearcherEngine(get_session_factory())
     note = await engine.generate_daily_note(window_hours=window_hours)

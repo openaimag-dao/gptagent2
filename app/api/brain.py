@@ -3,8 +3,9 @@ output into one narrative report. This is deliberately a thin alias over
 `ReportGenerator` (see app/api/reports.py), not a second implementation:
 the "brain" is the same report, just named for what it is."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from app.api.admin import require_admin_key
 from app.api.reports import _serialize, build_report_generator
 
 router = APIRouter(prefix="/api/brain", tags=["brain"])
@@ -19,7 +20,7 @@ async def get_latest_brain_report() -> dict:
     return await _serialize(report)
 
 
-@router.post("/generate")
+@router.post("/generate", dependencies=[Depends(require_admin_key)])
 async def generate_brain_report() -> dict:
     generator = build_report_generator()
     try:
