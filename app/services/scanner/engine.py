@@ -37,7 +37,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import AlertLog, BreakoutEvent, ScannerAlert, ScannerSnapshot
@@ -412,118 +412,164 @@ class MarketScannerEngine:
             return _LOW_VOL_TIER, tags
         return None, tags
 
-    async def _process_detection(self, envelope: dict, now: datetime) -> dict:
-        quality_score = score_alert_quality(envelope["quality_components"])
-        tier = gate_severity(envelope["raw_tier"], quality_score)
-        notify_eligible = should_notify(tier)
+    async def _process_detections(self, envelopes: list[dict], now: datetime) -> list[dict]:
+        """Batched replacement for the old per-envelope _process_detection:
+        that version opened up to 4 separate DB round trips (existing-alert
+        lookup, resolve, insert/escalate, AlertLog insert) for EVERY
+        qualifying envelope -- during a market-wide move (exactly when the
+        crypto-shock/sector detectors are meant to fire), dozens of
+        envelopes could serialize through 3-4 sequential transactions each
+        in a single scan cycle. This does one SELECT for every envelope's
+        existing active alert and one write transaction for the whole
+        batch, preserving the exact same per-envelope decision logic and
+        result shape/order."""
+        if not envelopes:
+            return []
 
+        alert_keys = [envelope["alert_key"] for envelope in envelopes]
         async with self._session_factory() as session:
-            existing = await session.scalar(
-                select(ScannerAlert)
-                .where(
-                    ScannerAlert.alert_key == envelope["alert_key"], ScannerAlert.active.is_(True)
+            rows = list(
+                await session.scalars(
+                    select(ScannerAlert).where(
+                        ScannerAlert.alert_key.in_(alert_keys), ScannerAlert.active.is_(True)
+                    )
                 )
-                .order_by(ScannerAlert.last_updated_at.desc())
-                .limit(1)
             )
+        existing_by_key: dict[str, ScannerAlert] = {}
+        for row in rows:
+            current = existing_by_key.get(row.alert_key)
+            if current is None or row.last_updated_at > current.last_updated_at:
+                existing_by_key[row.alert_key] = row
 
-        action = decide_alert_action(
-            existing_active=existing is not None,
-            existing_tier=existing.tier if existing is not None else None,
-            new_tier=tier,
-            now=now,
-            last_updated_at=existing.last_updated_at if existing is not None else None,
-        )
-
-        if action == "resolve_then_new":
-            async with self._session_factory() as session:
-                row = await session.get(ScannerAlert, existing.id)
-                if row is not None:
-                    row.active = False
-                    row.resolved_at = now
-                await session.commit()
-            action = "new"
-            existing = None
+        decisions = []
+        for envelope in envelopes:
+            existing = existing_by_key.get(envelope["alert_key"])
+            quality_score = score_alert_quality(envelope["quality_components"])
+            tier = gate_severity(envelope["raw_tier"], quality_score)
+            action = decide_alert_action(
+                existing_active=existing is not None,
+                existing_tier=existing.tier if existing is not None else None,
+                new_tier=tier,
+                now=now,
+                last_updated_at=existing.last_updated_at if existing is not None else None,
+            )
+            resolve_id = existing.id if action == "resolve_then_new" else None
+            escalate_id = existing.id if action == "escalate" else None
+            if action == "resolve_then_new":
+                action = "new"
+            decisions.append(
+                {
+                    "envelope": envelope,
+                    "quality_score": quality_score,
+                    "tier": tier,
+                    "action": action,
+                    "resolve_id": resolve_id,
+                    "escalate_id": escalate_id,
+                }
+            )
 
         # v12.0 P1 -- ExplanationEngine's evidence pack was never referenced
         # from Scanner's own alerts (only /why ever showed it). Attached
         # only for HIGH/CRITICAL alerts that will actually reach a user
-        # (never for suppressed/info-tier detections, so this never runs
-        # per-symbol across a full scan cycle) -- a few cheap already-
-        # computed reads, not a new computation, and never allowed to break
-        # the core alert pipeline if it fails.
-        if (
-            self._explanation_engine is not None
-            and tier in ("high", "critical")
-            and action != "suppress"
-            and envelope.get("symbols")
-        ):
-            try:
-                evidence = await self._explanation_engine.build(envelope["symbols"][0])
-                why = condense_explanation(evidence)
-                if why:
-                    envelope["message"] = f"{envelope['message']}\n{why}"
-            except Exception:
-                logger.exception(
-                    "Explanation evidence pack failed for %s", envelope["symbols"][0]
-                )
-
-        if action == "new":
-            async with self._session_factory() as session:
-                session.add(
-                    ScannerAlert(
-                        alert_key=envelope["alert_key"],
-                        category=envelope["category"],
-                        tier=tier,
-                        symbols=envelope["symbols"],
-                        message=envelope["message"],
-                        telegram_message_ids={},
-                        active=True,
-                        data={"quality_score": quality_score, **envelope["data"]},
-                        first_triggered_at=now,
-                        last_updated_at=now,
+        # (never for suppressed/info-tier detections) -- unavoidably
+        # sequential (each is its own analysis-engine call, not a DB round
+        # trip) and never allowed to break the core alert pipeline if it
+        # fails.
+        for decision in decisions:
+            envelope, tier, action = decision["envelope"], decision["tier"], decision["action"]
+            if (
+                self._explanation_engine is not None
+                and tier in ("high", "critical")
+                and action != "suppress"
+                and envelope.get("symbols")
+            ):
+                try:
+                    evidence = await self._explanation_engine.build(envelope["symbols"][0])
+                    why = condense_explanation(evidence)
+                    if why:
+                        envelope["message"] = f"{envelope['message']}\n{why}"
+                except Exception:
+                    logger.exception(
+                        "Explanation evidence pack failed for %s", envelope["symbols"][0]
                     )
-                )
-                await session.commit()
-        elif action == "escalate":
-            async with self._session_factory() as session:
-                row = await session.get(ScannerAlert, existing.id)
-                if row is not None:
-                    row.tier = tier
-                    row.message = envelope["message"]
-                    row.last_updated_at = now
-                    row.data = {"quality_score": quality_score, **envelope["data"]}
-                await session.commit()
-        # action == "suppress": no DB write -- the dedup path.
+
+        resolve_ids = [d["resolve_id"] for d in decisions if d["resolve_id"] is not None]
+        new_alerts = [
+            ScannerAlert(
+                alert_key=d["envelope"]["alert_key"],
+                category=d["envelope"]["category"],
+                tier=d["tier"],
+                symbols=d["envelope"]["symbols"],
+                message=d["envelope"]["message"],
+                telegram_message_ids={},
+                active=True,
+                data={"quality_score": d["quality_score"], **d["envelope"]["data"]},
+                first_triggered_at=now,
+                last_updated_at=now,
+            )
+            for d in decisions
+            if d["action"] == "new"
+        ]
+        escalate_updates = [
+            {
+                "id": d["escalate_id"],
+                "tier": d["tier"],
+                "message": d["envelope"]["message"],
+                "last_updated_at": now,
+                "data": {"quality_score": d["quality_score"], **d["envelope"]["data"]},
+            }
+            for d in decisions
+            if d["action"] == "escalate"
+        ]
+        alert_logs = [
+            AlertLog(
+                alert_type=f"scanner:{d['envelope']['category']}",
+                message=d["envelope"]["message"],
+                conviction_tier=d["tier"],
+                confidence_pct=round(d["quality_score"]) if d["quality_score"] is not None else 0,
+                broadcast=False,  # set True by the notifier if it actually sends
+                data={"alert_key": d["envelope"]["alert_key"], "symbols": d["envelope"]["symbols"]},
+            )
+            for d in decisions
+        ]
 
         async with self._session_factory() as session:
-            log_row = AlertLog(
-                alert_type=f"scanner:{envelope['category']}",
-                message=envelope["message"],
-                conviction_tier=tier,
-                confidence_pct=round(quality_score) if quality_score is not None else 0,
-                broadcast=False,  # set True by the notifier if it actually sends
-                data={"alert_key": envelope["alert_key"], "symbols": envelope["symbols"]},
-            )
-            session.add(log_row)
+            if resolve_ids:
+                await session.execute(
+                    update(ScannerAlert)
+                    .where(ScannerAlert.id.in_(resolve_ids))
+                    .values(active=False, resolved_at=now)
+                )
+            if new_alerts:
+                session.add_all(new_alerts)
+            if escalate_updates:
+                await session.execute(update(ScannerAlert), escalate_updates)
+            session.add_all(alert_logs)
+            await session.flush()
+            log_ids = [log_row.id for log_row in alert_logs]
             await session.commit()
-            await session.refresh(log_row)
 
-        return {
-            "alert_key": envelope["alert_key"],
-            "alert_log_id": log_row.id,
-            "category": envelope["category"],
-            "symbols": envelope["symbols"],
-            "tier": tier,
-            "quality_score": quality_score,
-            "action": action,
-            "notify_eligible": notify_eligible and action in ("new", "escalate"),
-            "message": envelope["message"],
-            "title": envelope.get("title"),
-            "direction": envelope.get("direction"),
-            "readings": envelope.get("readings", []),
-            "context": envelope.get("context_summary", {}),
-        }
+        results = []
+        for decision, alert_log_id in zip(decisions, log_ids, strict=True):
+            envelope, tier, action = decision["envelope"], decision["tier"], decision["action"]
+            results.append(
+                {
+                    "alert_key": envelope["alert_key"],
+                    "alert_log_id": alert_log_id,
+                    "category": envelope["category"],
+                    "symbols": envelope["symbols"],
+                    "tier": tier,
+                    "quality_score": decision["quality_score"],
+                    "action": action,
+                    "notify_eligible": should_notify(tier) and action in ("new", "escalate"),
+                    "message": envelope["message"],
+                    "title": envelope.get("title"),
+                    "direction": envelope.get("direction"),
+                    "readings": envelope.get("readings", []),
+                    "context": envelope.get("context_summary", {}),
+                }
+            )
+        return results
 
     # --------------------------------------------------------------- cycle
 
@@ -556,7 +602,7 @@ class MarketScannerEngine:
 
         ctx = await self.get_market_context()
 
-        processed: list[dict] = []
+        envelopes: list[dict] = []
         handled_symbols: set[str] = set()
 
         shock = detect_multi_asset_shock(
@@ -585,7 +631,7 @@ class MarketScannerEngine:
                 "data": {"moves": shock["moves"]},
                 "context_summary": ctx,
             }
-            processed.append(await self._process_detection(envelope, now))
+            envelopes.append(envelope)
 
         for sector_row in sector_breadth:
             members = symbols_by_sector.get(sector_row["sector"], [])
@@ -614,7 +660,7 @@ class MarketScannerEngine:
                 "data": event,
                 "context_summary": ctx,
             }
-            processed.append(await self._process_detection(envelope, now))
+            envelopes.append(envelope)
 
         technical_trends = await self._technical_trend_events([r["symbol"] for r in readings])
 
@@ -668,9 +714,7 @@ class MarketScannerEngine:
                 if prev_price:
                     pct_since_prev = (reading["price"] - prev_price) / prev_price * 100
                     prev_time = prior_history[-1].recorded_at.strftime("%H:%M UTC")
-                    message_parts.append(
-                        f"Since last scan ({prev_time}): {pct_since_prev:+.2f}%."
-                    )
+                    message_parts.append(f"Since last scan ({prev_time}): {pct_since_prev:+.2f}%.")
 
             envelope = {
                 "alert_key": f"scanner:price_event:{symbol}:{direction}",
@@ -693,7 +737,9 @@ class MarketScannerEngine:
                 "data": {"tags": tags, "sector": reading["sector"]},
                 "context_summary": ctx,
             }
-            processed.append(await self._process_detection(envelope, now))
+            envelopes.append(envelope)
+
+        processed = await self._process_detections(envelopes, now)
 
         await self._cache_breadth(breadth, sector_breadth)
 

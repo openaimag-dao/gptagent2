@@ -10,6 +10,9 @@ from app.services.scanner.universe import ALWAYS_INCLUDE
 def _session_factory():
     session = AsyncMock()
     session.add = MagicMock()
+    session.add_all = MagicMock(
+        side_effect=lambda objs: [setattr(o, "id", i + 1) for i, o in enumerate(objs)]
+    )
     session.scalar = AsyncMock(return_value=None)
     session.scalars = AsyncMock(return_value=[])
     session.get = AsyncMock(return_value=None)
@@ -127,9 +130,10 @@ async def test_run_cycle_message_includes_key_change_since_previous_scan():
         recorded_at=datetime(2026, 1, 1, 11, 45, tzinfo=UTC),
     )
     # First session.scalars() call is the ScannerSnapshot history read,
-    # second is _latest_breakout_events() -- honestly empty here since this
-    # test isn't about breakout data.
-    session.scalars = AsyncMock(side_effect=[[prior_snapshot], []])
+    # second is _latest_breakout_events(), third is _process_detections'
+    # batched existing-active-alert lookup -- honestly empty for the last
+    # two since this test isn't about breakout data or escalation.
+    session.scalars = AsyncMock(side_effect=[[prior_snapshot], [], []])
 
     result = await engine.run_cycle()
 
@@ -189,7 +193,9 @@ async def test_run_cycle_escalation_is_one_alert_not_a_new_one_each_cycle():
         telegram_message_ids={},
         last_updated_at=datetime.now(UTC),
     )
-    session.scalar = AsyncMock(return_value=existing_row)
+    # scalars() call order this cycle: history read, breakout events, then
+    # _process_detections' batched existing-active-alert lookup.
+    session.scalars = AsyncMock(side_effect=[[], [], [existing_row]])
     deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 1.0, 8.6)]
     second = await engine.run_cycle()
     assert second["processed"][0]["action"] == "suppress"
@@ -438,7 +444,7 @@ async def test_process_detection_skips_explanation_engine_for_suppressed_detecti
         telegram_message_ids={},
         last_updated_at=datetime.now(UTC),
     )
-    session.scalar = AsyncMock(return_value=existing_row)
+    session.scalars = AsyncMock(side_effect=[[], [], [existing_row]])
     deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 1.0, 8.6)]
     result = await engine.run_cycle()
 
