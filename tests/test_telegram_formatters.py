@@ -20,6 +20,7 @@ from app.telegram.formatters import (
     format_alert_rule_created,
     format_alert_rules,
     format_asset_class,
+    format_backtest_result,
     format_breakout,
     format_brief,
     format_committee,
@@ -1779,3 +1780,47 @@ def test_format_scanner_detections_populated():
     assert "BTC" in text
     assert "active" in text
     assert "BTC +9.00% (24h)" in text
+
+
+def _backtest_result(**overrides) -> dict:
+    base = {
+        "occurrences": 10,
+        "win_rate_pct": 60.0,
+        "avg_return_pct": 1.5,
+        "avg_win_pct": 3.0,
+        "avg_loss_pct": 2.0,
+        "max_drawdown_pct": 8.0,
+        "profit_factor": 1.8,
+        "sharpe_ratio": 1.1,
+        "sortino_ratio": 1.4,
+        "calmar_ratio": 2.0,
+        "cagr_pct": 12.0,
+        "var_95_pct": 3.0,
+        "cvar_95_pct": 4.5,
+        "expectancy_pct": 1.5,
+        "target_symbol": "BTC",
+        "timeframe": "1d",
+        "horizon_periods": 3,
+        "fill_lag_periods": 1,
+        "fee_pct": 0.1,
+        "slippage_pct": 0.05,
+        "universe_caveat": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_format_backtest_result_none_is_no_occurrences_message():
+    assert "No historical occurrences" in format_backtest_result(None)
+
+
+def test_format_backtest_result_omits_caveat_for_crypto():
+    text = format_backtest_result(_backtest_result())
+    assert "survivor" not in text
+
+
+def test_format_backtest_result_shows_caveat_for_fixed_stock_roster():
+    text = format_backtest_result(
+        _backtest_result(target_symbol="AAPL", universe_caveat="survivorship caveat text")
+    )
+    assert "survivorship caveat text" in text

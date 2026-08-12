@@ -1,6 +1,7 @@
 import pytest
 
 from app.services.backtest.conditions import Condition, evaluate_condition, evaluate_rule
+from app.services.backtest.engine import universe_caveat
 from app.services.backtest.metrics import (
     apply_trading_costs,
     compute_avg_loss_pct,
@@ -221,3 +222,18 @@ def test_evaluate_rule_missing_symbol_data_is_none_not_false():
 
 def test_evaluate_rule_no_conditions_is_none():
     assert evaluate_rule({}, []) is None
+
+
+def test_universe_caveat_none_for_crypto():
+    assert universe_caveat("BTC") is None
+
+
+def test_universe_caveat_none_for_index():
+    assert universe_caveat("NASDAQ") is None
+
+
+def test_universe_caveat_present_for_fixed_stock_roster():
+    for symbol in ("AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL"):
+        caveat = universe_caveat(symbol)
+        assert caveat is not None
+        assert "survivor" in caveat
