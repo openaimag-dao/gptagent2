@@ -20,6 +20,7 @@ from app.api.committee import router as committee_router
 from app.api.consensus import router as consensus_router
 from app.api.conviction import router as conviction_router
 from app.api.correlations import router as correlations_router
+from app.api.data_quality import router as data_quality_router
 from app.api.etf import router as etf_router
 from app.api.events import router as events_router
 from app.api.executive_summary import router as executive_summary_router
@@ -94,6 +95,7 @@ app.include_router(market_router)
 app.include_router(btc_router)
 app.include_router(news_router)
 app.include_router(correlations_router)
+app.include_router(data_quality_router)
 app.include_router(regime_router)
 app.include_router(signals_router)
 app.include_router(reports_router)

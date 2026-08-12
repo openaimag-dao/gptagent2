@@ -27,6 +27,7 @@ from app.services.breakout.engine import BreakoutEngine
 from app.services.committee.engine import CommitteeEngine
 from app.services.consensus.engine import ConsensusEngine, consensus_evolution
 from app.services.conviction.engine import ConvictionEngine
+from app.services.data_quality.engine import DataQualityEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.explanation.engine import ExplanationEngine
 from app.services.features.engine import FeatureEngine
@@ -83,6 +84,7 @@ from app.telegram.formatters import (
     format_consensus,
     format_conviction,
     format_correlations,
+    format_data_quality,
     format_etf_proxy,
     format_events,
     format_explanation,
@@ -219,6 +221,8 @@ HELP_TEXT = (
     "macro drivers, supporting news, historical examples, risk factors, alternative view\n"
     "/risk -- risk-on/off, fear, macro pressure and signal conviction\n"
     "/status -- last-computed timestamps for Signal/Regime/Global Score\n"
+    "/dataquality -- registry-wide sweep of every tracked symbol/timeframe: "
+    "how many have any synced history at all vs. zero rows\n"
     "/health -- bot liveness check\n"
     "/watchdog -- v5.4 Market Monitoring Hub: complete real-time dashboard "
     "(market status, market/crypto/macro/on-chain overview, AI status, what changed, "
@@ -1353,6 +1357,13 @@ async def cmd_status(message: Message) -> None:
             }
         ),
     )
+
+
+@router.message(Command("dataquality"))
+async def cmd_data_quality(message: Message) -> None:
+    engine = DataQualityEngine(get_session_factory())
+    report = await engine.assess_all()
+    await _answer(message, format_data_quality(report))
 
 
 @router.message(Command("risk"))

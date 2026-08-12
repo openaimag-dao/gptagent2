@@ -1884,3 +1884,25 @@ def format_monthly_performance(result: dict) -> str:
     lines.append("")
     lines.append(format_historical_comparison(result["historical_comparison"]))
     return "\n".join(lines)
+
+
+def format_data_quality(report: dict) -> str:
+    """report is DataQualityEngine.assess_all()'s dict -- only reads
+    "summary", so it works whether or not the per-symbol "results" rows
+    have had their datetime fields serialized to strings."""
+    summary = report["summary"]
+    lines = [
+        "*DATA QUALITY*",
+        "",
+        f"Symbol/timeframe combinations tracked: {summary['total']}",
+        f"With data: {summary['has_data']}",
+        f"Empty (zero rows synced): {summary['empty']}",
+    ]
+    if summary["empty_symbols"]:
+        lines.append("")
+        lines.append(f"Empty symbols: {', '.join(summary['empty_symbols'])}")
+        lines.append(
+            "These have never received any data from their provider -- run "
+            "/api/admin/sync-history or check provider logs."
+        )
+    return "\n".join(lines)

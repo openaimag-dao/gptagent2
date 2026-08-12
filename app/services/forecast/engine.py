@@ -686,18 +686,27 @@ class ForecastEngine:
         if config is None:
             return None
 
-        rows = await get_series(self._session_factory, config.model, config.symbol, Timeframe.DAILY)
-        if not rows:
-            return None
-        latest = rows[-1]
-        current_price = float(latest.close)
-        atr = float(latest.atr) if latest.atr is not None else None
-
         probability_snapshot = await self._probability_engine.compute_and_store(
             config.symbol, config.model, Timeframe.DAILY, horizon=horizon_periods
         )
         if probability_snapshot is None:
             return None
+
+        # Fetched AFTER compute_and_store (not before) and pinned to the exact
+        # bar its own internal fetch used (reference_timestamp), rather than
+        # trusting a separately-fetched "latest" row -- two independent
+        # get_series() calls racing against a concurrent history-sync commit
+        # could otherwise return current_price/atr from a different bar than
+        # the one the probability was actually computed from.
+        rows = await get_series(self._session_factory, config.model, config.symbol, Timeframe.DAILY)
+        if not rows:
+            return None
+        latest = next(
+            (r for r in reversed(rows) if r.timestamp == probability_snapshot.reference_timestamp),
+            rows[-1],
+        )
+        current_price = float(latest.close)
+        atr = float(latest.atr) if latest.atr is not None else None
 
         quality = await self._quality_engine.evaluate(config.symbol, config.model, Timeframe.DAILY)
         confidence_pct = max(
