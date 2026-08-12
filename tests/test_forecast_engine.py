@@ -270,6 +270,46 @@ async def test_compute_returns_none_without_probability_snapshot():
         assert await engine.compute("BTC", "24h") is None
 
 
+async def test_compute_pins_price_to_probability_reference_timestamp_not_latest_row():
+    """Regression test for the get_series() race between this engine's own
+    fetch and ProbabilityEngine.compute_and_store's independent internal
+    fetch: if a newer bar has landed by the time this engine's own fetch
+    runs, current_price/atr must still come from the exact bar the
+    probability was computed from, not whatever is now the newest row."""
+    engine, deps, _ = _build_engine()
+    older_row = SimpleNamespace(
+        close=100.0, atr=2.0, timestamp=datetime(2026, 8, 1, tzinfo=UTC), return_pct=0.01
+    )
+    newer_row = SimpleNamespace(
+        close=999.0, atr=99.0, timestamp=datetime(2026, 8, 2, tzinfo=UTC), return_pct=0.02
+    )
+    deps["probability_engine"].compute_and_store.return_value = SimpleNamespace(
+        prob_up_pct=70,
+        prob_down_pct=10,
+        prob_flat_pct=20,
+        sample_size=50,
+        avg_forward_return_pct=3.0,
+        reference_timestamp=older_row.timestamp,
+    )
+    deps["quality_engine"].evaluate.return_value = None
+    deps["technical_engine"].get_latest.return_value = None
+    deps["explanation_engine"].build.return_value = {}
+    deps["economic_calendar_engine"].get_upcoming.return_value = []
+    deps["sentiment_engine"].get_latest.return_value = None
+    deps["correlation_engine"].get_latest.return_value = []
+    deps["whale_engine"].get_snapshot.return_value = {"available": False}
+    deps["onchain_engine"].get_snapshot.return_value = {"available": False, "metrics": {}}
+
+    with patch(
+        "app.services.forecast.engine.get_series",
+        AsyncMock(return_value=[older_row, newer_row]),
+    ):
+        payload = await engine.compute("BTC", "24h")
+
+    assert payload["current_price"] == 100.0
+    assert payload["reference_timestamp"] == older_row.timestamp.isoformat()
+
+
 async def test_compute_builds_full_payload_and_persists():
     engine, deps, session = _build_engine()
     history_row = SimpleNamespace(
@@ -281,6 +321,7 @@ async def test_compute_builds_full_payload_and_persists():
         prob_flat_pct=20,
         sample_size=50,
         avg_forward_return_pct=3.0,
+        reference_timestamp=history_row.timestamp,
     )
     deps["probability_engine"].compute_and_store.return_value = probability_snapshot
     deps["quality_engine"].evaluate.return_value = None

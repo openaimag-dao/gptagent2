@@ -27,6 +27,7 @@ from app.telegram.formatters import (
     format_consensus,
     format_conviction,
     format_critical_alert,
+    format_data_quality,
     format_explanation,
     format_features,
     format_global_score,
@@ -1824,3 +1825,33 @@ def test_format_backtest_result_shows_caveat_for_fixed_stock_roster():
         _backtest_result(target_symbol="AAPL", universe_caveat="survivorship caveat text")
     )
     assert "survivorship caveat text" in text
+
+
+def test_format_data_quality_summarizes_totals():
+    report = {
+        "summary": {
+            "total": 10,
+            "has_data": 8,
+            "empty": 2,
+            "empty_symbols": ["AAPL", "MSFT"],
+        }
+    }
+    text = format_data_quality(report)
+    assert "Symbol/timeframe combinations tracked: 10" in text
+    assert "With data: 8" in text
+    assert "Empty (zero rows synced): 2" in text
+    assert "AAPL" in text
+    assert "MSFT" in text
+
+
+def test_format_data_quality_omits_empty_symbols_line_when_none():
+    report = {
+        "summary": {
+            "total": 5,
+            "has_data": 5,
+            "empty": 0,
+            "empty_symbols": [],
+        }
+    }
+    text = format_data_quality(report)
+    assert "Empty symbols" not in text

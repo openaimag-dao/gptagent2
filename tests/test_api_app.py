@@ -14,6 +14,7 @@ EXPECTED_PREFIXES = {
     "/api/btc",
     "/api/news",
     "/api/correlations",
+    "/api/data-quality",
     "/api/regime",
     "/api/signals",
     "/api/report",
