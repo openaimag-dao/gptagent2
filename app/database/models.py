@@ -1190,6 +1190,22 @@ class PriceForecastSnapshot(Base):
     direction_correct: Mapped[bool | None] = mapped_column(nullable=True)
     confidence_correct: Mapped[bool | None] = mapped_column(nullable=True)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # V9: this table was already append-only by construction (always
+    # INSERT, never UPDATE-in-place) -- forecast_version makes that
+    # lineage explicit: the Nth forecast computed for this (symbol,
+    # horizon) pair, never reused or overwritten. regime_at_forecast is the
+    # raw MarketRegime.value active when this row was computed (distinct
+    # from the presentation-only `regime` label in the API payload),
+    # recorded so a later cycle can detect "the regime this forecast was
+    # conditioned on has since changed" -- see app/services/forecast/
+    # invalidation.py. forecast_status/invalidation_reason/invalidated_at
+    # are filled in by check_and_invalidate_forecasts(), independent of
+    # (and can fire before) the horizon-elapsed grading job above.
+    forecast_version: Mapped[int] = mapped_column(default=1)
+    regime_at_forecast: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    forecast_status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    invalidation_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )

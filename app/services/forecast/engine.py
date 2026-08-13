@@ -28,10 +28,15 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database.models import EconomicCalendarEvent, PriceForecastSnapshot, WatchdogSnapshot
+from app.database.models import (
+    EconomicCalendarEvent,
+    MarketRegimeSnapshot,
+    PriceForecastSnapshot,
+    WatchdogSnapshot,
+)
 from app.services.agents.pattern_agent import _recency_weighted_direction
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import MarketRegime, RegimeDetector, build_regime_index
@@ -41,6 +46,7 @@ from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.common.scoring import center_scaled
 from app.services.conviction.engine import classify_conviction
 from app.services.explanation.engine import ExplanationEngine
+from app.services.forecast.invalidation import evaluate_invalidation
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
@@ -530,6 +536,63 @@ async def grade_price_forecasts(
     return graded
 
 
+async def check_and_invalidate_forecasts(
+    session_factory: async_sessionmaker[AsyncSession], symbol: str, model: type
+) -> int:
+    """Re-evaluates every still-ACTIVE, not-yet-graded PriceForecastSnapshot
+    for `symbol` against the latest known price and regime, marking any
+    whose structured invalidation rules (app.services.forecast.
+    invalidation) fire as INVALIDATED. Runs independently of
+    grade_price_forecasts -- that only fires once a forecast's horizon has
+    fully elapsed, while invalidation can and should fire earlier, the
+    moment the forecast's own stated conditions no longer hold. Returns how
+    many rows were invalidated this call."""
+    async with session_factory() as session:
+        active = list(
+            await session.scalars(
+                select(PriceForecastSnapshot).where(
+                    PriceForecastSnapshot.symbol == symbol,
+                    PriceForecastSnapshot.forecast_status == "ACTIVE",
+                    PriceForecastSnapshot.evaluated_at.is_(None),
+                )
+            )
+        )
+    if not active:
+        return 0
+
+    rows = await get_series(session_factory, model, symbol, Timeframe.DAILY)
+    if not rows:
+        return 0
+    current_price = float(rows[-1].close)
+
+    async with session_factory() as session:
+        latest_regime_row = await session.scalar(
+            select(MarketRegimeSnapshot).order_by(MarketRegimeSnapshot.computed_at.desc()).limit(1)
+        )
+    current_regime = latest_regime_row.regime.value if latest_regime_row is not None else None
+
+    invalidated = 0
+    async with session_factory() as session:
+        for snapshot in active:
+            invalidation_level = snapshot.key_levels.get("invalidation_level")
+            result = evaluate_invalidation(
+                snapshot.direction,
+                float(invalidation_level) if invalidation_level is not None else None,
+                current_price,
+                snapshot.regime_at_forecast,
+                current_regime,
+            )
+            if result["status"] != "INVALIDATED":
+                continue
+            db_row = await session.get(PriceForecastSnapshot, snapshot.id)
+            db_row.forecast_status = "INVALIDATED"
+            db_row.invalidation_reason = result["invalidation_reason"]
+            db_row.invalidated_at = datetime.now(UTC)
+            invalidated += 1
+        await session.commit()
+    return invalidated
+
+
 async def summarize_forecast_accuracy(
     session_factory: async_sessionmaker[AsyncSession], symbol: str, horizon: str, limit: int = 50
 ) -> dict | None:
@@ -890,13 +953,34 @@ class ForecastEngine:
             "reference_regime": getattr(probability_snapshot, "reference_regime", None),
         }
 
-        await self._persist(payload, latest.timestamp, conviction["tier"])
+        regime_at_forecast = regime.value if regime is not None else None
+        forecast_version = await self._persist(
+            payload, latest.timestamp, conviction["tier"], regime_at_forecast
+        )
+        payload["forecast_version"] = forecast_version
+        payload["forecast_status"] = "ACTIVE"
         return payload
 
     async def _persist(
-        self, payload: dict, reference_timestamp: datetime, confidence_tier: str
-    ) -> None:
+        self,
+        payload: dict,
+        reference_timestamp: datetime,
+        confidence_tier: str,
+        regime_at_forecast: str | None,
+    ) -> int:
+        """Always INSERTs a new row (this table is append-only by design --
+        an existing forecast is never overwritten). `forecast_version` is
+        the Nth forecast computed for this exact (symbol, horizon) pair,
+        making that lineage explicit rather than implicit in insertion
+        order. Returns the version number assigned."""
         async with self._session_factory() as session:
+            prior_version = await session.scalar(
+                select(func.max(PriceForecastSnapshot.forecast_version)).where(
+                    PriceForecastSnapshot.symbol == payload["symbol"],
+                    PriceForecastSnapshot.horizon == payload["horizon"],
+                )
+            )
+            next_version = (prior_version or 0) + 1
             session.add(
                 PriceForecastSnapshot(
                     symbol=payload["symbol"],
@@ -911,9 +995,12 @@ class ForecastEngine:
                     distribution=payload["probability_distribution"],
                     key_levels=payload["key_levels"],
                     reference_timestamp=reference_timestamp,
+                    forecast_version=next_version,
+                    regime_at_forecast=regime_at_forecast,
                 )
             )
             await session.commit()
+        return next_version
 
     async def get_latest_history(self, symbol: str, limit: int = 20) -> list[PriceForecastSnapshot]:
         async with self._session_factory() as session:

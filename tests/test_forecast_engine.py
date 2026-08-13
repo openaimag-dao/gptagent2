@@ -10,6 +10,7 @@ from app.services.forecast.engine import (
     _distance_from_neutral,
     _onchain_confidence,
     _whale_confidence,
+    check_and_invalidate_forecasts,
     classify_direction_label,
     compute_expected_max_drawdown_pct,
     compute_momentum_score,
@@ -555,3 +556,133 @@ async def test_summarize_forecast_accuracy_averages_absolute_error():
     session_factory, _ = _forecast_session(graded_rows)
     summary = await summarize_forecast_accuracy(session_factory, "BTC", "24h")
     assert summary == {"evaluated_count": 2, "avg_abs_error_pct": 2.0}
+
+
+def _invalidation_session(active_rows, regime_row, db_row=None):
+    session = AsyncMock()
+    session.scalars = AsyncMock(return_value=active_rows)
+    session.scalar = AsyncMock(return_value=regime_row)
+    session.get = AsyncMock(return_value=db_row)
+    session.commit = AsyncMock()
+    session.__aenter__.return_value = session
+    return MagicMock(return_value=session), session
+
+
+async def test_check_and_invalidate_forecasts_returns_zero_without_active_rows():
+    session_factory, _ = _invalidation_session([], regime_row=None)
+    with patch("app.services.forecast.engine.get_series", AsyncMock()) as mock_get_series:
+        invalidated = await check_and_invalidate_forecasts(session_factory, "BTC", object())
+    assert invalidated == 0
+    mock_get_series.assert_not_called()
+
+
+async def test_check_and_invalidate_forecasts_invalidates_on_price_breach():
+    active = SimpleNamespace(
+        id=1,
+        direction="Bullish",
+        key_levels={"invalidation_level": 95.0},
+        regime_at_forecast="bull",
+    )
+    db_row = SimpleNamespace(
+        forecast_status="ACTIVE", invalidation_reason=None, invalidated_at=None
+    )
+    regime_row = SimpleNamespace(regime=SimpleNamespace(value="bull"))
+    session_factory, session = _invalidation_session([active], regime_row, db_row)
+    rows = [SimpleNamespace(close=90.0)]  # breaches the 95.0 invalidation_level
+
+    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+        invalidated = await check_and_invalidate_forecasts(session_factory, "BTC", object())
+
+    assert invalidated == 1
+    assert db_row.forecast_status == "INVALIDATED"
+    assert db_row.invalidation_reason is not None
+    assert db_row.invalidated_at is not None
+    session.get.assert_awaited_once()
+
+
+async def test_check_and_invalidate_forecasts_stays_active_when_nothing_triggers():
+    active = SimpleNamespace(
+        id=1,
+        direction="Bullish",
+        key_levels={"invalidation_level": 95.0},
+        regime_at_forecast="bull",
+    )
+    regime_row = SimpleNamespace(regime=SimpleNamespace(value="bull"))
+    session_factory, session = _invalidation_session([active], regime_row)
+    rows = [SimpleNamespace(close=100.0)]  # well above the invalidation_level, regime unchanged
+
+    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+        invalidated = await check_and_invalidate_forecasts(session_factory, "BTC", object())
+
+    assert invalidated == 0
+    session.get.assert_not_awaited()
+
+
+async def test_check_and_invalidate_forecasts_invalidates_on_regime_change():
+    active = SimpleNamespace(
+        id=1,
+        direction="Bullish",
+        key_levels={"invalidation_level": 95.0},
+        regime_at_forecast="bull",
+    )
+    db_row = SimpleNamespace(
+        forecast_status="ACTIVE", invalidation_reason=None, invalidated_at=None
+    )
+    regime_row = SimpleNamespace(regime=SimpleNamespace(value="bear"))
+    session_factory, session = _invalidation_session([active], regime_row, db_row)
+    rows = [SimpleNamespace(close=100.0)]  # price fine, but regime flipped
+
+    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+        invalidated = await check_and_invalidate_forecasts(session_factory, "BTC", object())
+
+    assert invalidated == 1
+    assert "Regime changed" in db_row.invalidation_reason
+
+
+async def test_persist_assigns_incrementing_forecast_version():
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(return_value=3)  # prior_version already at 3
+
+    payload = {
+        "symbol": "BTC",
+        "horizon": "24h",
+        "current_price": 100.0,
+        "target_price": 103.0,
+        "expected_change_pct": 3.0,
+        "direction": "Bullish",
+        "probability_pct": 70,
+        "price_path": [],
+        "probability_distribution": [],
+        "key_levels": {},
+    }
+    version = await engine._persist(
+        payload, datetime(2026, 8, 2, tzinfo=UTC), "high", regime_at_forecast="bull"
+    )
+
+    assert version == 4
+    added = session.add.call_args[0][0]
+    assert added.forecast_version == 4
+    assert added.regime_at_forecast == "bull"
+
+
+async def test_persist_starts_at_version_one_when_no_prior_forecast():
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(return_value=None)
+
+    payload = {
+        "symbol": "ETH",
+        "horizon": "7d",
+        "current_price": 50.0,
+        "target_price": 52.0,
+        "expected_change_pct": 4.0,
+        "direction": "Neutral",
+        "probability_pct": 50,
+        "price_path": [],
+        "probability_distribution": [],
+        "key_levels": {},
+    }
+    version = await engine._persist(
+        payload, datetime(2026, 8, 2, tzinfo=UTC), "low", regime_at_forecast=None
+    )
+
+    assert version == 1

@@ -96,6 +96,10 @@ async def test_history_endpoint_serializes_snapshots():
         realized_price=None,
         error_pct=None,
         evaluated_at=None,
+        forecast_version=1,
+        forecast_status="ACTIVE",
+        invalidation_reason=None,
+        invalidated_at=None,
     )
     engine = AsyncMock()
     engine.get_latest_history.return_value = [snapshot]
@@ -107,6 +111,9 @@ async def test_history_endpoint_serializes_snapshots():
     assert result["forecasts"][0]["target_price"] == 103.0
     assert result["forecasts"][0]["realized_price"] is None
     assert result["forecasts"][0]["confidence_tier"] == "Medium"
+    assert result["forecasts"][0]["forecast_version"] == 1
+    assert result["forecasts"][0]["forecast_status"] == "ACTIVE"
+    assert result["forecasts"][0]["invalidation_reason"] is None
     assert result["accuracy_by_horizon"]["24h"] == {
         "evaluated_count": 0,
         "avg_abs_error_pct": None,

@@ -20,7 +20,12 @@ from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.committee.engine import CommitteeEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.features.engine import FeatureEngine
-from app.services.forecast.engine import HORIZONS, build_forecast_engine, grade_price_forecasts
+from app.services.forecast.engine import (
+    HORIZONS,
+    build_forecast_engine,
+    check_and_invalidate_forecasts,
+    grade_price_forecasts,
+)
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.registry import find_symbol_config
 from app.services.history.schemas import Timeframe
@@ -97,6 +102,7 @@ WEEKLY_REVIEW_JOB_ID = "broadcast_weekly_review"
 MONTHLY_PERFORMANCE_JOB_ID = "broadcast_monthly_performance"
 FORECAST_JOB_ID = "compute_forecast"
 FORECAST_GRADING_JOB_ID = "grade_forecasts"
+FORECAST_INVALIDATION_JOB_ID = "invalidate_forecasts"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -535,6 +541,25 @@ async def grade_forecasts_job() -> None:
         logger.exception("Forecast grading job failed")
 
 
+async def invalidate_forecasts_job() -> None:
+    """AI Forecast Center invalidation: fires structured, machine-checkable
+    invalidation rules (see app.services.forecast.invalidation) against
+    every still-ACTIVE BTC forecast on each cycle -- independent of, and
+    can trigger well before, grade_forecasts_job's horizon-elapsed grading.
+    BTC only for now, matching compute_forecast_job/grade_forecasts_job."""
+    config = find_symbol_config("BTC")
+    if config is None:
+        return
+    try:
+        invalidated = await check_and_invalidate_forecasts(
+            get_session_factory(), "BTC", config.model
+        )
+        if invalidated:
+            logger.info("Forecast invalidation: %d BTC forecast(s) invalidated", invalidated)
+    except Exception:
+        logger.exception("Forecast invalidation job failed")
+
+
 async def test_hypotheses_job() -> None:
     engine = HypothesisEngine(get_session_factory())
     try:
@@ -808,6 +833,14 @@ def start_scheduler() -> AsyncIOScheduler:
         grade_forecasts_job,
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=FORECAST_GRADING_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        invalidate_forecasts_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
+        id=FORECAST_INVALIDATION_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,
