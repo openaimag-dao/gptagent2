@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import get_settings
 from app.services.history.schemas import Timeframe
 from app.services.learning.engine import evaluate_predictions
 from app.services.quality.metrics import (
@@ -34,6 +35,7 @@ class PredictionQualityEngine:
             return None
 
         accuracy_pct = round(100 * sum(1 for e in evaluated if e["correct"]) / len(evaluated), 2)
+        bin_width = get_settings().calibration_bin_width_pct
         return {
             "symbol": symbol,
             "timeframe": timeframe.value,
@@ -42,7 +44,7 @@ class PredictionQualityEngine:
             "brier_score": compute_brier_score(evaluated),
             "precision_recall": compute_precision_recall(evaluated),
             "average_error_pct": compute_average_error(evaluated),
-            "calibration": compute_calibration(evaluated),
+            "calibration": compute_calibration(evaluated, bin_width=bin_width),
             "time_horizon_accuracy": compute_time_horizon_accuracy(evaluated),
             "computed_at": datetime.now(UTC).isoformat(),
         }

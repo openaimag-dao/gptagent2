@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.services.quality.engine import PredictionQualityEngine
@@ -44,3 +45,18 @@ async def test_evaluate_assembles_all_quality_measures():
         {"horizon_periods": 1, "count": 2, "accuracy_pct": 100.0}
     ]
     assert "computed_at" in result
+
+
+async def test_evaluate_uses_configured_calibration_bin_width():
+    evaluated = [_entry(72, 18, 10, "up", "up")]
+    settings = SimpleNamespace(calibration_bin_width_pct=25)
+    with (
+        patch(
+            "app.services.quality.engine.evaluate_predictions",
+            new=AsyncMock(return_value=evaluated),
+        ),
+        patch("app.services.quality.engine.get_settings", return_value=settings),
+    ):
+        result = await PredictionQualityEngine(AsyncMock()).evaluate("BTC", object())
+
+    assert result["calibration"][0]["confidence_bucket"] == "50-75%"

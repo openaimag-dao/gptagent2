@@ -118,6 +118,15 @@ def test_build_historical_lesson_composes_from_forward_returns():
     assert "BTC" in lesson["what_happened"]
     assert "risk on" in lesson["what_happened"]
     assert "66.67% historical win rate" in lesson["main_lesson"]
+    # p10..p90 of the same 7d forward returns (3.0, 3.0, -3.0 in %, i.e.
+    # 0.03/0.03/-0.03 as fractions) that average_outcome_pct/probability_pct
+    # were computed from -- the spread, not a second dataset. Two of the
+    # three values tie at 3.0, so p50 and p90 also tie; only p10 (pulled
+    # down by the lone -3.0) is guaranteed to differ.
+    distribution = lesson["outcome_distribution_pct"]
+    assert distribution is not None
+    assert distribution["p10_pct"] < distribution["p90_pct"]
+    assert distribution["p50_pct"] == distribution["p90_pct"] == 3.0
 
 
 def test_build_historical_lesson_reports_no_persistence_when_direction_flips_immediately():
@@ -211,3 +220,90 @@ async def test_find_similar_periods_attaches_nearby_events_within_the_window_whe
     assert matches[0]["date"] == match_timestamp
     assert [e["title"] for e in matches[0]["nearby_events"]] == ["Fed rate decision"]
     session.scalars.assert_awaited_once()
+
+
+async def test_find_similar_periods_regime_aware_prefers_same_regime_matches():
+    base = datetime(2020, 1, 1, tzinfo=UTC)
+    # Days 0-7 are the RSI-matching candidates (RSI 30-37, close to the
+    # current row's 31.0), tagged BULL (0-3) or BEAR (4-7) via a patched
+    # reconstruct_regime_at. Days 8-28 are far-RSI padding -- both to clear
+    # _MIN_HISTORY_LENGTH (30 rows total) and so find_similar_episodes'
+    # default exclude_recent=5 window falls on the padding, not the
+    # candidates. RSI distance alone would prefer days 0-3 (closer to 31)
+    # over 4-7 -- regime-aware filtering to BEAR (the reconstructed
+    # "current"/day-29 regime) must override that.
+    rows = [
+        SimpleNamespace(
+            timestamp=base + timedelta(days=i), rsi=30.0 + i, volatility=None, return_pct=0.01
+        )
+        for i in range(8)
+    ]
+    rows += [
+        SimpleNamespace(
+            timestamp=base + timedelta(days=i), rsi=99.0, volatility=None, return_pct=0.01
+        )
+        for i in range(8, 29)
+    ]
+    rows.append(
+        SimpleNamespace(
+            timestamp=base + timedelta(days=29), rsi=31.0, volatility=None, return_pct=0.01
+        )
+    )
+
+    def fake_reconstruct(regime_index, timestamp):
+        day = (timestamp - base).days
+        return MarketRegime.BEAR if day >= 4 else MarketRegime.BULL
+
+    session_factory, _ = _event_session_factory([])
+    engine = SimilarMarketEngine(session_factory)
+
+    with (
+        patch("app.services.similar_market.engine.get_series", AsyncMock(return_value=rows)),
+        patch(
+            "app.services.similar_market.engine.build_regime_index",
+            AsyncMock(return_value=_empty_regime_index()),
+        ),
+        patch(
+            "app.services.similar_market.engine.reconstruct_regime_at",
+            side_effect=fake_reconstruct,
+        ),
+    ):
+        matches = await engine.find_similar_periods(
+            "ETH", object, Timeframe.DAILY, k=2, regime_aware=True
+        )
+
+    assert len(matches) == 2
+    assert all(m["market_regime"] == "bear" for m in matches)
+
+
+async def test_find_similar_periods_not_regime_aware_by_default():
+    base = datetime(2020, 1, 1, tzinfo=UTC)
+    rows = _history_rows(32, base=base)
+    call_count = 0
+
+    def fake_reconstruct(regime_index, timestamp):
+        nonlocal call_count
+        call_count += 1
+        return MarketRegime.BULL
+
+    session_factory, _ = _event_session_factory([])
+    engine = SimilarMarketEngine(session_factory)
+
+    with (
+        patch("app.services.similar_market.engine.get_series", AsyncMock(return_value=rows)),
+        patch(
+            "app.services.similar_market.engine.build_regime_index",
+            AsyncMock(return_value=_empty_regime_index()),
+        ),
+        patch(
+            "app.services.similar_market.engine.reconstruct_regime_at",
+            side_effect=fake_reconstruct,
+        ),
+    ):
+        matches = await engine.find_similar_periods("ETH", object, Timeframe.DAILY, k=1)
+
+    assert len(matches) == 1
+    # reconstruct_regime_at is still called once for the post-hoc per-match
+    # tagging (unconditional), but not for every row building an eager
+    # regime_series -- default (regime_aware=False) stays cheap.
+    assert call_count == 1

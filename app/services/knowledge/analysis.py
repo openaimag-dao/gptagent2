@@ -25,7 +25,20 @@ def find_similar_episodes(
     current_volatility: float | None,
     k: int = 5,
     exclude_recent: int = 5,
+    regime_series: list[str | None] | None = None,
+    reference_regime: str | None = None,
 ) -> list[dict]:
+    """When `regime_series` (one entry per index, same length as
+    `rsi_series`) and `reference_regime` are both given, the candidate pool
+    is restricted to periods reconstructed as the same market regime before
+    ranking by RSI/volatility distance -- "similar RSI, and it also
+    happened during a BULL regime" rather than RSI/volatility alone. If
+    fewer than `k` candidates survive that filter, this honestly falls back
+    to the full (regime-agnostic) pool rather than returning a thin or
+    empty result, and marks every returned episode's `regime_conditioned`
+    accordingly so callers can tell whether the conditioning actually took
+    effect.
+    """
     n = len(timestamps)
     rsi_mean, rsi_std = _mean_std(rsi_series)
     vol_mean, vol_std = _mean_std(volatility_series)
@@ -64,4 +77,15 @@ def find_similar_episodes(
         )
 
     candidates.sort(key=lambda c: c["distance"])
-    return candidates[:k]
+
+    regime_conditioned = False
+    pool = candidates
+    if regime_series is not None and reference_regime is not None:
+        regime_pool = [c for c in candidates if regime_series[c["index"]] == reference_regime]
+        if len(regime_pool) >= k:
+            pool = regime_pool
+            regime_conditioned = True
+
+    for c in pool[:k]:
+        c["regime_conditioned"] = regime_conditioned
+    return pool[:k]

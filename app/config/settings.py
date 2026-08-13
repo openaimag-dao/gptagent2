@@ -142,3 +142,12 @@ class Settings(BaseSettings):
     scanner_interval_minutes: int = 15
     scanner_universe_refresh_hours: int = 24
     http_timeout_seconds: float = 15.0
+
+    # ---- Forecast / Prediction Quality (V9) ----
+    # Width in percentage points of each Prediction Quality Lab calibration
+    # bucket (app/services/quality/metrics.py compute_calibration) -- 10
+    # gives a finer-grained "is 70% confidence actually right 70% of the
+    # time" curve than the previous fixed 20pp bins, at the cost of thinner
+    # per-bucket sample sizes. Config-driven so this can be tuned without a
+    # code change as more graded predictions accumulate.
+    calibration_bin_width_pct: int = 10
