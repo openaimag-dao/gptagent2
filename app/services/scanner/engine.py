@@ -40,6 +40,7 @@ from redis.asyncio import Redis
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import get_settings
 from app.database.models import AlertLog, BreakoutEvent, ScannerAlert, ScannerSnapshot
 from app.services.explanation.engine import ExplanationEngine, condense_explanation
 from app.services.history.schemas import Timeframe
@@ -65,6 +66,7 @@ from app.services.shocks.detectors import (
     detect_multi_asset_shock,
     gate_severity,
     regime_alignment_score,
+    resolve_cooldown_minutes,
     score_alert_quality,
     should_notify,
 )
@@ -330,14 +332,24 @@ class MarketScannerEngine:
         prices = [float(h.price) for h in history] + [reading["price"]]
         volumes = [float(h.volume_24h) for h in history if h.volume_24h is not None]
 
-        price_event = classify_price_event(symbol, reading["change_pct_24h"])
-        volume_event = detect_volume_multiple(
-            reading["volume_24h"], _average(volumes[:-1] or volumes)
-        )
-
         recent_vol = compute_realized_volatility(prices[-_RECENT_VOL_SAMPLE_SIZE:])
         baseline_vol = compute_realized_volatility(prices)
         volatility_label = detect_volatility_regime(recent_vol, baseline_vol)
+
+        # V9: this symbol's own realized volatility (not a flat percentage
+        # shared by every symbol) scales the price-event ladder -- see
+        # classify_price_event/price_ladder_for's own docstrings.
+        settings = get_settings()
+        price_event = classify_price_event(
+            symbol,
+            reading["change_pct_24h"],
+            realized_volatility_pct=baseline_vol,
+            min_multiplier=settings.volatility_ladder_min_multiplier,
+            max_multiplier=settings.volatility_ladder_max_multiplier,
+        )
+        volume_event = detect_volume_multiple(
+            reading["volume_24h"], _average(volumes[:-1] or volumes)
+        )
         flash_label = detect_flash_move(reading["change_pct_1h"])
 
         period_high = max(prices[:-1]) if len(prices) > 1 else None
@@ -441,17 +453,27 @@ class MarketScannerEngine:
             if current is None or row.last_updated_at > current.last_updated_at:
                 existing_by_key[row.alert_key] = row
 
+        settings = get_settings()
         decisions = []
         for envelope in envelopes:
             existing = existing_by_key.get(envelope["alert_key"])
             quality_score = score_alert_quality(envelope["quality_components"])
             tier = gate_severity(envelope["raw_tier"], quality_score)
+            # V9: per-category cooldown (app.config.settings.alert_cooldown_minutes),
+            # with a "critical" override so a critical-tier episode is never
+            # treated as "already notified, suppress" the way lower tiers are.
+            cooldown_minutes = resolve_cooldown_minutes(
+                envelope["category"], settings.alert_cooldown_minutes
+            )
+            if tier == "critical":
+                cooldown_minutes = settings.alert_cooldown_minutes.get("critical", cooldown_minutes)
             action = decide_alert_action(
                 existing_active=existing is not None,
                 existing_tier=existing.tier if existing is not None else None,
                 new_tier=tier,
                 now=now,
                 last_updated_at=existing.last_updated_at if existing is not None else None,
+                resolve_after_minutes=cooldown_minutes,
             )
             resolve_id = existing.id if action == "resolve_then_new" else None
             escalate_id = existing.id if action == "escalate" else None

@@ -74,6 +74,13 @@ _QUALITY_WEIGHTS: dict[str, float] = {
     "historical_similarity": 5.0,
     "risk_score": 10.0,
     "confidence_score": 5.0,
+    # V9: how much the Forecast Engine's own probability_pct moved
+    # alongside this event -- only ever present when a caller actually
+    # recomputed a forecast for this symbol around the same event (see
+    # forecast_change_score() below); a caller that never populates this
+    # key changes nothing (weighted_average only considers keys actually
+    # present in `components`).
+    "forecast_change": 10.0,
 }
 
 
@@ -278,6 +285,21 @@ def volatility_score(realized_volatility_pct: float | None, scale: float = 10.0)
     return clamp(realized_volatility_pct / scale * 100.0)
 
 
+def forecast_change_score(probability_delta_pct: float | None, scale: float = 20.0) -> float | None:
+    """0-100: how large a swing in the Forecast Engine's own
+    `probability_pct` accompanied this event (e.g. 55% -> 72% is a
+    17-point delta) -- corroborates that the move is significant enough to
+    have actually shifted the forecast, not just noise. `scale` is the
+    delta (in percentage points) that saturates the score at 100, same
+    scale-based clamp pattern as volatility_score(). None (excluded from
+    score_alert_quality's average) when no forecast recompute happened
+    around this event.
+    """
+    if probability_delta_pct is None:
+        return None
+    return clamp(abs(probability_delta_pct) / scale * 100.0)
+
+
 def score_alert_quality(components: dict[str, float | None]) -> float | None:
     """Composite 0-100 "is this shock corroborated" score built only from
     signals this platform already computes -- never a new measurement.
@@ -296,6 +318,18 @@ def gate_severity(raw_tier: str, quality_score: float | None, min_quality: float
         rank = max(SEVERITY_ORDER.index(raw_tier) - 1, 0)
         return SEVERITY_ORDER[rank]
     return raw_tier
+
+
+def resolve_cooldown_minutes(
+    category: str, cooldown_config: dict[str, int], default_minutes: int = 120
+) -> int:
+    """Per-category cooldown lookup -- config-driven (see
+    app.config.settings.alert_cooldown_minutes) instead of the single
+    hardcoded `resolve_after_minutes` default every category used to
+    share. A category with no configured entry keeps this project's
+    original default, so an empty config changes nothing.
+    """
+    return cooldown_config.get(category, default_minutes)
 
 
 def should_notify(tier: str) -> bool:

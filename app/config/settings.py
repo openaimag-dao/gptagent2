@@ -151,3 +151,36 @@ class Settings(BaseSettings):
     # per-bucket sample sizes. Config-driven so this can be tuned without a
     # code change as more graded predictions accumulate.
     calibration_bin_width_pct: int = 10
+
+    # ---- Alert config (V9) ----
+    # Per-category cooldown in minutes, read via
+    # app.services.shocks.detectors.resolve_cooldown_minutes(). A category
+    # left out of this dict keeps this project's original hardcoded
+    # default (120 min for Scanner/CriticalAlertEngine episode staleness,
+    # 60 min for AlertEngine's own re-broadcast gate) -- these were
+    # previously the ONLY value every category shared, now per-category
+    # and tunable without a code change. "critical" is a distinct override
+    # applied on top of a detection's own category cooldown whenever its
+    # gated tier is "critical" -- 0 minutes means a critical-tier episode
+    # is never treated as "already notified, suppress" the way lower
+    # tiers are.
+    alert_cooldown_minutes: dict[str, int] = {
+        "price_event": 15,
+        "price_shock": 15,
+        "volume_spike": 20,
+        "breakout": 30,
+        "regime_change": 60,
+        "forecast_change": 30,
+        "multi_asset_shock": 30,
+        "crypto_market_shock": 30,
+        "sector_ecosystem": 30,
+        "critical": 0,
+    }
+    # Bounds on the realized-volatility ratio multiplier applied to
+    # app.services.scanner.detectors.price_ladder_for()'s DEFAULT_PRICE_LADDER
+    # -- a 3% move means something very different for BTC (typically ~1-2%
+    # daily volatility) than for a small-cap swinging 15%/day, so the
+    # ladder scales with how volatile a symbol has actually been recently
+    # rather than staying a flat absolute percentage for every symbol.
+    volatility_ladder_min_multiplier: float = 0.5
+    volatility_ladder_max_multiplier: float = 2.5

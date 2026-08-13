@@ -59,6 +59,7 @@ from app.services.shocks.detectors import (
     gate_severity,
     historical_similarity_score,
     regime_alignment_score,
+    resolve_cooldown_minutes,
     score_alert_quality,
     should_notify,
     volatility_score,
@@ -378,12 +379,19 @@ class CriticalAlertEngine:
                 .limit(1)
             )
 
+        settings = get_settings()
+        cooldown_minutes = resolve_cooldown_minutes(
+            envelope["category"], settings.alert_cooldown_minutes
+        )
+        if tier == "critical":
+            cooldown_minutes = settings.alert_cooldown_minutes.get("critical", cooldown_minutes)
         action = decide_alert_action(
             existing_active=existing is not None,
             existing_tier=existing.tier if existing is not None else None,
             new_tier=tier,
             now=now,
             last_updated_at=existing.last_updated_at if existing is not None else None,
+            resolve_after_minutes=cooldown_minutes,
         )
         previous_tier = existing.tier if (action == "escalate" and existing is not None) else None
         message = format_critical_alert(envelope, tier, quality_score, previous_tier)
@@ -406,9 +414,7 @@ class CriticalAlertEngine:
                 if why:
                     message = f"{message}\n\n{why}"
             except Exception:
-                logger.exception(
-                    "Explanation evidence pack failed for %s", envelope["symbols"][0]
-                )
+                logger.exception("Explanation evidence pack failed for %s", envelope["symbols"][0])
 
         if action == "resolve_then_new":
             async with self._session_factory() as session:

@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import get_settings
 from app.database.models import (
     AlertLog,
     Correlation,
@@ -47,6 +48,7 @@ from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.market.repository import MarketRepository
 from app.services.news.repository import NewsRepository
+from app.services.shocks.detectors import resolve_cooldown_minutes
 from app.services.signals.engine import SignalEngine
 from app.services.technical.engine import TechnicalAnalysisEngine
 from app.services.technical.provider import TechnicalAnalysisProvider
@@ -116,7 +118,15 @@ class AlertEngine:
         broadcast = conviction["alert_eligible"]
         if broadcast:
             last_broadcast_at = await self._last_broadcast_at(detection["alert_type"])
-            broadcast = not _is_on_cooldown(last_broadcast_at, datetime.now(UTC))
+            # V9: per-alert-type cooldown (app.config.settings.
+            # alert_cooldown_minutes), falling back to this engine's
+            # original flat 60-minute default for any type not configured.
+            cooldown_minutes = resolve_cooldown_minutes(
+                detection["alert_type"], get_settings().alert_cooldown_minutes, _COOLDOWN_MINUTES
+            )
+            broadcast = not _is_on_cooldown(
+                last_broadcast_at, datetime.now(UTC), cooldown_minutes=cooldown_minutes
+            )
         row = AlertLog(
             alert_type=detection["alert_type"],
             message=detection["message"],

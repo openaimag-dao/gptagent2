@@ -32,6 +32,39 @@ def test_classify_price_event_direction_down():
     assert result["tier"] == "important"
 
 
+def test_price_ladder_for_unscaled_without_volatility():
+    assert price_ladder_for("BTC", realized_volatility_pct=None) == (3.0, 5.0, 8.0, 10.0)
+    assert price_ladder_for("BTC", realized_volatility_pct=0.0) == (3.0, 5.0, 8.0, 10.0)
+
+
+def test_price_ladder_for_scales_up_for_a_more_volatile_symbol():
+    # reference is 2.0%; 6.0% realized vol -> 3x ratio, clamped to max 2.5x
+    ladder = price_ladder_for(
+        "SMALLCAP", realized_volatility_pct=6.0, min_multiplier=0.5, max_multiplier=2.5
+    )
+    assert ladder == (7.5, 12.5, 20.0, 25.0)
+
+
+def test_price_ladder_for_scales_down_for_a_quieter_symbol():
+    # 0.2% realized vol -> 0.1x ratio, clamped to min 0.5x
+    ladder = price_ladder_for(
+        "STABLE", realized_volatility_pct=0.2, min_multiplier=0.5, max_multiplier=2.5
+    )
+    assert ladder == (1.5, 2.5, 4.0, 5.0)
+
+
+def test_classify_price_event_uses_volatility_scaled_ladder():
+    # 3.0% move would be "info" on the flat ladder, but on a highly
+    # volatile symbol (6% realized vol -> 2.5x-capped ladder starting at
+    # 7.5%) it doesn't even clear "info".
+    assert (
+        classify_price_event(
+            "SMALLCAP", 3.0, realized_volatility_pct=6.0, min_multiplier=0.5, max_multiplier=2.5
+        )
+        is None
+    )
+
+
 def test_detect_volume_multiple_thresholds():
     assert detect_volume_multiple(None, 100.0) is None
     assert detect_volume_multiple(100.0, None) is None
