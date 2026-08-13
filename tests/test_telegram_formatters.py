@@ -1520,6 +1520,24 @@ def test_format_scanner_alert_includes_scenario_opportunity_and_threat():
     assert "Main Risk: Risk Off (25%) -- broad de-risking." in text
 
 
+def test_format_scanner_alert_includes_forecast_context_when_present():
+    detection = _scanner_detection()
+    detection["forecast"] = {
+        "probability_pct": 72,
+        "direction": "Bullish",
+        "forecast_status": "ACTIVE",
+        "probability_change_pct": 17.0,
+    }
+    text = format_scanner_alert(detection)
+    assert "Forecast (24h): Bullish (72% probability)" in text
+    assert "Probability change since last forecast: +17.0pp" in text
+
+
+def test_format_scanner_alert_omits_forecast_section_when_absent():
+    text = format_scanner_alert(_scanner_detection())
+    assert "Forecast (24h):" not in text
+
+
 def test_format_scanner_alert_multi_asset_shock_lists_all_symbols():
     detection = {
         "category": "crypto_market_shock",

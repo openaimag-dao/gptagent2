@@ -1627,6 +1627,20 @@ def format_scanner_alert(detection: dict) -> str:
         lines.append(f"Main Opportunity: {ctx['biggest_opportunity']}")
     if ctx.get("highest_risk"):
         lines.append(f"Main Risk: {ctx['highest_risk']}")
+
+    # V9: Scanner event -> Forecast recompute -> richer alert. Only present
+    # when this detection's tier cleared the recompute gate AND the symbol
+    # has a historical registry entry ForecastEngine can actually use
+    # (app.services.scanner.engine._forecast_context) -- honestly absent
+    # otherwise, never a guessed probability.
+    forecast = detection.get("forecast")
+    if forecast:
+        lines.append(
+            f"Forecast (24h): {forecast['direction']} ({forecast['probability_pct']}% probability)"
+        )
+        change = forecast.get("probability_change_pct")
+        if change is not None:
+            lines.append(f"Probability change since last forecast: {change:+.1f}pp")
     lines.append("")
 
     lines.append("Explanation:")
