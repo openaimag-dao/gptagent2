@@ -9,7 +9,9 @@ from app.database.models import (
 )
 from app.services.history.base import HistoricalDataProvider
 from app.services.history.providers.coingecko import CoinGeckoHistoricalProvider
+from app.services.history.providers.fallback_provider import FallbackHistoricalProvider
 from app.services.history.providers.fred import FRED_SERIES, FredHistoricalProvider
+from app.services.history.providers.twelvedata_provider import TwelveDataHistoricalProvider
 from app.services.history.providers.yfinance_provider import YFinanceHistoricalProvider
 from app.services.history.schemas import Timeframe
 
@@ -65,10 +67,25 @@ def build_registry() -> list[HistorySymbolConfig]:
     free CoinGecko historical endpoint), and 4h/1h for FRED-sourced macro
     series (FRED has no intraday data).
     """
+    # Yahoo Finance has been confirmed (live, via Railway logs) to return
+    # empty/malformed responses from this deployment's egress IP -- see
+    # AUDIT_REPORT.md. Twelve Data (already configured for the live-quote
+    # fallback path) covers individual equities and forex/gold/silver on
+    # its free tier; confirmed NOT to cover indices or DXY on that tier
+    # ("available starting with the Grow or Venture plan"), so
+    # index_provider stays yfinance-only -- no viable free fallback exists
+    # for those four symbols today.
+    twelvedata_provider = TwelveDataHistoricalProvider()
     index_provider = YFinanceHistoricalProvider(INDEX_TICKERS)
-    stock_provider = YFinanceHistoricalProvider(STOCK_TICKERS)
-    macro_yf_provider = YFinanceHistoricalProvider(MACRO_YFINANCE_TICKERS)
-    forex_provider = YFinanceHistoricalProvider(FOREX_TICKERS)
+    stock_provider = FallbackHistoricalProvider(
+        YFinanceHistoricalProvider(STOCK_TICKERS), twelvedata_provider
+    )
+    macro_yf_provider = FallbackHistoricalProvider(
+        YFinanceHistoricalProvider(MACRO_YFINANCE_TICKERS), twelvedata_provider
+    )
+    forex_provider = FallbackHistoricalProvider(
+        YFinanceHistoricalProvider(FOREX_TICKERS), twelvedata_provider
+    )
     crypto_provider = CoinGeckoHistoricalProvider()
     fred_provider = FredHistoricalProvider()
 
