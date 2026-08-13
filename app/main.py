@@ -36,6 +36,7 @@ from app.api.liquidity import router as liquidity_router
 from app.api.market import router as market_router
 from app.api.memory import router as memory_router
 from app.api.news import router as news_router
+from app.api.no_trade import router as no_trade_router
 from app.api.onchain import router as onchain_router
 from app.api.opportunities import router as opportunities_router
 from app.api.patterns import router as patterns_router
@@ -104,6 +105,7 @@ app.include_router(events_router)
 app.include_router(calendar_router)
 app.include_router(features_router)
 app.include_router(forecast_router)
+app.include_router(no_trade_router)
 app.include_router(research_router)
 app.include_router(strategy_router)
 app.include_router(hypothesis_router)

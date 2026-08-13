@@ -36,6 +36,7 @@ from app.telegram.formatters import (
     format_learning,
     format_market_summary,
     format_monthly_performance,
+    format_no_trade_verdict,
     format_onchain,
     format_opportunities,
     format_quality,
@@ -1460,6 +1461,40 @@ def test_format_technical_includes_high_confidence_alignment():
     text = format_technical("BTC", result)
     assert "HIGH CONFIDENCE BUY" in text
     assert "RSI oversold" in text
+
+
+def test_format_no_trade_verdict_none_when_no_forecast():
+    text = format_no_trade_verdict("BTC", None)
+    assert "No forecast available for BTC" in text
+
+
+def test_format_no_trade_verdict_trade_ok():
+    result = {
+        "recommendation": "TRADE_OK",
+        "reasons": [],
+        "direction": "Bullish",
+        "probability_pct": 72,
+    }
+    text = format_no_trade_verdict("BTC", result)
+    assert "TRADE OK" in text
+    assert "Bullish (72% probability)" in text
+    assert "No gating conditions triggered." in text
+
+
+def test_format_no_trade_verdict_no_trade_lists_reasons():
+    result = {
+        "recommendation": "NO_TRADE",
+        "reasons": [
+            {"code": "low_probability", "description": "Direction probability 40% below 55%"},
+            {"code": "extreme_volatility", "description": "Expected volatility 20% exceeds 15%"},
+        ],
+        "direction": "Neutral",
+        "probability_pct": 40,
+    }
+    text = format_no_trade_verdict("BTC", result)
+    assert "NO TRADE" in text
+    assert "Direction probability 40% below 55%" in text
+    assert "Expected volatility 20% exceeds 15%" in text
 
 
 def _scanner_detection():

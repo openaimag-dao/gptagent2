@@ -1853,6 +1853,39 @@ def format_technical(symbol: str, result: dict | None) -> str:
     return "\n".join(lines)
 
 
+def format_no_trade_verdict(symbol: str, result: dict | None) -> str:
+    """V9 NO-TRADE Engine -- TRADE_OK/NO_TRADE plus the specific reasons,
+    never a fabricated verdict when no forecast exists to evaluate.
+    `result` is app.services.trade_setup.no_trade.evaluate_no_trade_for_symbol()'s
+    own return shape."""
+    if result is None:
+        return (
+            f"No forecast available for {symbol} -- insufficient history/probability "
+            "data to evaluate a trade recommendation."
+        )
+
+    recommendation = result["recommendation"]
+    emoji = "✅" if recommendation == "TRADE_OK" else "⛔"
+    lines = [f"{emoji} *NO-TRADE ENGINE -- {symbol}*", ""]
+    lines.append(f"Verdict: *{recommendation.replace('_', ' ')}*")
+
+    direction = result.get("direction")
+    probability = result.get("probability_pct")
+    if direction is not None and probability is not None:
+        lines.append(f"Forecast: {direction} ({probability}% probability)")
+    lines.append("")
+
+    reasons = result.get("reasons") or []
+    if reasons:
+        lines.append("Reasons:")
+        for reason in reasons:
+            lines.append(f"- {reason['description']}")
+    else:
+        lines.append("No gating conditions triggered.")
+
+    return "\n".join(lines)
+
+
 def format_alert_rule_created(rule) -> str:
     return (
         f"*Alert rule #{rule.id} created*\n"
