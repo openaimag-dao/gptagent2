@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.database.models import EconomicCalendarEvent, PriceForecastSnapshot, WatchdogSnapshot
 from app.services.agents.pattern_agent import _recency_weighted_direction
 from app.services.analysis.correlation import CorrelationEngine
-from app.services.analysis.regime import MarketRegime, RegimeDetector
+from app.services.analysis.regime import MarketRegime, RegimeDetector, build_regime_index
 from app.services.analysis.report import derive_risk_level
 from app.services.backtest.metrics import compute_max_drawdown_pct
 from app.services.calendar.engine import EconomicCalendarEngine
@@ -686,8 +686,18 @@ class ForecastEngine:
         if config is None:
             return None
 
+        # Built once per compute() call (one horizon) and handed to
+        # ProbabilityEngine so its RSI-bucketed sample can also be filtered
+        # to periods sharing today's market regime -- see
+        # ProbabilityEngine.compute_and_store's own docstring for why this
+        # is caller-provided rather than rebuilt internally.
+        regime_index = await build_regime_index(self._session_factory, Timeframe.DAILY)
         probability_snapshot = await self._probability_engine.compute_and_store(
-            config.symbol, config.model, Timeframe.DAILY, horizon=horizon_periods
+            config.symbol,
+            config.model,
+            Timeframe.DAILY,
+            horizon=horizon_periods,
+            regime_index=regime_index,
         )
         if probability_snapshot is None:
             return None
@@ -864,6 +874,20 @@ class ForecastEngine:
             "key_levels": key_levels,
             "what_can_change": what_can_change,
             "sample_size": probability_snapshot.sample_size,
+            # The empirical spread behind expected_change_pct's single mean,
+            # and whether the sample was actually regime-conditioned (see
+            # ProbabilityEngine.compute_and_store / compute_rsi_probability).
+            # getattr-guarded: older/mocked snapshots predating these
+            # columns are treated as honestly unavailable, not a crash.
+            "forward_return_quantiles": {
+                key: (float(value) if value is not None else None)
+                for key, value in (
+                    (name, getattr(probability_snapshot, name, None))
+                    for name in ("p10_pct", "p25_pct", "p50_pct", "p75_pct", "p90_pct")
+                )
+            },
+            "regime_conditioned": getattr(probability_snapshot, "regime_conditioned", False),
+            "reference_regime": getattr(probability_snapshot, "reference_regime", None),
         }
 
         await self._persist(payload, latest.timestamp, conviction["tier"])

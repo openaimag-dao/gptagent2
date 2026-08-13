@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import ProbabilitySnapshot
+from app.services.analysis.regime import reconstruct_regime_at
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
 
@@ -11,6 +12,13 @@ logger = logging.getLogger(__name__)
 
 _MIN_SAMPLE_SIZE = 8
 _DEFAULT_BUCKET_WIDTH = 10.0
+_QUANTILE_LEVELS: tuple[tuple[str, float], ...] = (
+    ("p10_pct", 0.10),
+    ("p25_pct", 0.25),
+    ("p50_pct", 0.50),
+    ("p75_pct", 0.75),
+    ("p90_pct", 0.90),
+)
 
 
 def compute_forward_returns(returns: list[float | None], horizon: int = 1) -> list[float | None]:
@@ -39,6 +47,31 @@ def compute_forward_returns(returns: list[float | None], horizon: int = 1) -> li
     return result
 
 
+def compute_forward_return_quantiles(matches: list[float]) -> dict[str, float] | None:
+    """p10/p25/p50/p75/p90 of a set of realized forward returns (fractions,
+    e.g. 0.03 for +3%) -- the actual empirical spread of outcomes behind
+    `avg_forward_return_pct`'s single mean, linearly interpolated between
+    the two nearest order statistics (the standard "type 7" percentile, no
+    numpy dependency needed for five values). None (never guessed) when
+    there's nothing to measure a spread over.
+    """
+    if not matches:
+        return None
+    ordered = sorted(matches)
+    n = len(ordered)
+
+    def _percentile(p: float) -> float:
+        if n == 1:
+            return ordered[0]
+        idx = (n - 1) * p
+        lower_idx = int(idx)
+        upper_idx = min(lower_idx + 1, n - 1)
+        frac = idx - lower_idx
+        return ordered[lower_idx] + (ordered[upper_idx] - ordered[lower_idx]) * frac
+
+    return {name: round(100 * _percentile(p), 4) for name, p in _QUANTILE_LEVELS}
+
+
 def compute_rsi_probability(
     rsi_series: list[float | None],
     returns_series: list[float | None],
@@ -46,9 +79,21 @@ def compute_rsi_probability(
     bucket_width: float = _DEFAULT_BUCKET_WIDTH,
     horizon: int = 1,
     min_sample_size: int = _MIN_SAMPLE_SIZE,
+    regime_series: list[str | None] | None = None,
+    reference_regime: str | None = None,
 ) -> dict | None:
     """Empirical probability of an up/down/flat forward move, conditioned on
     RSI having previously been within `bucket_width` of `reference_rsi`.
+
+    When `regime_series` (one entry per `rsi_series`/`returns_series` index)
+    and `reference_regime` are both given, the match set is additionally
+    restricted to periods reconstructed as the same market regime -- e.g.
+    "similar RSI, and it was also a BULL regime" rather than RSI alone. If
+    that stricter sample is too small (`min_sample_size`), this honestly
+    falls back to the RSI-only sample instead of returning None outright,
+    and reports `regime_conditioned=False` so callers can tell the
+    conditioning didn't actually take effect -- never silently claims
+    regime-awareness it didn't have enough data to back up.
 
     Pure function over already-computed history -- returns None (never a
     guessed number) if there isn't enough matching history to be meaningful.
@@ -57,11 +102,25 @@ def compute_rsi_probability(
     half_width = bucket_width / 2
     lower, upper = reference_rsi - half_width, reference_rsi + half_width
 
-    matches = [
-        fwd
-        for rsi, fwd in zip(rsi_series, forward)
+    rsi_matches_idx = [
+        i
+        for i, (rsi, fwd) in enumerate(zip(rsi_series, forward))
         if rsi is not None and fwd is not None and lower <= rsi <= upper
     ]
+
+    regime_conditioned = False
+    match_idx = rsi_matches_idx
+    if regime_series is not None and reference_regime is not None:
+        regime_matches_idx = [
+            i
+            for i in rsi_matches_idx
+            if i < len(regime_series) and regime_series[i] == reference_regime
+        ]
+        if len(regime_matches_idx) >= min_sample_size:
+            match_idx = regime_matches_idx
+            regime_conditioned = True
+
+    matches = [forward[i] for i in match_idx]
     if len(matches) < min_sample_size:
         return None
 
@@ -70,13 +129,21 @@ def compute_rsi_probability(
     flat = len(matches) - positive - negative
     sample_size = len(matches)
 
-    return {
+    result = {
         "sample_size": sample_size,
         "prob_up_pct": round(100 * positive / sample_size),
         "prob_down_pct": round(100 * negative / sample_size),
         "prob_flat_pct": round(100 * flat / sample_size),
         "avg_forward_return_pct": round(100 * sum(matches) / sample_size, 4),
+        "regime_conditioned": regime_conditioned,
+        "reference_regime": reference_regime if regime_conditioned else None,
     }
+    quantiles = compute_forward_return_quantiles(matches)
+    if quantiles is not None:
+        result.update(quantiles)
+    else:
+        result.update(dict.fromkeys(name for name, _ in _QUANTILE_LEVELS))
+    return result
 
 
 class ProbabilityEngine:
@@ -86,8 +153,20 @@ class ProbabilityEngine:
         self._session_factory = session_factory
 
     async def compute_and_store(
-        self, symbol: str, model: type, timeframe: Timeframe = Timeframe.DAILY, horizon: int = 1
+        self,
+        symbol: str,
+        model: type,
+        timeframe: Timeframe = Timeframe.DAILY,
+        horizon: int = 1,
+        regime_index: dict[str, dict] | None = None,
     ) -> ProbabilitySnapshot | None:
+        """`regime_index` is optional and caller-provided (built once via
+        `app.services.analysis.regime.build_regime_index`, e.g. by
+        ForecastEngine) rather than built here on every call -- it requires
+        fetching several other symbols' full history, so callers that need
+        it across several horizons/symbols in one request build it once and
+        share it, instead of paying that cost per call. Omitted entirely,
+        this behaves exactly as before (RSI-only conditioning)."""
         rows = await get_series(self._session_factory, model, symbol, timeframe)
         if len(rows) < _MIN_SAMPLE_SIZE + horizon:
             return None
@@ -99,7 +178,21 @@ class ProbabilityEngine:
         if reference_rsi is None:
             return None
 
-        result = compute_rsi_probability(rsi_series, returns_series, reference_rsi, horizon=horizon)
+        regime_series: list[str | None] | None = None
+        reference_regime: str | None = None
+        if regime_index is not None:
+            reconstructed = [reconstruct_regime_at(regime_index, r.timestamp) for r in rows]
+            regime_series = [r.value if r is not None else None for r in reconstructed]
+            reference_regime = regime_series[-1]
+
+        result = compute_rsi_probability(
+            rsi_series,
+            returns_series,
+            reference_rsi,
+            horizon=horizon,
+            regime_series=regime_series,
+            reference_regime=reference_regime,
+        )
         if result is None:
             return None
 

@@ -1,5 +1,10 @@
 from app.database.models import AssetClass, AssetPrice
-from app.services.analysis.regime import MarketRegime, detect_regime
+from app.services.analysis.regime import (
+    MarketRegime,
+    compute_regime_confidence,
+    detect_regime,
+    regime_confidence_label,
+)
 
 
 def asset(
@@ -245,3 +250,46 @@ def test_sideways_when_everything_is_flat():
     regime, _ = detect_regime(assets)
 
     assert regime is MarketRegime.SIDEWAYS
+
+
+def test_regime_confidence_low_for_neutral_regardless_of_data():
+    assets = [
+        asset("SPX", change_pct_24h=1.0),
+        asset("BTC", change_pct_24h=-1.0),
+        asset("VIX", change_pct_24h=0.5),
+        asset("DXY", change_pct_24h=0.1),
+        asset("GOLD", change_pct_24h=0.2),
+        asset("US10Y", change_24h=0.01),
+    ]
+    regime, inputs = detect_regime(assets)
+    assert regime is MarketRegime.NEUTRAL
+    assert compute_regime_confidence(regime, inputs) == 30
+
+
+def test_regime_confidence_high_with_full_core_evidence():
+    assets = [
+        asset("SPX", change_pct_24h=1.2),
+        asset("BTC", change_pct_24h=3.0),
+        asset("VIX", change_pct_24h=-5.0),
+        asset("DXY", change_pct_24h=-0.3),
+        asset("GOLD", change_pct_24h=0.5),
+        asset("US10Y", change_24h=-0.02),
+    ]
+    regime, inputs = detect_regime(assets)
+    assert regime is MarketRegime.RISK_ON
+    assert compute_regime_confidence(regime, inputs) == 85
+
+
+def test_regime_confidence_low_with_sparse_evidence():
+    # Only BTC/momentum data present -- most of the core macro inputs are
+    # None, so even a confidently-labeled BULL regime scores LOW confidence.
+    regime, inputs = detect_regime([], momentum_30d={"BTC": 15.0, "SPX": 12.0})
+    assert regime is MarketRegime.BULL
+    assert compute_regime_confidence(regime, inputs) == 30
+
+
+def test_regime_confidence_label_tiers():
+    assert regime_confidence_label(90) == "high"
+    assert regime_confidence_label(70) == "medium"
+    assert regime_confidence_label(10) == "low"
+    assert regime_confidence_label(None) == "unavailable"

@@ -2,11 +2,10 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.services.analysis.regime import MarketRegime
+from app.services.analysis.regime import MarketRegime, reconstruct_regime_at
 from app.services.history.schemas import Timeframe
 from app.services.similar_market.engine import (
     SimilarMarketEngine,
-    _reconstruct_regime_at,
     build_historical_lesson,
 )
 
@@ -27,7 +26,7 @@ def test_reconstructs_risk_on_when_all_signals_agree():
         "US10Y": {_TS: _row(0.0)},
         "FEDRATE": {_TS: _row(0.0)},
     }
-    assert _reconstruct_regime_at(regime_index, _TS) == MarketRegime.RISK_ON
+    assert reconstruct_regime_at(regime_index, _TS) == MarketRegime.RISK_ON
 
 
 def test_returns_none_below_minimum_symbol_count():
@@ -41,7 +40,7 @@ def test_returns_none_below_minimum_symbol_count():
         "US10Y": {},
         "FEDRATE": {},
     }
-    assert _reconstruct_regime_at(regime_index, _TS) is None
+    assert reconstruct_regime_at(regime_index, _TS) is None
 
 
 def test_missing_return_pct_excludes_that_symbol():
@@ -55,7 +54,7 @@ def test_missing_return_pct_excludes_that_symbol():
         "FEDRATE": {},
     }
     # Only 3 usable symbols (DXY excluded) -> below the 4-symbol minimum.
-    assert _reconstruct_regime_at(regime_index, _TS) is None
+    assert reconstruct_regime_at(regime_index, _TS) is None
 
 
 def test_returns_neutral_when_signals_disagree():
@@ -68,7 +67,7 @@ def test_returns_neutral_when_signals_disagree():
         "US10Y": {},
         "FEDRATE": {},
     }
-    assert _reconstruct_regime_at(regime_index, _TS) == MarketRegime.NEUTRAL
+    assert reconstruct_regime_at(regime_index, _TS) == MarketRegime.NEUTRAL
 
 
 def _match(similarity: float, regime: str | None, **forward_returns_pct: float | None) -> dict:
@@ -174,7 +173,7 @@ async def test_find_similar_periods_omits_nearby_events_and_skips_the_query_by_d
             AsyncMock(return_value=_history_rows(32)),
         ),
         patch(
-            "app.services.similar_market.engine._build_regime_index",
+            "app.services.similar_market.engine.build_regime_index",
             AsyncMock(return_value=_empty_regime_index()),
         ),
     ):
@@ -200,7 +199,7 @@ async def test_find_similar_periods_attaches_nearby_events_within_the_window_whe
             AsyncMock(return_value=_history_rows(32, base=match_timestamp)),
         ),
         patch(
-            "app.services.similar_market.engine._build_regime_index",
+            "app.services.similar_market.engine.build_regime_index",
             AsyncMock(return_value=_empty_regime_index()),
         ),
     ):

@@ -173,6 +173,11 @@ class MarketRegimeSnapshot(Base):
         )
     )
     inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 0-100: how much of the deciding cross-asset evidence was actually
+    # present when this regime was detected (see compute_regime_confidence).
+    # Nullable so pre-existing rows are honestly "unavailable", never
+    # backfilled with a guessed number.
+    confidence_pct: Mapped[int | None] = mapped_column(nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
@@ -426,6 +431,23 @@ class ProbabilitySnapshot(Base):
     prob_down_pct: Mapped[int] = mapped_column()
     prob_flat_pct: Mapped[int] = mapped_column()
     avg_forward_return_pct: Mapped[float] = mapped_column(Numeric(10, 4))
+    # Empirical forward-return distribution (percentiles, in %) across the
+    # same matched sample avg_forward_return_pct is the mean of -- the
+    # spread of what actually happened, not just its average. Nullable: a
+    # snapshot from before this column existed, or one whose sample was too
+    # small to compute quantiles from, stays honestly None.
+    p10_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p25_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p50_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p75_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p90_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # Whether the match sample was actually filtered by market regime (see
+    # compute_rsi_probability's regime_series/reference_regime params), and
+    # which regime it was filtered to -- honest even when the caller asked
+    # for regime-conditioning but there wasn't enough same-regime history
+    # and it fell back to the RSI-only sample.
+    regime_conditioned: Mapped[bool] = mapped_column(default=False)
+    reference_regime: Mapped[str | None] = mapped_column(String(30), nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )

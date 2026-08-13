@@ -5,16 +5,8 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database.models import (
-    AssetClass,
-    AssetPrice,
-    CryptoHistory,
-    HistoricalEvent,
-    MacroHistory,
-    MarketHistory,
-    SimilarMarketMatch,
-)
-from app.services.analysis.regime import MarketRegime, detect_regime
+from app.database.models import HistoricalEvent, SimilarMarketMatch
+from app.services.analysis.regime import build_regime_index, reconstruct_regime_at
 from app.services.backtest.metrics import compute_backtest_metrics, compute_win_rate_pct
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
@@ -27,73 +19,6 @@ _MIN_HISTORY_LENGTH = 30
 _DEFAULT_K = 25
 _FORWARD_HORIZONS = (1, 3, 7, 30)
 _DEFAULT_EVENT_WINDOW_DAYS = 14
-
-# Symbols detect_regime() needs to reconstruct a historical regime tag for a
-# past date -- reused as-is, never reimplemented, so a historical regime tag
-# means exactly the same thing as a live one.
-_REGIME_SYMBOL_TABLES: dict[str, type] = {
-    "SPX": MarketHistory,
-    "BTC": CryptoHistory,
-    "VIX": MacroHistory,
-    "DXY": MacroHistory,
-    "GOLD": MacroHistory,
-    "US10Y": MacroHistory,
-    "FEDRATE": MacroHistory,
-}
-_REGIME_SYMBOL_ASSET_CLASS: dict[str, AssetClass] = {
-    "SPX": AssetClass.INDEX,
-    "BTC": AssetClass.CRYPTO,
-    "VIX": AssetClass.MACRO,
-    "DXY": AssetClass.MACRO,
-    "GOLD": AssetClass.MACRO,
-    "US10Y": AssetClass.MACRO,
-    "FEDRATE": AssetClass.MACRO,
-}
-
-
-async def _build_regime_index(
-    session_factory: async_sessionmaker[AsyncSession], timeframe: Timeframe
-) -> dict[str, dict]:
-    """{symbol: {timestamp: history_row}} for every symbol detect_regime() needs.
-    Missing symbols (not yet synced) are simply absent -- degrades to a lower
-    regime-reconstruction rate rather than failing outright."""
-    index: dict[str, dict] = {}
-    for symbol, model in _REGIME_SYMBOL_TABLES.items():
-        try:
-            rows = await get_series(session_factory, model, symbol, timeframe)
-        except Exception:
-            rows = []
-        index[symbol] = {r.timestamp: r for r in rows}
-    return index
-
-
-def _reconstruct_regime_at(regime_index: dict[str, dict], timestamp) -> MarketRegime | None:
-    assets = []
-    for symbol in _REGIME_SYMBOL_TABLES:
-        row = regime_index.get(symbol, {}).get(timestamp)
-        if row is None or row.return_pct is None:
-            continue
-        return_pct = float(row.return_pct)
-        change_pct = return_pct * 100
-        change_abs = return_pct * float(row.close)
-        assets.append(
-            AssetPrice(
-                symbol=symbol,
-                name=symbol,
-                asset_class=_REGIME_SYMBOL_ASSET_CLASS[symbol],
-                price=row.close,
-                change_pct_24h=change_pct,
-                change_24h=change_abs,
-                source="history_reconstruction",
-            )
-        )
-    # detect_regime's rules need at least the risk-on/off quartet to say
-    # anything more specific than "not enough data" -- below that, be honest
-    # and return None rather than a low-confidence guess.
-    if len(assets) < 4:
-        return None
-    regime, _ = detect_regime(assets)
-    return regime
 
 
 # The forward horizon "Average outcome"/"Probability" answer -- 7 trading
@@ -234,7 +159,7 @@ class SimilarMarketEngine:
             h: compute_forward_returns(returns_series, horizon=h) for h in _FORWARD_HORIZONS
         }
 
-        regime_index = await _build_regime_index(self._session_factory, timeframe)
+        regime_index = await build_regime_index(self._session_factory, timeframe)
         btc_index = regime_index["BTC"] if symbol != "BTC" else {r.timestamp: r for r in rows}
         nasdaq_index = regime_index["SPX"]
 
@@ -254,7 +179,7 @@ class SimilarMarketEngine:
             idx = episode["index"]
             distance = episode["distance"]
             similarity = round(100 / (1 + distance), 1)
-            regime = _reconstruct_regime_at(regime_index, episode["timestamp"])
+            regime = reconstruct_regime_at(regime_index, episode["timestamp"])
             btc_row = btc_index.get(episode["timestamp"])
             nasdaq_row = nasdaq_index.get(episode["timestamp"])
 
