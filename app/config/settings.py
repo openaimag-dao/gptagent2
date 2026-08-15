@@ -228,6 +228,16 @@ class Settings(BaseSettings):
     # single adjustment bounded rather than able to zero out an agent.
     agent_correlation_max_redundancy_penalty_pct: float = 30.0
 
+    # ---- Adaptive consensus weight bound (POST-V9 Phase 7) ----
+    # Caps any single agent's share of total cast consensus weight, even
+    # after reliability/redundancy scaling is applied at maximum -- so one
+    # highly-confident, highly-reliable, uncorrelated agent can never
+    # single-handedly determine the consensus direction. Only takes effect
+    # when at least 2 agents report a direction this cycle (a lone
+    # reporting agent's 100% share isn't "dominance" -- there is nothing
+    # else to weigh it against).
+    consensus_max_agent_weight_pct: float = 60.0
+
     # ---- Alert performance analytics (V9 Increment 9) ----
     # How many days after an alert fires to look up its symbol's forward
     # price change -- an alert is only gradable once real synced history

@@ -4,6 +4,8 @@ from app.services.agents.base import AgentOutput
 from app.services.consensus.engine import (
     ConsensusEngine,
     ConsensusResult,
+    _agent_redundancy_penalty_pct,
+    _apply_max_weight_cap,
     compute_consensus,
     consensus_evolution,
 )
@@ -64,16 +66,22 @@ def test_compute_consensus_exposes_strongest_agent_and_evidence():
     # (not just its name) so agree/disagree can be explained.
     outputs = {
         "news": AgentOutput(
-            agent="news", summary="*AGENT SUMMARY*\nHeadlines skew risk-on.", direction="bullish",
+            agent="news",
+            summary="*AGENT SUMMARY*\nHeadlines skew risk-on.",
+            direction="bullish",
             confidence=50.0,
         ),
         "macro": AgentOutput(
-            agent="macro", summary="*AGENT SUMMARY*\nDXY strength is bearish for risk assets.",
-            direction="bearish", confidence=30.0,
+            agent="macro",
+            summary="*AGENT SUMMARY*\nDXY strength is bearish for risk assets.",
+            direction="bearish",
+            confidence=30.0,
         ),
         "equity": AgentOutput(
-            agent="equity", summary="*AGENT SUMMARY*\nBreadth confirms the rally.",
-            direction="bullish", confidence=20.0,
+            agent="equity",
+            summary="*AGENT SUMMARY*\nBreadth confirms the rally.",
+            direction="bullish",
+            confidence=20.0,
         ),
     }
 
@@ -155,6 +163,119 @@ def test_compute_consensus_percentages_always_sum_to_100():
     assert total == 100.0
 
 
+# ---- POST-V9 Phase 7: redundancy penalty discount ----
+
+
+def test_agent_redundancy_penalty_pct_takes_max_not_sum_across_partners():
+    # macro is correlated with both crypto (20%) and news (60%) -- it
+    # should only be discounted by the larger (60%), not 20+60=80%.
+    penalty = _agent_redundancy_penalty_pct(
+        "macro",
+        {"macro", "crypto", "news"},
+        {("crypto", "macro"): 20.0, ("macro", "news"): 60.0},
+    )
+    assert penalty == 60.0
+
+
+def test_agent_redundancy_penalty_pct_zero_when_no_pair_matches():
+    penalty = _agent_redundancy_penalty_pct(
+        "macro", {"macro", "crypto"}, {("news", "sentiment"): 90.0}
+    )
+    assert penalty == 0.0
+
+
+def test_agent_redundancy_penalty_pct_zero_for_lone_reporting_agent():
+    penalty = _agent_redundancy_penalty_pct("macro", {"macro"}, {})
+    assert penalty == 0.0
+
+
+def test_compute_consensus_discounts_correlated_bloc_relative_to_independent_agent():
+    # macro and crypto are correlated (redundant) bullish votes; news is an
+    # independent bearish vote. Discounting the correlated pair should
+    # shrink bullish's dominance relative to the untouched bearish vote --
+    # this would NOT show up with only 2 (mutually symmetric) agents, since
+    # discounting both sides of the only pair by the same amount leaves
+    # their ratio, and therefore the bucket split, unchanged.
+    outputs = {
+        "macro": _output("macro", "bullish", 80.0),
+        "crypto": _output("crypto", "bullish", 80.0),
+        "news": _output("news", "bearish", 80.0),
+    }
+
+    undiscounted = compute_consensus(outputs)
+    discounted = compute_consensus(outputs, redundancy_penalties={("crypto", "macro"): 50.0})
+
+    assert discounted.bullish_pct < undiscounted.bullish_pct
+    assert discounted.bearish_pct > undiscounted.bearish_pct
+
+
+def test_compute_consensus_redundancy_penalty_ignores_unrelated_pairs():
+    outputs = {
+        "macro": _output("macro", "bullish", 80.0),
+        "crypto": _output("crypto", "bearish", 80.0),
+    }
+
+    result = compute_consensus(outputs, redundancy_penalties={("news", "sentiment"): 90.0})
+    baseline = compute_consensus(outputs)
+
+    assert result.bullish_pct == baseline.bullish_pct
+    assert result.bearish_pct == baseline.bearish_pct
+
+
+# ---- POST-V9 Phase 7: max_agent_weight_pct cap ----
+
+
+def test_apply_max_weight_cap_solves_for_exact_capped_share():
+    capped = _apply_max_weight_cap({"macro": 100.0, "crypto": 1.0}, max_agent_weight_pct=60.0)
+    total = sum(capped.values())
+    assert round(100 * capped["macro"] / total, 4) == 60.0
+    assert capped["crypto"] == 1.0  # never grows the other side
+
+
+def test_apply_max_weight_cap_skips_single_agent():
+    capped = _apply_max_weight_cap({"macro": 100.0}, max_agent_weight_pct=60.0)
+    assert capped == {"macro": 100.0}
+
+
+def test_apply_max_weight_cap_noop_when_cap_is_100_or_above():
+    weights = {"macro": 100.0, "crypto": 1.0}
+    assert _apply_max_weight_cap(weights, max_agent_weight_pct=100.0) == weights
+
+
+def test_compute_consensus_caps_a_dominant_agents_weight_share():
+    outputs = {
+        "macro": _output("macro", "bullish", 100.0),
+        "crypto": _output("crypto", "bearish", 1.0),
+    }
+
+    uncapped = compute_consensus(outputs)
+    assert uncapped.bullish_pct > 60.0  # macro dominates without a cap
+
+    capped = compute_consensus(outputs, max_agent_weight_pct=60.0)
+    assert capped.bullish_pct == 60.0
+
+
+def test_compute_consensus_cap_skipped_for_a_single_reporting_agent():
+    outputs = {"macro": _output("macro", "bullish", 100.0)}
+
+    result = compute_consensus(outputs, max_agent_weight_pct=60.0)
+
+    # A lone voice's 100% share isn't "dominance" -- nothing to cap against.
+    assert result.bullish_pct == 100.0
+
+
+def test_compute_consensus_cap_is_a_noop_when_no_agent_exceeds_it():
+    outputs = {
+        "macro": _output("macro", "bullish", 40.0),
+        "crypto": _output("crypto", "bearish", 40.0),
+    }
+
+    uncapped = compute_consensus(outputs)
+    capped = compute_consensus(outputs, max_agent_weight_pct=90.0)
+
+    assert uncapped.bullish_pct == capped.bullish_pct
+
+
 async def test_consensus_engine_runs_orchestrator_and_tallies_the_result():
     orchestrator = AsyncMock()
     orchestrator.run_all.return_value = {
@@ -185,6 +306,7 @@ async def test_consensus_engine_uses_reliability_engine_when_given():
     }
     reliability_engine = AsyncMock()
     reliability_engine.evaluate_reliability.return_value = {"news": 20.0, "macro": 100.0}
+    reliability_engine.evaluate_agent_correlations.return_value = {}
 
     result = await ConsensusEngine(orchestrator, reliability_engine).compute()
 
@@ -198,9 +320,25 @@ async def test_consensus_engine_survives_reliability_engine_failure():
     orchestrator.run_all.return_value = {"macro": _output("macro", "bullish", 50.0)}
     reliability_engine = AsyncMock()
     reliability_engine.evaluate_reliability.side_effect = RuntimeError("db down")
+    reliability_engine.evaluate_agent_correlations.return_value = {}
 
     result = await ConsensusEngine(orchestrator, reliability_engine).compute()
 
+    assert result.bullish_pct == 100.0
+
+
+async def test_consensus_engine_survives_correlation_tracking_failure():
+    orchestrator = AsyncMock()
+    orchestrator.run_all.return_value = {"macro": _output("macro", "bullish", 50.0)}
+    reliability_engine = AsyncMock()
+    reliability_engine.evaluate_reliability.return_value = {"macro": 90.0}
+    reliability_engine.evaluate_agent_correlations.side_effect = RuntimeError("db down")
+
+    result = await ConsensusEngine(orchestrator, reliability_engine).compute()
+
+    # A correlation-tracking failure must not wipe out reliability that
+    # was already fetched successfully -- the two adjustments fail
+    # independently.
     assert result.bullish_pct == 100.0
 
 

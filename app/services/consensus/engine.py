@@ -21,12 +21,27 @@ with a real track record of X% correct direction calls has its confidence
 scaled by that track record, so a consistently wrong agent's vote counts
 for less over time. An agent with no evaluable history yet keeps its raw
 confidence -- never penalized for lacking a track record.
+
+POST-V9 Phase 7 adds two further, opt-in, bounded adjustments on top of
+reliability weighting -- final weight = base_confidence x reliability x
+redundancy_discount, then optionally capped:
+  - Redundancy discount (Phase 6): an agent's weight is additionally
+    discounted by the single largest vote-correlation-derived redundancy
+    penalty it has with any other reporting agent this cycle, so two
+    near-identical agents stop counting as two independent opinions.
+  - Weight cap: no single agent's post-adjustment share of total cast
+    weight can exceed a configurable bound, so no combination of high
+    confidence/reliability/independence lets one agent single-handedly
+    decide the consensus.
+Both default to off (None) so compute_consensus()'s behavior is
+unchanged for any existing caller that doesn't pass them.
 """
 
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from app.config import get_settings
 from app.services.agents.base import AgentOutput
 from app.services.agents.orchestrator import AgentOrchestrator
 from app.services.common.formatting import agent_evidence_excerpt
@@ -118,8 +133,64 @@ class ConsensusResult:
         }
 
 
+def _agent_redundancy_penalty_pct(
+    agent: str,
+    reporting_agents: set[str],
+    redundancy_penalties: dict[tuple[str, str], float],
+) -> float:
+    """Pure helper: the single largest redundancy penalty (0-100) any
+    other agent reporting this cycle implies for `agent`, from a
+    {sorted (agent_a, agent_b): redundancy_penalty_pct} map (the shape
+    AgentReliabilityEngine.evaluate_agent_correlations returns per pair).
+    Takes the max across partners rather than summing them so an agent
+    correlated with several others at once isn't compound-punished for
+    the same underlying redundancy."""
+    penalties = [
+        redundancy_penalties[pair]
+        for other in reporting_agents
+        if other != agent
+        for pair in (tuple(sorted((agent, other))),)
+        if pair in redundancy_penalties
+    ]
+    return max(penalties, default=0.0)
+
+
+def _apply_max_weight_cap(
+    per_agent_weight: dict[str, float], max_agent_weight_pct: float
+) -> dict[str, float]:
+    """Pure function: caps any single agent's share of total cast weight
+    at `max_agent_weight_pct` by solving for the weight that makes its
+    post-renormalization share exactly the cap -- a naive clamp-then-
+    renormalize can leave a dominant agent still over the cap when every
+    other agent's weight is tiny, since shrinking the total right along
+    with the numerator doesn't change the ratio much. Applied iteratively
+    (largest agent first) since capping one agent changes what
+    "the rest" sum to for the next. Skipped entirely when fewer than 2
+    agents report (a lone voice's 100% share isn't dominance -- there is
+    nothing else to weigh it against) or when the cap is >= 100 (no-op).
+    Never grows a weight, only shrinks one."""
+    weights = dict(per_agent_weight)
+    if len(weights) < 2 or max_agent_weight_pct >= 100:
+        return weights
+    ratio = max_agent_weight_pct / (100 - max_agent_weight_pct)
+    for _ in range(len(weights)):
+        total = sum(weights.values())
+        if total == 0:
+            break
+        name = max(weights, key=weights.get)
+        share_pct = 100 * weights[name] / total
+        if share_pct <= max_agent_weight_pct + 1e-9:
+            break
+        sum_others = total - weights[name]
+        weights[name] = sum_others * ratio
+    return weights
+
+
 def compute_consensus(
-    agent_outputs: dict[str, AgentOutput], reliability: dict[str, float] | None = None
+    agent_outputs: dict[str, AgentOutput],
+    reliability: dict[str, float] | None = None,
+    redundancy_penalties: dict[tuple[str, str], float] | None = None,
+    max_agent_weight_pct: float | None = None,
 ) -> ConsensusResult | None:
     """Pure function: {agent_name: AgentOutput} -> ConsensusResult.
 
@@ -130,6 +201,11 @@ def compute_consensus(
     includes an agent, that agent's weight is additionally scaled by its
     own historical accuracy -- an agent absent from `reliability` (no
     evaluable track record yet) keeps its raw confidence-only weight.
+
+    `redundancy_penalties` and `max_agent_weight_pct` (both POST-V9 Phase
+    7, both optional and default to prior behavior) apply the bounded
+    adjustments described in this module's docstring, in this order:
+    confidence -> reliability -> redundancy discount -> weight cap.
     """
     weights = {"bullish": 0.0, "bearish": 0.0, "neutral": 0.0}
     bullish_agents: list[str] = []
@@ -142,6 +218,9 @@ def compute_consensus(
         "neutral": neutral_agents,
     }
     per_agent_weight: dict[str, float] = {}
+    reporting_agents = {
+        name for name, output in agent_outputs.items() if output.direction is not None
+    }
 
     for name, output in agent_outputs.items():
         if output.direction is None:
@@ -154,9 +233,19 @@ def compute_consensus(
         )
         if reliability is not None and name in reliability:
             weight *= reliability[name] / 100.0
-        weights[output.direction] += weight
+        if redundancy_penalties:
+            penalty_pct = _agent_redundancy_penalty_pct(
+                name, reporting_agents, redundancy_penalties
+            )
+            weight *= 1 - penalty_pct / 100.0
         agents_by_direction[output.direction].append(name)
         per_agent_weight[name] = weight
+
+    if max_agent_weight_pct is not None:
+        per_agent_weight = _apply_max_weight_cap(per_agent_weight, max_agent_weight_pct)
+
+    for name, weight in per_agent_weight.items():
+        weights[agent_outputs[name].direction] += weight
 
     total_weight = sum(weights.values())
     if total_weight == 0:
@@ -252,14 +341,35 @@ class ConsensusEngine:
         agent_outputs = await self._agent_orchestrator.run_all()
 
         reliability: dict[str, float] | None = None
+        redundancy_penalties: dict[tuple[str, str], float] | None = None
         if self._reliability_engine is not None:
             try:
                 reliability = await self._reliability_engine.evaluate_reliability()
-                await self._reliability_engine.log(agent_outputs)
             except Exception:
                 logger.warning(
                     "Agent reliability tracking failed; continuing without it", exc_info=True
                 )
                 reliability = None
+            try:
+                correlations = await self._reliability_engine.evaluate_agent_correlations()
+                redundancy_penalties = {
+                    pair: data["redundancy_penalty_pct"] for pair, data in correlations.items()
+                }
+            except Exception:
+                logger.warning(
+                    "Agent correlation tracking failed; continuing without redundancy adjustment",
+                    exc_info=True,
+                )
+                redundancy_penalties = None
+            try:
+                await self._reliability_engine.log(agent_outputs)
+            except Exception:
+                logger.warning("Agent prediction logging failed", exc_info=True)
 
-        return compute_consensus(agent_outputs, reliability)
+        settings = get_settings()
+        return compute_consensus(
+            agent_outputs,
+            reliability,
+            redundancy_penalties,
+            settings.consensus_max_agent_weight_pct,
+        )
