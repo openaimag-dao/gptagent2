@@ -10,10 +10,12 @@ from app.services.shocks.detectors import (
     consensus_alignment_score,
     decide_alert_action,
     detect_multi_asset_shock,
+    forecast_change_score,
     gate_severity,
     historical_similarity_score,
     regime_alignment_score,
     regime_direction_bucket,
+    resolve_cooldown_minutes,
     score_alert_quality,
     should_notify,
     volatility_score,
@@ -273,3 +275,42 @@ def test_volatility_score_saturates():
     assert volatility_score(20.0, scale=10.0) == 100.0
     assert volatility_score(0.0, scale=10.0) == 0.0
     assert volatility_score(None) is None
+
+
+def test_resolve_cooldown_minutes_uses_configured_category():
+    config = {"price_event": 15, "regime_change": 60}
+    assert resolve_cooldown_minutes("price_event", config) == 15
+    assert resolve_cooldown_minutes("regime_change", config) == 60
+
+
+def test_resolve_cooldown_minutes_falls_back_to_default_for_unlisted_category():
+    config = {"price_event": 15}
+    assert resolve_cooldown_minutes("sector_ecosystem", config) == 120
+    assert resolve_cooldown_minutes("sector_ecosystem", config, default_minutes=60) == 60
+
+
+def test_resolve_cooldown_minutes_empty_config_is_a_no_op():
+    assert resolve_cooldown_minutes("price_event", {}) == 120
+
+
+def test_forecast_change_score_none_without_a_delta():
+    assert forecast_change_score(None) is None
+
+
+def test_forecast_change_score_saturates_at_scale():
+    assert forecast_change_score(20.0, scale=20.0) == 100.0
+    assert forecast_change_score(-20.0, scale=20.0) == 100.0  # magnitude, not sign
+    assert forecast_change_score(0.0, scale=20.0) == 0.0
+
+
+def test_forecast_change_score_scales_between_extremes():
+    assert forecast_change_score(10.0, scale=20.0) == 50.0
+
+
+def test_score_alert_quality_includes_forecast_change_when_present():
+    score_with = score_alert_quality({"volume": 50.0, "forecast_change": 100.0})
+    score_without = score_alert_quality({"volume": 50.0})
+    assert score_with is not None
+    assert score_without is not None
+    # forecast_change=100 pulls the composite above volume=50 alone.
+    assert score_with > score_without

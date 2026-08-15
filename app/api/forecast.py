@@ -70,6 +70,12 @@ async def get_forecast_history(symbol: str, limit: int = Query(20, le=100)) -> d
                 "realized_price": float(s.realized_price) if s.realized_price is not None else None,
                 "error_pct": float(s.error_pct) if s.error_pct is not None else None,
                 "evaluated_at": s.evaluated_at.isoformat() if s.evaluated_at is not None else None,
+                "forecast_version": s.forecast_version,
+                "forecast_status": s.forecast_status,
+                "invalidation_reason": s.invalidation_reason,
+                "invalidated_at": s.invalidated_at.isoformat()
+                if s.invalidated_at is not None
+                else None,
             }
             for s in snapshots
         ],

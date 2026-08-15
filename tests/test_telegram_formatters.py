@@ -17,6 +17,7 @@ from app.telegram.formatters import (
     format_active_shocks,
     format_advice,
     format_alert_history,
+    format_alert_performance,
     format_alert_rule_created,
     format_alert_rules,
     format_asset_class,
@@ -36,6 +37,7 @@ from app.telegram.formatters import (
     format_learning,
     format_market_summary,
     format_monthly_performance,
+    format_no_trade_verdict,
     format_onchain,
     format_opportunities,
     format_quality,
@@ -54,6 +56,7 @@ from app.telegram.formatters import (
     format_single_asset,
     format_status,
     format_technical,
+    format_trade_setup,
     format_watchdog,
     format_watchdog_brief,
     format_watchdog_market,
@@ -1462,6 +1465,127 @@ def test_format_technical_includes_high_confidence_alignment():
     assert "RSI oversold" in text
 
 
+def test_format_no_trade_verdict_none_when_no_forecast():
+    text = format_no_trade_verdict("BTC", None)
+    assert "No forecast available for BTC" in text
+
+
+def test_format_no_trade_verdict_trade_ok():
+    result = {
+        "recommendation": "TRADE_OK",
+        "reasons": [],
+        "direction": "Bullish",
+        "probability_pct": 72,
+    }
+    text = format_no_trade_verdict("BTC", result)
+    assert "TRADE OK" in text
+    assert "Bullish (72% probability)" in text
+    assert "No gating conditions triggered." in text
+
+
+def test_format_no_trade_verdict_no_trade_lists_reasons():
+    result = {
+        "recommendation": "NO_TRADE",
+        "reasons": [
+            {"code": "low_probability", "description": "Direction probability 40% below 55%"},
+            {"code": "extreme_volatility", "description": "Expected volatility 20% exceeds 15%"},
+        ],
+        "direction": "Neutral",
+        "probability_pct": 40,
+    }
+    text = format_no_trade_verdict("BTC", result)
+    assert "NO TRADE" in text
+    assert "Direction probability 40% below 55%" in text
+    assert "Expected volatility 20% exceeds 15%" in text
+
+
+def test_format_trade_setup_none_when_no_forecast():
+    text = format_trade_setup("BTC", None)
+    assert "No forecast available for BTC" in text
+
+
+def test_format_trade_setup_trade_ok_shows_levels():
+    result = {
+        "recommendation": "TRADE_OK",
+        "reasons": [],
+        "direction": "Bullish",
+        "probability_pct": 72,
+        "conviction_tier": "high",
+        "side": "BUY",
+        "entry_price": 100.0,
+        "stop_loss_price": 90.0,
+        "take_profit_price": 120.0,
+        "risk_reward_ratio": 2.0,
+        "invalidation_level": 95.0,
+    }
+    text = format_trade_setup("BTC", result)
+    assert "TRADE OK" in text
+    assert "Bullish (72% probability)" in text
+    assert "Side: *BUY*" in text
+    assert "Entry (reference): 100.0" in text
+    assert "Stop-loss: 90.0" in text
+    assert "Take-profit: 120.0" in text
+    assert "Risk:Reward: 1:2.0" in text
+    assert "Invalidation level: 95.0" in text
+
+
+def test_format_trade_setup_no_trade_lists_reasons():
+    result = {
+        "recommendation": "NO_TRADE",
+        "reasons": [
+            {"code": "no_directional_edge", "description": "Forecast direction is 'Neutral'"},
+        ],
+        "direction": "Neutral",
+        "probability_pct": 40,
+        "conviction_tier": "low",
+        "side": None,
+        "entry_price": 100.0,
+        "stop_loss_price": None,
+        "take_profit_price": None,
+        "risk_reward_ratio": None,
+        "invalidation_level": None,
+    }
+    text = format_trade_setup("BTC", result)
+    assert "NO TRADE" in text
+    assert "Forecast direction is 'Neutral'" in text
+    assert "Side:" not in text
+
+
+def test_format_alert_performance_no_data_yet():
+    summary = {
+        "graded_count": 0,
+        "significant_move_rate_pct": None,
+        "directional_alerts_count": 0,
+        "direction_continued_rate_pct": None,
+        "avg_abs_realized_move_pct": None,
+    }
+    text = format_alert_performance(summary, [])
+    assert "No alerts graded yet" in text
+
+
+def test_format_alert_performance_with_data():
+    summary = {
+        "graded_count": 10,
+        "significant_move_rate_pct": 60.0,
+        "directional_alerts_count": 6,
+        "direction_continued_rate_pct": 66.7,
+        "avg_abs_realized_move_pct": 4.2,
+    }
+    by_type = [
+        {"alert_type": "scanner:price_event", "graded_count": 7, "significant_move_rate_pct": 71.4},
+        {
+            "alert_type": "critical_shock:price_shock",
+            "graded_count": 3,
+            "significant_move_rate_pct": 33.3,
+        },
+    ]
+    text = format_alert_performance(summary, by_type)
+    assert "Graded alerts: 10" in text
+    assert "Significant-move rate: 60.0%" in text
+    assert "Direction-continued rate: 66.7%" in text
+    assert "scanner:price_event: 7 graded, 71.4% significant" in text
+
+
 def _scanner_detection():
     return {
         "category": "price_event",
@@ -1518,6 +1642,24 @@ def test_format_scanner_alert_includes_scenario_opportunity_and_threat():
     assert "Expected Scenario: Soft Landing (40%)" in text
     assert "Main Opportunity: Soft Landing (40%) -- risk-on continuation." in text
     assert "Main Risk: Risk Off (25%) -- broad de-risking." in text
+
+
+def test_format_scanner_alert_includes_forecast_context_when_present():
+    detection = _scanner_detection()
+    detection["forecast"] = {
+        "probability_pct": 72,
+        "direction": "Bullish",
+        "forecast_status": "ACTIVE",
+        "probability_change_pct": 17.0,
+    }
+    text = format_scanner_alert(detection)
+    assert "Forecast (24h): Bullish (72% probability)" in text
+    assert "Probability change since last forecast: +17.0pp" in text
+
+
+def test_format_scanner_alert_omits_forecast_section_when_absent():
+    text = format_scanner_alert(_scanner_detection())
+    assert "Forecast (24h):" not in text
 
 
 def test_format_scanner_alert_multi_asset_shock_lists_all_symbols():

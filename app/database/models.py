@@ -173,6 +173,11 @@ class MarketRegimeSnapshot(Base):
         )
     )
     inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 0-100: how much of the deciding cross-asset evidence was actually
+    # present when this regime was detected (see compute_regime_confidence).
+    # Nullable so pre-existing rows are honestly "unavailable", never
+    # backfilled with a guessed number.
+    confidence_pct: Mapped[int | None] = mapped_column(nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
@@ -426,6 +431,23 @@ class ProbabilitySnapshot(Base):
     prob_down_pct: Mapped[int] = mapped_column()
     prob_flat_pct: Mapped[int] = mapped_column()
     avg_forward_return_pct: Mapped[float] = mapped_column(Numeric(10, 4))
+    # Empirical forward-return distribution (percentiles, in %) across the
+    # same matched sample avg_forward_return_pct is the mean of -- the
+    # spread of what actually happened, not just its average. Nullable: a
+    # snapshot from before this column existed, or one whose sample was too
+    # small to compute quantiles from, stays honestly None.
+    p10_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p25_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p50_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p75_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p90_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # Whether the match sample was actually filtered by market regime (see
+    # compute_rsi_probability's regime_series/reference_regime params), and
+    # which regime it was filtered to -- honest even when the caller asked
+    # for regime-conditioning but there wasn't enough same-regime history
+    # and it fell back to the RSI-only sample.
+    regime_conditioned: Mapped[bool] = mapped_column(default=False)
+    reference_regime: Mapped[str | None] = mapped_column(String(30), nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
@@ -1168,6 +1190,62 @@ class PriceForecastSnapshot(Base):
     direction_correct: Mapped[bool | None] = mapped_column(nullable=True)
     confidence_correct: Mapped[bool | None] = mapped_column(nullable=True)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # V9: this table was already append-only by construction (always
+    # INSERT, never UPDATE-in-place) -- forecast_version makes that
+    # lineage explicit: the Nth forecast computed for this (symbol,
+    # horizon) pair, never reused or overwritten. regime_at_forecast is the
+    # raw MarketRegime.value active when this row was computed (distinct
+    # from the presentation-only `regime` label in the API payload),
+    # recorded so a later cycle can detect "the regime this forecast was
+    # conditioned on has since changed" -- see app/services/forecast/
+    # invalidation.py. forecast_status/invalidation_reason/invalidated_at
+    # are filled in by check_and_invalidate_forecasts(), independent of
+    # (and can fire before) the horizon-elapsed grading job above.
+    forecast_version: Mapped[int] = mapped_column(default=1)
+    regime_at_forecast: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    forecast_status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    invalidation_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class AlertPerformanceGrade(Base):
+    """V9 Increment 9: Alert Performance Analytics -- one row per graded
+    AlertLog entry, filled in by app.services.alert_performance.engine's
+    grading job once its own horizon has elapsed in stored history. A
+    separate table rather than new columns on AlertLog: AlertLog is shared,
+    append-only, and written by four different alert-producing systems
+    (Smart Alert Engine, AlertRuleEngine, the v5.1 Critical Alert System,
+    the v5.5 Market Scanner) with different `data` shapes -- grading lives
+    here so none of those writers need to change.
+
+    `symbol`/`implied_direction` are best-effort, honestly-resolved reads
+    of the source AlertLog row's own `data` JSON (see
+    app.services.alert_performance.engine.resolve_alert_symbol /
+    resolve_alert_direction) -- an alert whose `data` has no resolvable
+    symbol is simply never graded (no row here), never guessed.
+    `implied_direction` is `None` whenever the alert's own data made no
+    directional claim (e.g. a volume-spike or regime-change alert), in
+    which case `direction_continued` also stays `None` -- there is nothing
+    to grade right or wrong. `significant_move` is the one grade every
+    gradable alert gets: did a real move of at least the configured
+    threshold happen afterward, regardless of direction -- "was this alert
+    followed by something that actually mattered, or was it noise"."""
+
+    __tablename__ = "alert_performance_grades"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    alert_log_id: Mapped[int] = mapped_column(index=True, unique=True)
+    alert_type: Mapped[str] = mapped_column(String(40), index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    horizon_days: Mapped[int] = mapped_column()
+    reference_price: Mapped[float] = mapped_column(Numeric(24, 8))
+    evaluated_price: Mapped[float] = mapped_column(Numeric(24, 8))
+    realized_move_pct: Mapped[float] = mapped_column(Numeric(10, 4))
+    significant_move: Mapped[bool] = mapped_column()
+    implied_direction: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    direction_continued: Mapped[bool | None] = mapped_column(nullable=True)
+    graded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

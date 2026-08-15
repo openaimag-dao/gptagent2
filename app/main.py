@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.accuracy import router as accuracy_router
 from app.api.admin import router as admin_router
 from app.api.agents import router as agents_router
+from app.api.alert_performance import router as alert_performance_router
 from app.api.alerts import router as alerts_router
 from app.api.backtest import router as backtest_router
 from app.api.brain import router as brain_router
@@ -36,6 +37,7 @@ from app.api.liquidity import router as liquidity_router
 from app.api.market import router as market_router
 from app.api.memory import router as memory_router
 from app.api.news import router as news_router
+from app.api.no_trade import router as no_trade_router
 from app.api.onchain import router as onchain_router
 from app.api.opportunities import router as opportunities_router
 from app.api.patterns import router as patterns_router
@@ -58,6 +60,7 @@ from app.api.status import router as status_router
 from app.api.strategy import router as strategy_router
 from app.api.technical import router as technical_router
 from app.api.terminal import router as terminal_router
+from app.api.trade_setup import router as trade_setup_router
 from app.api.watchdog import router as watchdog_router
 from app.api.whales import router as whales_router
 from app.api.whatif import router as whatif_router
@@ -104,6 +107,7 @@ app.include_router(events_router)
 app.include_router(calendar_router)
 app.include_router(features_router)
 app.include_router(forecast_router)
+app.include_router(no_trade_router)
 app.include_router(research_router)
 app.include_router(strategy_router)
 app.include_router(hypothesis_router)
@@ -139,12 +143,14 @@ app.include_router(breakout_router)
 app.include_router(onchain_router)
 app.include_router(opportunities_router)
 app.include_router(alerts_router)
+app.include_router(alert_performance_router)
 app.include_router(shocks_router)
 app.include_router(technical_router)
 app.include_router(watchdog_router)
 app.include_router(scanner_router)
 app.include_router(executive_summary_router)
 app.include_router(accuracy_router)
+app.include_router(trade_setup_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

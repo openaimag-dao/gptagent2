@@ -5,21 +5,16 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database.models import (
-    AssetClass,
-    AssetPrice,
-    CryptoHistory,
-    HistoricalEvent,
-    MacroHistory,
-    MarketHistory,
-    SimilarMarketMatch,
-)
-from app.services.analysis.regime import MarketRegime, detect_regime
+from app.database.models import HistoricalEvent, SimilarMarketMatch
+from app.services.analysis.regime import build_regime_index, reconstruct_regime_at
 from app.services.backtest.metrics import compute_backtest_metrics, compute_win_rate_pct
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
 from app.services.knowledge.analysis import find_similar_episodes
-from app.services.probability.engine import compute_forward_returns
+from app.services.probability.engine import (
+    compute_forward_return_quantiles,
+    compute_forward_returns,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,73 +22,6 @@ _MIN_HISTORY_LENGTH = 30
 _DEFAULT_K = 25
 _FORWARD_HORIZONS = (1, 3, 7, 30)
 _DEFAULT_EVENT_WINDOW_DAYS = 14
-
-# Symbols detect_regime() needs to reconstruct a historical regime tag for a
-# past date -- reused as-is, never reimplemented, so a historical regime tag
-# means exactly the same thing as a live one.
-_REGIME_SYMBOL_TABLES: dict[str, type] = {
-    "SPX": MarketHistory,
-    "BTC": CryptoHistory,
-    "VIX": MacroHistory,
-    "DXY": MacroHistory,
-    "GOLD": MacroHistory,
-    "US10Y": MacroHistory,
-    "FEDRATE": MacroHistory,
-}
-_REGIME_SYMBOL_ASSET_CLASS: dict[str, AssetClass] = {
-    "SPX": AssetClass.INDEX,
-    "BTC": AssetClass.CRYPTO,
-    "VIX": AssetClass.MACRO,
-    "DXY": AssetClass.MACRO,
-    "GOLD": AssetClass.MACRO,
-    "US10Y": AssetClass.MACRO,
-    "FEDRATE": AssetClass.MACRO,
-}
-
-
-async def _build_regime_index(
-    session_factory: async_sessionmaker[AsyncSession], timeframe: Timeframe
-) -> dict[str, dict]:
-    """{symbol: {timestamp: history_row}} for every symbol detect_regime() needs.
-    Missing symbols (not yet synced) are simply absent -- degrades to a lower
-    regime-reconstruction rate rather than failing outright."""
-    index: dict[str, dict] = {}
-    for symbol, model in _REGIME_SYMBOL_TABLES.items():
-        try:
-            rows = await get_series(session_factory, model, symbol, timeframe)
-        except Exception:
-            rows = []
-        index[symbol] = {r.timestamp: r for r in rows}
-    return index
-
-
-def _reconstruct_regime_at(regime_index: dict[str, dict], timestamp) -> MarketRegime | None:
-    assets = []
-    for symbol in _REGIME_SYMBOL_TABLES:
-        row = regime_index.get(symbol, {}).get(timestamp)
-        if row is None or row.return_pct is None:
-            continue
-        return_pct = float(row.return_pct)
-        change_pct = return_pct * 100
-        change_abs = return_pct * float(row.close)
-        assets.append(
-            AssetPrice(
-                symbol=symbol,
-                name=symbol,
-                asset_class=_REGIME_SYMBOL_ASSET_CLASS[symbol],
-                price=row.close,
-                change_pct_24h=change_pct,
-                change_24h=change_abs,
-                source="history_reconstruction",
-            )
-        )
-    # detect_regime's rules need at least the risk-on/off quartet to say
-    # anything more specific than "not enough data" -- below that, be honest
-    # and return None rather than a low-confidence guess.
-    if len(assets) < 4:
-        return None
-    regime, _ = detect_regime(assets)
-    return regime
 
 
 # The forward horizon "Average outcome"/"Probability" answer -- 7 trading
@@ -180,6 +108,12 @@ def build_historical_lesson(symbol: str, matches: list[dict]) -> dict | None:
         "typical_duration": typical_duration,
         "dominant_regime": dominant_regime,
         "main_lesson": main_lesson,
+        # The empirical spread of outcomes across these same K matches, not
+        # just their average -- p10..p90 of primary_returns (already the
+        # fraction-form list average_outcome_pct/win_rate_pct are computed
+        # from), reusing compute_forward_return_quantiles rather than a
+        # second percentile implementation.
+        "outcome_distribution_pct": compute_forward_return_quantiles(primary_returns),
     }
 
 
@@ -211,6 +145,7 @@ class SimilarMarketEngine:
         k: int = _DEFAULT_K,
         include_nearby_events: bool = False,
         event_window_days: int = _DEFAULT_EVENT_WINDOW_DAYS,
+        regime_aware: bool = False,
     ) -> list[dict]:
         rows = await get_series(self._session_factory, model, symbol, timeframe)
         if len(rows) < _MIN_HISTORY_LENGTH:
@@ -227,16 +162,33 @@ class SimilarMarketEngine:
         if current_rsi is None:
             return []
 
+        # Built once here (not per-match) so it can both drive the optional
+        # regime-aware candidate filter below and the post-hoc per-match
+        # market_regime tagging that already happened unconditionally.
+        regime_index = await build_regime_index(self._session_factory, timeframe)
+        btc_index = regime_index["BTC"] if symbol != "BTC" else {r.timestamp: r for r in rows}
+        nasdaq_index = regime_index["SPX"]
+
+        episode_regime_series: list[str | None] | None = None
+        episode_reference_regime: str | None = None
+        if regime_aware:
+            reconstructed = [reconstruct_regime_at(regime_index, ts) for ts in timestamps]
+            episode_regime_series = [r.value if r is not None else None for r in reconstructed]
+            episode_reference_regime = episode_regime_series[-1]
+
         episodes = find_similar_episodes(
-            rsi_series, volatility_series, timestamps, current_rsi, volatility_series[-1], k=k
+            rsi_series,
+            volatility_series,
+            timestamps,
+            current_rsi,
+            volatility_series[-1],
+            k=k,
+            regime_series=episode_regime_series,
+            reference_regime=episode_reference_regime,
         )
         forward_by_horizon = {
             h: compute_forward_returns(returns_series, horizon=h) for h in _FORWARD_HORIZONS
         }
-
-        regime_index = await _build_regime_index(self._session_factory, timeframe)
-        btc_index = regime_index["BTC"] if symbol != "BTC" else {r.timestamp: r for r in rows}
-        nasdaq_index = regime_index["SPX"]
 
         # Nearby-event lookup (ex-Knowledge Engine): fetched once per call,
         # not once per match, and only when a caller actually wants to
@@ -254,7 +206,7 @@ class SimilarMarketEngine:
             idx = episode["index"]
             distance = episode["distance"]
             similarity = round(100 / (1 + distance), 1)
-            regime = _reconstruct_regime_at(regime_index, episode["timestamp"])
+            regime = reconstruct_regime_at(regime_index, episode["timestamp"])
             btc_row = btc_index.get(episode["timestamp"])
             nasdaq_row = nasdaq_index.get(episode["timestamp"])
 
@@ -298,10 +250,13 @@ class SimilarMarketEngine:
         model: type,
         timeframe: Timeframe = Timeframe.DAILY,
         k: int = _DEFAULT_K,
+        regime_aware: bool = False,
     ) -> list[dict]:
         """Same as find_similar_periods, but persists every comparison to
         similar_market_matches for later audit/review."""
-        matches = await self.find_similar_periods(symbol, model, timeframe, k)
+        matches = await self.find_similar_periods(
+            symbol, model, timeframe, k, regime_aware=regime_aware
+        )
         if not matches:
             return matches
 

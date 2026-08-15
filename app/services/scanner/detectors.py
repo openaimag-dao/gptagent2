@@ -19,19 +19,59 @@ DEFAULT_PRICE_LADDER: tuple[float, float, float, float] = (3.0, 5.0, 8.0, 10.0)
 # give specific symbols a tighter/looser ladder.
 PRICE_LADDER_OVERRIDES: dict[str, tuple[float, float, float, float]] = {}
 
+# DEFAULT_PRICE_LADDER's absolute percentages were sized around roughly
+# BTC's typical realized daily volatility -- a symbol trading at a
+# materially different realized volatility gets its ladder scaled
+# proportionally instead of being compared against the same flat
+# thresholds as BTC (a 3% move is routine for a name that swings 15%/day,
+# and unusually large for one that swings 1%/day).
+_REFERENCE_VOLATILITY_PCT = 2.0
+_DEFAULT_VOL_MULTIPLIER_MIN = 0.5
+_DEFAULT_VOL_MULTIPLIER_MAX = 2.5
+
 _SEVERITY_LABELS: tuple[str, ...] = ("info", "important", "high", "critical")
 
 
-def price_ladder_for(symbol: str) -> tuple[float, float, float, float]:
-    return PRICE_LADDER_OVERRIDES.get(symbol.upper(), DEFAULT_PRICE_LADDER)
+def price_ladder_for(
+    symbol: str,
+    realized_volatility_pct: float | None = None,
+    reference_volatility_pct: float = _REFERENCE_VOLATILITY_PCT,
+    min_multiplier: float = _DEFAULT_VOL_MULTIPLIER_MIN,
+    max_multiplier: float = _DEFAULT_VOL_MULTIPLIER_MAX,
+) -> tuple[float, float, float, float]:
+    """`realized_volatility_pct` (this symbol's own recent realized
+    volatility, e.g. from compute_realized_volatility) is optional --
+    omitted (the default), this returns the flat unscaled ladder exactly
+    as before. Given, the ladder is scaled by
+    realized_volatility_pct/reference_volatility_pct, clamped to
+    [min_multiplier, max_multiplier] so one extremely quiet or extremely
+    volatile reading can't collapse or blow out the thresholds entirely.
+    """
+    base = PRICE_LADDER_OVERRIDES.get(symbol.upper(), DEFAULT_PRICE_LADDER)
+    if realized_volatility_pct is None or realized_volatility_pct <= 0:
+        return base
+    ratio = realized_volatility_pct / reference_volatility_pct
+    multiplier = max(min_multiplier, min(max_multiplier, ratio))
+    return tuple(round(threshold * multiplier, 4) for threshold in base)
 
 
-def classify_price_event(symbol: str, pct_change: float | None) -> dict | None:
+def classify_price_event(
+    symbol: str,
+    pct_change: float | None,
+    realized_volatility_pct: float | None = None,
+    min_multiplier: float = _DEFAULT_VOL_MULTIPLIER_MIN,
+    max_multiplier: float = _DEFAULT_VOL_MULTIPLIER_MAX,
+) -> dict | None:
     """Highest tier whose threshold |pct_change| clears, or None below
     "info"."""
     if pct_change is None:
         return None
-    ladder = price_ladder_for(symbol)
+    ladder = price_ladder_for(
+        symbol,
+        realized_volatility_pct,
+        min_multiplier=min_multiplier,
+        max_multiplier=max_multiplier,
+    )
     magnitude = abs(pct_change)
     tier = None
     for label, threshold in zip(_SEVERITY_LABELS, ladder, strict=True):

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.shocks.engine import CriticalAlertEngine
 
-_SETTINGS_WITH_CHAT = SimpleNamespace(telegram_broadcast_chat_ids="123")
+_SETTINGS_WITH_CHAT = SimpleNamespace(telegram_broadcast_chat_ids="123", alert_cooldown_minutes={})
 
 
 def _patched_settings():

@@ -142,3 +142,73 @@ class Settings(BaseSettings):
     scanner_interval_minutes: int = 15
     scanner_universe_refresh_hours: int = 24
     http_timeout_seconds: float = 15.0
+
+    # ---- Forecast / Prediction Quality (V9) ----
+    # Width in percentage points of each Prediction Quality Lab calibration
+    # bucket (app/services/quality/metrics.py compute_calibration) -- 10
+    # gives a finer-grained "is 70% confidence actually right 70% of the
+    # time" curve than the previous fixed 20pp bins, at the cost of thinner
+    # per-bucket sample sizes. Config-driven so this can be tuned without a
+    # code change as more graded predictions accumulate.
+    calibration_bin_width_pct: int = 10
+
+    # ---- Alert config (V9) ----
+    # Per-category cooldown in minutes, read via
+    # app.services.shocks.detectors.resolve_cooldown_minutes(). A category
+    # left out of this dict keeps this project's original hardcoded
+    # default (120 min for Scanner/CriticalAlertEngine episode staleness,
+    # 60 min for AlertEngine's own re-broadcast gate) -- these were
+    # previously the ONLY value every category shared, now per-category
+    # and tunable without a code change. "critical" is a distinct override
+    # applied on top of a detection's own category cooldown whenever its
+    # gated tier is "critical" -- 0 minutes means a critical-tier episode
+    # is never treated as "already notified, suppress" the way lower
+    # tiers are.
+    alert_cooldown_minutes: dict[str, int] = {
+        "price_event": 15,
+        "price_shock": 15,
+        "volume_spike": 20,
+        "breakout": 30,
+        "regime_change": 60,
+        "forecast_change": 30,
+        "multi_asset_shock": 30,
+        "crypto_market_shock": 30,
+        "sector_ecosystem": 30,
+        "critical": 0,
+    }
+    # Bounds on the realized-volatility ratio multiplier applied to
+    # app.services.scanner.detectors.price_ladder_for()'s DEFAULT_PRICE_LADDER
+    # -- a 3% move means something very different for BTC (typically ~1-2%
+    # daily volatility) than for a small-cap swinging 15%/day, so the
+    # ladder scales with how volatile a symbol has actually been recently
+    # rather than staying a flat absolute percentage for every symbol.
+    volatility_ladder_min_multiplier: float = 0.5
+    volatility_ladder_max_multiplier: float = 2.5
+
+    # ---- Agent reliability weighting (V9 Increment 8) ----
+    # AgentReliabilityEngine's per-agent accuracy is a Bayesian shrinkage
+    # estimate toward an uninformative 50% prior, weighted by this many
+    # pseudo-observations -- a brand-new agent with 1-2 evaluated calls sits
+    # close to 50% (its raw accuracy is too noisy to trust yet); an agent
+    # with a long track record is barely pulled off its raw accuracy at
+    # all. Higher = more conservative (needs more evaluated calls before
+    # its own accuracy is trusted).
+    reliability_shrinkage_pseudo_count: int = 10
+    # Half-life in days for recency-weighting each evaluated prediction
+    # before it's folded into an agent's accuracy -- a call from
+    # half_life_days ago counts for half as much as one made today, so
+    # reliability tracks an agent's CURRENT edge rather than its all-time
+    # average (a regime shift that broke a previously-good agent shows up
+    # within roughly one half-life instead of being diluted forever).
+    reliability_recency_half_life_days: float = 30.0
+
+    # ---- Alert performance analytics (V9 Increment 9) ----
+    # How many days after an alert fires to look up its symbol's forward
+    # price change -- an alert is only gradable once real synced history
+    # reaches this far past `triggered_at` (never guessed early).
+    alert_grading_horizon_days: int = 3
+    # Minimum |realized_move_pct| over that horizon to count as a
+    # "significant" (non-noise) move -- the one hit-rate every gradable
+    # alert type gets, independent of whether the alert made a directional
+    # claim.
+    alert_grading_significant_move_pct: float = 3.0

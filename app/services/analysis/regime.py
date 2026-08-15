@@ -5,7 +5,18 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.database.models import AssetPrice, FeatureSnapshot, MarketRegimeSnapshot, WhaleSnapshot
+from app.database.models import (
+    AssetClass,
+    AssetPrice,
+    CryptoHistory,
+    FeatureSnapshot,
+    MacroHistory,
+    MarketHistory,
+    MarketRegimeSnapshot,
+    WhaleSnapshot,
+)
+from app.services.history.repository import get_series
+from app.services.history.schemas import Timeframe
 from app.services.market.repository import MarketRepository
 
 logger = logging.getLogger(__name__)
@@ -19,6 +30,43 @@ _BULL_WEAKENING_DECEL_PCT = 5.0
 _ALTSEASON_BTC_DOMINANCE_DROP_PCT = -1.0
 _ALTSEASON_ALT_RALLY_PCT = 3.0
 _SIDEWAYS_MAX_MOVE_PCT = 0.3
+
+# Symbols detect_regime() needs to reconstruct a historical regime tag for a
+# past date -- shared by RegimeDetector's own live confidence scoring and by
+# SimilarMarketEngine's per-analogue regime tagging, so both mean exactly the
+# same thing by "the regime on date X" (single reconstruction, not two).
+_REGIME_SYMBOL_TABLES: dict[str, type] = {
+    "SPX": MarketHistory,
+    "BTC": CryptoHistory,
+    "VIX": MacroHistory,
+    "DXY": MacroHistory,
+    "GOLD": MacroHistory,
+    "US10Y": MacroHistory,
+    "FEDRATE": MacroHistory,
+}
+_REGIME_SYMBOL_ASSET_CLASS: dict[str, AssetClass] = {
+    "SPX": AssetClass.INDEX,
+    "BTC": AssetClass.CRYPTO,
+    "VIX": AssetClass.MACRO,
+    "DXY": AssetClass.MACRO,
+    "GOLD": AssetClass.MACRO,
+    "US10Y": AssetClass.MACRO,
+    "FEDRATE": AssetClass.MACRO,
+}
+
+# regime_confidence tiers -- how much of the deciding evidence was actually
+# present, never a second guess at whether the label itself is "right".
+_REGIME_CONFIDENCE_HIGH = 85
+_REGIME_CONFIDENCE_MEDIUM = 60
+_REGIME_CONFIDENCE_LOW = 30
+_CORE_REGIME_INPUTS: tuple[str, ...] = (
+    "spx_change_pct",
+    "btc_change_pct",
+    "vix_change_pct",
+    "dxy_change_pct",
+    "gold_change_pct",
+    "us10y_change",
+)
 
 
 class MarketRegime(str, enum.Enum):
@@ -212,6 +260,88 @@ def detect_regime(
     return MarketRegime.NEUTRAL, inputs
 
 
+def compute_regime_confidence(regime: MarketRegime, inputs: dict[str, Any]) -> int:
+    """0-100 heuristic confidence in the detected regime *label itself* --
+    how much of the deciding cross-asset evidence was actually available,
+    not a second opinion on whether the rule fired correctly. NEUTRAL is
+    detect_regime()'s own disagreement/insufficient-data fallback, so it is
+    always LOW: a "no clear regime" read is not a confident one. Otherwise
+    scaled by how many of the core macro inputs every rule branch reads from
+    (`_CORE_REGIME_INPUTS`) were non-None on the snapshot that produced this
+    regime -- reuses the same `inputs` dict detect_regime() already returns
+    for auditability, never a fabricated second signal.
+    """
+    if regime is MarketRegime.NEUTRAL:
+        return _REGIME_CONFIDENCE_LOW
+    present = sum(1 for key in _CORE_REGIME_INPUTS if inputs.get(key) is not None)
+    completeness_pct = 100 * present / len(_CORE_REGIME_INPUTS)
+    if completeness_pct >= 100:
+        return _REGIME_CONFIDENCE_HIGH
+    if completeness_pct >= 60:
+        return _REGIME_CONFIDENCE_MEDIUM
+    return _REGIME_CONFIDENCE_LOW
+
+
+def regime_confidence_label(confidence_pct: int | None) -> str:
+    """Presentation alias over compute_regime_confidence's number -- the
+    LOW/MEDIUM/HIGH wording the dashboard/Telegram surfaces show."""
+    if confidence_pct is None:
+        return "unavailable"
+    if confidence_pct >= _REGIME_CONFIDENCE_HIGH:
+        return "high"
+    if confidence_pct >= _REGIME_CONFIDENCE_MEDIUM:
+        return "medium"
+    return "low"
+
+
+async def build_regime_index(
+    session_factory: async_sessionmaker[AsyncSession], timeframe: Timeframe
+) -> dict[str, dict]:
+    """{symbol: {timestamp: history_row}} for every symbol detect_regime()
+    needs, to reconstruct a historical regime tag for any past date. Missing
+    symbols (not yet synced) are simply absent -- degrades to a lower
+    regime-reconstruction rate rather than failing outright."""
+    index: dict[str, dict] = {}
+    for symbol, model in _REGIME_SYMBOL_TABLES.items():
+        try:
+            rows = await get_series(session_factory, model, symbol, timeframe)
+        except Exception:
+            rows = []
+        index[symbol] = {r.timestamp: r for r in rows}
+    return index
+
+
+def reconstruct_regime_at(regime_index: dict[str, dict], timestamp) -> MarketRegime | None:
+    """The regime label detect_regime() would have produced on `timestamp`,
+    rebuilt from stored history rather than a fresh live snapshot."""
+    assets = []
+    for symbol in _REGIME_SYMBOL_TABLES:
+        row = regime_index.get(symbol, {}).get(timestamp)
+        if row is None or row.return_pct is None:
+            continue
+        return_pct = float(row.return_pct)
+        change_pct = return_pct * 100
+        change_abs = return_pct * float(row.close)
+        assets.append(
+            AssetPrice(
+                symbol=symbol,
+                name=symbol,
+                asset_class=_REGIME_SYMBOL_ASSET_CLASS[symbol],
+                price=row.close,
+                change_pct_24h=change_pct,
+                change_24h=change_abs,
+                source="history_reconstruction",
+            )
+        )
+    # detect_regime's rules need at least the risk-on/off quartet to say
+    # anything more specific than "not enough data" -- below that, be honest
+    # and return None rather than a low-confidence guess.
+    if len(assets) < 4:
+        return None
+    regime, _ = detect_regime(assets)
+    return regime
+
+
 class RegimeDetector:
     """Detects and persists the current market regime from the latest snapshot."""
 
@@ -275,7 +405,8 @@ class RegimeDetector:
             previous_momentum_30d=previous_momentum_30d,
         )
 
-        snapshot = MarketRegimeSnapshot(regime=regime, inputs=inputs)
+        confidence_pct = compute_regime_confidence(regime, inputs)
+        snapshot = MarketRegimeSnapshot(regime=regime, inputs=inputs, confidence_pct=confidence_pct)
         async with self._session_factory() as session:
             session.add(snapshot)
             await session.commit()

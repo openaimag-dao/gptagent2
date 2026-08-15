@@ -12,6 +12,10 @@ from app.database.models import AssetClass, CryptoHistory, HistoricalEvent
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.agents.orchestrator import build_agent_orchestrator
+from app.services.alert_performance.engine import (
+    summarize_alert_performance,
+    summarize_alert_performance_by_type,
+)
 from app.services.alerts.rules import VALID_METRICS, VALID_OPERATORS, build_alert_rule_engine
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import RegimeDetector
@@ -66,6 +70,8 @@ from app.services.signals.engine import SignalEngine
 from app.services.similar_market.engine import SimilarMarketEngine, build_historical_lesson
 from app.services.technical.engine import build_technical_analysis_engine
 from app.services.terminal.engine import TerminalEngine
+from app.services.trade_setup.engine import evaluate_trade_setup_for_symbol
+from app.services.trade_setup.no_trade import evaluate_no_trade_for_symbol
 from app.services.watchdog.engine import build_watchdog_engine
 from app.services.whales.engine import WhaleIntelligenceEngine
 from app.services.whatif.engine import WhatIfSimulator
@@ -74,6 +80,7 @@ from app.telegram.formatters import (
     format_advice,
     format_agent_outputs,
     format_alert_history,
+    format_alert_performance,
     format_alert_rule_created,
     format_alert_rules,
     format_asset_class,
@@ -101,6 +108,7 @@ from app.telegram.formatters import (
     format_monte_carlo,
     format_monthly_performance,
     format_news,
+    format_no_trade_verdict,
     format_onchain,
     format_opportunities,
     format_patterns,
@@ -124,6 +132,7 @@ from app.telegram.formatters import (
     format_status,
     format_strategy_result,
     format_technical,
+    format_trade_setup,
     format_walk_forward,
     format_watchdog,
     format_watchdog_ai,
@@ -249,7 +258,15 @@ HELP_TEXT = (
     "/technical [SYMBOL] -- v5.3 AI-interpreted technical analysis (TradingView MCP "
     "Institutional Technical Analysis Provider, multi-timeframe): bullish/bearish score, "
     "trend, momentum, breakout/breakdown probability, active signals -- never raw "
-    "indicator values (e.g. /technical BTC)"
+    "indicator values (e.g. /technical BTC)\n"
+    "/notrade [SYMBOL] -- NO-TRADE Engine: TRADE_OK or NO_TRADE and why (insufficient "
+    "sample, low probability, conflicting agents, extreme volatility, regime uncertainty, "
+    "an invalidated forecast, or stale data) -- never forced into always producing a call\n"
+    "/tradesetup [SYMBOL] -- Trade Setup Engine: entry/stop-loss/take-profit/invalidation "
+    "level derived from the forecast's own ATR band and key levels, gated by NO-TRADE "
+    "(never a setup for a symbol NO-TRADE has already flagged)\n"
+    "/alertperformance -- real, graded hit-rate of past alerts (did a significant move "
+    "actually follow, and did it continue the alert's own implied direction)"
 )
 
 # Registered with Telegram via Bot.set_my_commands() so the client's "/" menu
@@ -317,6 +334,9 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("replay", "Latest consolidated market snapshot"),
     ("shocks", "Active Autonomous Critical Alert System episodes"),
     ("technical", "AI-interpreted technical analysis (TradingView MCP provider)"),
+    ("notrade", "NO-TRADE Engine: is this symbol's forecast actually trade-actionable"),
+    ("tradesetup", "Trade Setup Engine: entry/stop-loss/take-profit/invalidation level"),
+    ("alertperformance", "Real, graded hit-rate of past alerts"),
 ]
 
 
@@ -1330,6 +1350,28 @@ async def cmd_technical(message: Message, command: CommandObject) -> None:
     if result is None:
         result = await engine.analyze(symbol)
     await _answer(message, format_technical(symbol, result))
+
+
+@router.message(Command("notrade"))
+async def cmd_notrade(message: Message, command: CommandObject) -> None:
+    symbol = (command.args or "BTC").strip().upper()
+    result = await evaluate_no_trade_for_symbol(get_session_factory(), symbol)
+    await _answer(message, format_no_trade_verdict(symbol, result))
+
+
+@router.message(Command("tradesetup"))
+async def cmd_tradesetup(message: Message, command: CommandObject) -> None:
+    symbol = (command.args or "BTC").strip().upper()
+    result = await evaluate_trade_setup_for_symbol(get_session_factory(), symbol)
+    await _answer(message, format_trade_setup(symbol, result))
+
+
+@router.message(Command("alertperformance"))
+async def cmd_alert_performance(message: Message) -> None:
+    session_factory = get_session_factory()
+    summary = await summarize_alert_performance(session_factory)
+    by_type = await summarize_alert_performance_by_type(session_factory)
+    await _answer(message, format_alert_performance(summary, by_type))
 
 
 @router.message(Command("status"))

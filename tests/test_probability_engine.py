@@ -1,6 +1,10 @@
 import pytest
 
-from app.services.probability.engine import compute_forward_returns, compute_rsi_probability
+from app.services.probability.engine import (
+    compute_forward_return_quantiles,
+    compute_forward_returns,
+    compute_rsi_probability,
+)
 
 
 def test_compute_forward_returns_shifts_back_by_horizon():
@@ -76,3 +80,92 @@ def test_compute_rsi_probability_ignores_out_of_bucket_points():
     assert result["prob_up_pct"] == round(100 * positive / len(matched_forward))
     # The rsi==10 block (all negative forward returns) must be excluded from the bucket.
     assert result["prob_up_pct"] >= 80
+
+
+def test_compute_forward_return_quantiles_empty_returns_none():
+    assert compute_forward_return_quantiles([]) is None
+
+
+def test_compute_forward_return_quantiles_median_of_odd_sample():
+    # fractions, matching compute_rsi_probability's own "matches" convention
+    matches = [-0.02, -0.01, 0.0, 0.01, 0.02]
+    result = compute_forward_return_quantiles(matches)
+    assert result["p50_pct"] == pytest.approx(0.0)
+    assert result["p10_pct"] < result["p25_pct"] < result["p50_pct"]
+    assert result["p50_pct"] < result["p75_pct"] < result["p90_pct"]
+
+
+def test_compute_forward_return_quantiles_single_value_is_flat():
+    result = compute_forward_return_quantiles([0.05])
+    assert result == {
+        "p10_pct": 5.0,
+        "p25_pct": 5.0,
+        "p50_pct": 5.0,
+        "p75_pct": 5.0,
+        "p90_pct": 5.0,
+    }
+
+
+def test_compute_rsi_probability_includes_quantiles_and_defaults_unconditioned():
+    rsi_series = [50.0] * 10 + [90.0]
+    returns_series = [0.01, -0.01] * 5 + [0.0]
+
+    result = compute_rsi_probability(
+        rsi_series, returns_series, reference_rsi=50.0, bucket_width=10.0, min_sample_size=5
+    )
+
+    assert result["regime_conditioned"] is False
+    assert result["reference_regime"] is None
+    assert result["p50_pct"] is not None
+    assert result["p10_pct"] <= result["p50_pct"] <= result["p90_pct"]
+
+
+def test_compute_rsi_probability_regime_conditioning_narrows_the_sample():
+    # 10 RSI-matching points: 6 tagged "bull" (all positive forward returns),
+    # 4 tagged "bear" (all negative) -- regime-conditioning on "bull" should
+    # isolate the 6 positive-only matches instead of the mixed 10. Forward
+    # returns are shifted one index ahead of the regime tag (index i's
+    # forward return is returns_series[i+1]), so returns_series[1:7] (not
+    # [0:6]) are the ones that land in the "bull"-tagged forward window.
+    rsi_series = [50.0] * 10 + [90.0]
+    returns_series = [0.0] + [0.02] * 6 + [-0.02] * 4
+    regime_series = ["bull"] * 6 + ["bear"] * 4 + [None]
+
+    result = compute_rsi_probability(
+        rsi_series,
+        returns_series,
+        reference_rsi=50.0,
+        bucket_width=10.0,
+        min_sample_size=5,
+        regime_series=regime_series,
+        reference_regime="bull",
+    )
+
+    assert result is not None
+    assert result["regime_conditioned"] is True
+    assert result["reference_regime"] == "bull"
+    assert result["sample_size"] == 6
+    assert result["prob_up_pct"] == 100
+
+
+def test_compute_rsi_probability_falls_back_when_regime_sample_too_small():
+    # Only 2 "bull"-tagged matches (below min_sample_size=5) -- must fall
+    # back to the full 10-point RSI-only sample rather than returning None.
+    rsi_series = [50.0] * 10 + [90.0]
+    returns_series = [0.01, -0.01] * 5 + [0.0]
+    regime_series = ["bull"] * 2 + ["bear"] * 8 + [None]
+
+    result = compute_rsi_probability(
+        rsi_series,
+        returns_series,
+        reference_rsi=50.0,
+        bucket_width=10.0,
+        min_sample_size=5,
+        regime_series=regime_series,
+        reference_regime="bull",
+    )
+
+    assert result is not None
+    assert result["regime_conditioned"] is False
+    assert result["reference_regime"] is None
+    assert result["sample_size"] == 10

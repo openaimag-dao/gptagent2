@@ -1627,6 +1627,20 @@ def format_scanner_alert(detection: dict) -> str:
         lines.append(f"Main Opportunity: {ctx['biggest_opportunity']}")
     if ctx.get("highest_risk"):
         lines.append(f"Main Risk: {ctx['highest_risk']}")
+
+    # V9: Scanner event -> Forecast recompute -> richer alert. Only present
+    # when this detection's tier cleared the recompute gate AND the symbol
+    # has a historical registry entry ForecastEngine can actually use
+    # (app.services.scanner.engine._forecast_context) -- honestly absent
+    # otherwise, never a guessed probability.
+    forecast = detection.get("forecast")
+    if forecast:
+        lines.append(
+            f"Forecast (24h): {forecast['direction']} ({forecast['probability_pct']}% probability)"
+        )
+        change = forecast.get("probability_change_pct")
+        if change is not None:
+            lines.append(f"Probability change since last forecast: {change:+.1f}pp")
     lines.append("")
 
     lines.append("Explanation:")
@@ -1835,6 +1849,128 @@ def format_technical(symbol: str, result: dict | None) -> str:
         lines.append("")
         signal_label = alignment["signal"].replace("_", " ")
         lines.append(f"*{signal_label}*: " + "; ".join(alignment["reasons"]))
+
+    return "\n".join(lines)
+
+
+def format_no_trade_verdict(symbol: str, result: dict | None) -> str:
+    """V9 NO-TRADE Engine -- TRADE_OK/NO_TRADE plus the specific reasons,
+    never a fabricated verdict when no forecast exists to evaluate.
+    `result` is app.services.trade_setup.no_trade.evaluate_no_trade_for_symbol()'s
+    own return shape."""
+    if result is None:
+        return (
+            f"No forecast available for {symbol} -- insufficient history/probability "
+            "data to evaluate a trade recommendation."
+        )
+
+    recommendation = result["recommendation"]
+    emoji = "✅" if recommendation == "TRADE_OK" else "⛔"
+    lines = [f"{emoji} *NO-TRADE ENGINE -- {symbol}*", ""]
+    lines.append(f"Verdict: *{recommendation.replace('_', ' ')}*")
+
+    direction = result.get("direction")
+    probability = result.get("probability_pct")
+    if direction is not None and probability is not None:
+        lines.append(f"Forecast: {direction} ({probability}% probability)")
+    lines.append("")
+
+    reasons = result.get("reasons") or []
+    if reasons:
+        lines.append("Reasons:")
+        for reason in reasons:
+            lines.append(f"- {reason['description']}")
+    else:
+        lines.append("No gating conditions triggered.")
+
+    return "\n".join(lines)
+
+
+def format_trade_setup(symbol: str, result: dict | None) -> str:
+    """V9 Trade Setup Engine -- entry/stop/target derived from the
+    forecast's own ATR-scaled levels, never a fabricated setup when no
+    forecast exists or the forecast has no directional edge. `result` is
+    app.services.trade_setup.engine.evaluate_trade_setup_for_symbol()'s
+    own return shape."""
+    if result is None:
+        return (
+            f"No forecast available for {symbol} -- insufficient history/probability "
+            "data to build a trade setup."
+        )
+
+    recommendation = result["recommendation"]
+    emoji = "✅" if recommendation == "TRADE_OK" else "⛔"
+    lines = [f"{emoji} *TRADE SETUP -- {symbol}*", ""]
+    lines.append(f"Verdict: *{recommendation.replace('_', ' ')}*")
+
+    direction = result.get("direction")
+    probability = result.get("probability_pct")
+    if direction is not None and probability is not None:
+        lines.append(f"Forecast: {direction} ({probability}% probability)")
+    tier = result.get("conviction_tier")
+    if tier is not None:
+        lines.append(f"Conviction: {tier}")
+    lines.append("")
+
+    if recommendation == "TRADE_OK":
+        side = result.get("side")
+        entry = result.get("entry_price")
+        stop = result.get("stop_loss_price")
+        target = result.get("take_profit_price")
+        rr = result.get("risk_reward_ratio")
+        if side is not None and entry is not None:
+            lines.append(f"Side: *{side}*")
+            lines.append(f"Entry (reference): {entry}")
+            if stop is not None:
+                lines.append(f"Stop-loss: {stop}")
+            if target is not None:
+                lines.append(f"Take-profit: {target}")
+            if rr is not None:
+                lines.append(f"Risk:Reward: 1:{rr:.1f}")
+        invalidation = result.get("invalidation_level")
+        if invalidation is not None:
+            lines.append(f"Invalidation level: {invalidation}")
+        lines.append("")
+
+    reasons = result.get("reasons") or []
+    if reasons:
+        lines.append("Reasons:")
+        for reason in reasons:
+            lines.append(f"- {reason['description']}")
+    elif recommendation != "TRADE_OK":
+        lines.append("No gating conditions triggered.")
+
+    return "\n".join(lines)
+
+
+def format_alert_performance(summary: dict, by_type: list[dict]) -> str:
+    """V9 Increment 9: Alert Performance Analytics -- real, graded hit-rate
+    over past alerts, never a simulated number. `summary` is
+    summarize_alert_performance()'s own return shape (overall, no
+    alert_type filter); `by_type` is
+    summarize_alert_performance_by_type()'s own return shape."""
+    lines = ["*ALERT PERFORMANCE*", ""]
+    if summary["graded_count"] == 0:
+        lines.append("No alerts graded yet -- check back once alerts have had time to play out.")
+        return "\n".join(lines)
+
+    lines.append(f"Graded alerts: {summary['graded_count']}")
+    lines.append(f"Significant-move rate: {summary['significant_move_rate_pct']}%")
+    if summary["direction_continued_rate_pct"] is not None:
+        lines.append(
+            f"Direction-continued rate: {summary['direction_continued_rate_pct']}% "
+            f"(of {summary['directional_alerts_count']} directional alerts)"
+        )
+    lines.append(f"Avg absolute realized move: {summary['avg_abs_realized_move_pct']}%")
+
+    if by_type:
+        lines.append("")
+        lines.append("By alert type:")
+        for row in by_type[:10]:
+            rate = row["significant_move_rate_pct"]
+            lines.append(
+                f"- {row['alert_type']}: {row['graded_count']} graded, {rate}% significant"
+            )
 
     return "\n".join(lines)
 

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.scanner.engine import MarketScannerEngine
 from app.services.scanner.universe import ALWAYS_INCLUDE
@@ -459,7 +459,86 @@ async def test_run_cycle_explanation_engine_failure_does_not_break_alert_pipelin
     deps["universe"].get_universe.return_value = [_universe_entry("PEPE", "pepe", 200)]
     deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 0.00001, 12.0)]
 
-    result = await engine.run_cycle()
+    await engine.run_cycle()
+
+
+def _forecast_engine_mock(probability_pct=72, direction="Bullish", prior_probability_pct=55):
+    forecast_engine = AsyncMock()
+    forecast_engine.get_latest_history.return_value = (
+        [SimpleNamespace(probability_pct=prior_probability_pct)]
+        if prior_probability_pct is not None
+        else []
+    )
+    forecast_engine.compute.return_value = {
+        "probability_pct": probability_pct,
+        "direction": direction,
+        "forecast_status": "ACTIVE",
+    }
+    return forecast_engine
+
+
+async def test_run_cycle_attaches_forecast_context_for_important_tier_symbol_with_history():
+    engine, deps, _ = _engine()
+    deps["universe"].get_universe.return_value = [_universe_entry("BTC", "bitcoin", 1)]
+    deps["markets_client"].fetch_by_ids.return_value = [_market_coin("bitcoin", 60000.0, 6.0)]
+    forecast_engine = _forecast_engine_mock()
+
+    with patch("app.services.forecast.engine.build_forecast_engine", return_value=forecast_engine):
+        result = await engine.run_cycle()
+
+    detection = result["processed"][0]
+    assert detection["tier"] in ("important", "high", "critical")
+    forecast_engine.compute.assert_awaited_once_with("BTC", "24h")
+    assert detection["forecast"] == {
+        "probability_pct": 72,
+        "direction": "Bullish",
+        "forecast_status": "ACTIVE",
+        "probability_change_pct": 17,
+    }
+
+
+async def test_run_cycle_omits_forecast_context_below_important_tier():
+    engine, deps, _ = _engine()
+    deps["universe"].get_universe.return_value = [_universe_entry("BTC", "bitcoin", 1)]
+    # 3% clears "info" but not "important" (default ladder: 3/5/8/10).
+    deps["markets_client"].fetch_by_ids.return_value = [_market_coin("bitcoin", 60000.0, 3.0)]
+    forecast_engine = _forecast_engine_mock()
+
+    with patch("app.services.forecast.engine.build_forecast_engine", return_value=forecast_engine):
+        result = await engine.run_cycle()
+
+    detection = result["processed"][0]
+    assert detection["tier"] == "info"
+    forecast_engine.compute.assert_not_awaited()
+    assert detection["forecast"] is None
+
+
+async def test_run_cycle_omits_forecast_context_for_symbol_without_history_registry_entry():
+    # PEPE has no app.services.history.registry entry -- honestly no
+    # forecast, never a fabricated one.
+    engine, deps, _ = _engine()
+    deps["universe"].get_universe.return_value = [_universe_entry("PEPE", "pepe", 200)]
+    deps["markets_client"].fetch_by_ids.return_value = [_market_coin("pepe", 0.00001, 12.0)]
+    forecast_engine = _forecast_engine_mock()
+
+    with patch("app.services.forecast.engine.build_forecast_engine", return_value=forecast_engine):
+        result = await engine.run_cycle()
+
+    detection = result["processed"][0]
+    assert detection["tier"] == "critical"
+    forecast_engine.compute.assert_not_awaited()
+    assert detection["forecast"] is None
+
+
+async def test_run_cycle_forecast_recompute_failure_does_not_break_alert_pipeline():
+    engine, deps, _ = _engine()
+    deps["universe"].get_universe.return_value = [_universe_entry("BTC", "bitcoin", 1)]
+    deps["markets_client"].fetch_by_ids.return_value = [_market_coin("bitcoin", 60000.0, 6.0)]
+    forecast_engine = AsyncMock()
+    forecast_engine.get_latest_history.side_effect = RuntimeError("boom")
+
+    with patch("app.services.forecast.engine.build_forecast_engine", return_value=forecast_engine):
+        result = await engine.run_cycle()
 
     detection = result["processed"][0]
     assert detection["action"] == "new"

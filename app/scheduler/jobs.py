@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.agents.orchestrator import build_agent_orchestrator
+from app.services.alert_performance.engine import grade_alert_performance
 from app.services.alerts.engine import build_alert_engine
 from app.services.alerts.rules import build_alert_rule_engine
 from app.services.analysis.correlation import CorrelationEngine
@@ -20,7 +21,12 @@ from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.committee.engine import CommitteeEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.features.engine import FeatureEngine
-from app.services.forecast.engine import HORIZONS, build_forecast_engine, grade_price_forecasts
+from app.services.forecast.engine import (
+    HORIZONS,
+    build_forecast_engine,
+    check_and_invalidate_forecasts,
+    grade_price_forecasts,
+)
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.registry import find_symbol_config
 from app.services.history.schemas import Timeframe
@@ -97,6 +103,8 @@ WEEKLY_REVIEW_JOB_ID = "broadcast_weekly_review"
 MONTHLY_PERFORMANCE_JOB_ID = "broadcast_monthly_performance"
 FORECAST_JOB_ID = "compute_forecast"
 FORECAST_GRADING_JOB_ID = "grade_forecasts"
+FORECAST_INVALIDATION_JOB_ID = "invalidate_forecasts"
+ALERT_PERFORMANCE_GRADING_JOB_ID = "grade_alert_performance"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -535,6 +543,41 @@ async def grade_forecasts_job() -> None:
         logger.exception("Forecast grading job failed")
 
 
+async def invalidate_forecasts_job() -> None:
+    """AI Forecast Center invalidation: fires structured, machine-checkable
+    invalidation rules (see app.services.forecast.invalidation) against
+    every still-ACTIVE BTC forecast on each cycle -- independent of, and
+    can trigger well before, grade_forecasts_job's horizon-elapsed grading.
+    BTC only for now, matching compute_forecast_job/grade_forecasts_job."""
+    config = find_symbol_config("BTC")
+    if config is None:
+        return
+    try:
+        invalidated = await check_and_invalidate_forecasts(
+            get_session_factory(), "BTC", config.model
+        )
+        if invalidated:
+            logger.info("Forecast invalidation: %d BTC forecast(s) invalidated", invalidated)
+    except Exception:
+        logger.exception("Forecast invalidation job failed")
+
+
+async def grade_alert_performance_job() -> None:
+    """V9 Increment 9: fills in AlertPerformanceGrade rows for every
+    ungraded AlertLog entry whose resolvable symbol has real synced
+    history reaching the configured grading horizon past `triggered_at`.
+    Unlike the BTC-only forecast jobs above, this grades across every
+    symbol an alert's own `data` resolves to -- it's a read-through join
+    against whatever history is already synced, not a new per-symbol
+    compute."""
+    try:
+        graded = await grade_alert_performance(get_session_factory())
+        if graded:
+            logger.info("Alert performance grading: %d alert(s) graded", graded)
+    except Exception:
+        logger.exception("Alert performance grading job failed")
+
+
 async def test_hypotheses_job() -> None:
     engine = HypothesisEngine(get_session_factory())
     try:
@@ -808,6 +851,22 @@ def start_scheduler() -> AsyncIOScheduler:
         grade_forecasts_job,
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=FORECAST_GRADING_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        invalidate_forecasts_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
+        id=FORECAST_INVALIDATION_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        grade_alert_performance_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
+        id=ALERT_PERFORMANCE_GRADING_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,

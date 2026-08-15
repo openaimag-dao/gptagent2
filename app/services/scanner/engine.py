@@ -40,8 +40,10 @@ from redis.asyncio import Redis
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import get_settings
 from app.database.models import AlertLog, BreakoutEvent, ScannerAlert, ScannerSnapshot
 from app.services.explanation.engine import ExplanationEngine, condense_explanation
+from app.services.history.registry import find_symbol_config
 from app.services.history.schemas import Timeframe
 from app.services.scanner.breadth import compute_market_breadth
 from app.services.scanner.detectors import (
@@ -63,8 +65,10 @@ from app.services.shocks.detectors import (
     consensus_alignment_score,
     decide_alert_action,
     detect_multi_asset_shock,
+    forecast_change_score,
     gate_severity,
     regime_alignment_score,
+    resolve_cooldown_minutes,
     score_alert_quality,
     should_notify,
 )
@@ -93,6 +97,48 @@ _BREADTH_CACHE_TTL_SECONDS = 3600
 def _average(values: list[float]) -> float | None:
     values = [v for v in values if v is not None]
     return sum(values) / len(values) if values else None
+
+
+# V9: gate for the on-demand Forecast Engine recompute below -- fired only
+# for envelopes whose raw (pre-quality-gate) tier already clears "important",
+# not for every scan-cycle detection, to bound ForecastEngine.compute()'s
+# real multi-engine cost (regime index build, probability/quality/technical/
+# explanation/calendar/sentiment/correlation/whale/onchain/pattern reads).
+_FORECAST_RECOMPUTE_TIERS = ("important", "high", "critical")
+
+
+async def _forecast_context(symbol: str) -> dict | None:
+    """One coherent pipeline instead of disconnected notifications: a
+    Scanner detection that clears the tier gate triggers a real
+    ForecastEngine recompute for that symbol, and the resulting
+    probability/direction (and how much probability moved since the prior
+    forecast) get folded into the alert itself. None, honestly, when this
+    symbol has no historical OHLCV registry entry (most of the ~500-symbol
+    scanner universe doesn't -- ForecastEngine.compute() only covers
+    app.services.history.registry's curated set) or a forecast couldn't be
+    computed this cycle -- never fabricated.
+    """
+    if find_symbol_config(symbol) is None:
+        return None
+    from app.services.forecast.engine import build_forecast_engine
+
+    engine = build_forecast_engine()
+    prior_history = await engine.get_latest_history(symbol, limit=1)
+    prior_probability_pct = prior_history[0].probability_pct if prior_history else None
+
+    payload = await engine.compute(symbol, "24h")
+    if payload is None:
+        return None
+
+    probability_pct = payload["probability_pct"]
+    return {
+        "probability_pct": probability_pct,
+        "direction": payload["direction"],
+        "forecast_status": payload.get("forecast_status"),
+        "probability_change_pct": (
+            probability_pct - prior_probability_pct if prior_probability_pct is not None else None
+        ),
+    }
 
 
 class MarketScannerEngine:
@@ -330,14 +376,24 @@ class MarketScannerEngine:
         prices = [float(h.price) for h in history] + [reading["price"]]
         volumes = [float(h.volume_24h) for h in history if h.volume_24h is not None]
 
-        price_event = classify_price_event(symbol, reading["change_pct_24h"])
-        volume_event = detect_volume_multiple(
-            reading["volume_24h"], _average(volumes[:-1] or volumes)
-        )
-
         recent_vol = compute_realized_volatility(prices[-_RECENT_VOL_SAMPLE_SIZE:])
         baseline_vol = compute_realized_volatility(prices)
         volatility_label = detect_volatility_regime(recent_vol, baseline_vol)
+
+        # V9: this symbol's own realized volatility (not a flat percentage
+        # shared by every symbol) scales the price-event ladder -- see
+        # classify_price_event/price_ladder_for's own docstrings.
+        settings = get_settings()
+        price_event = classify_price_event(
+            symbol,
+            reading["change_pct_24h"],
+            realized_volatility_pct=baseline_vol,
+            min_multiplier=settings.volatility_ladder_min_multiplier,
+            max_multiplier=settings.volatility_ladder_max_multiplier,
+        )
+        volume_event = detect_volume_multiple(
+            reading["volume_24h"], _average(volumes[:-1] or volumes)
+        )
         flash_label = detect_flash_move(reading["change_pct_1h"])
 
         period_high = max(prices[:-1]) if len(prices) > 1 else None
@@ -441,17 +497,49 @@ class MarketScannerEngine:
             if current is None or row.last_updated_at > current.last_updated_at:
                 existing_by_key[row.alert_key] = row
 
+        # V9: Scanner event -> Forecast recompute -> richer alert, one
+        # pipeline instead of disconnected notifications. Gated to
+        # raw_tier>=important (before quality gating narrows it further)
+        # and run BEFORE score_alert_quality below, so a real forecast
+        # swing can itself feed into (and potentially upgrade) the
+        # composite quality score/tier through the "forecast_change"
+        # component.
+        for envelope in envelopes:
+            if envelope["raw_tier"] not in _FORECAST_RECOMPUTE_TIERS or not envelope.get("symbols"):
+                continue
+            try:
+                forecast_ctx = await _forecast_context(envelope["symbols"][0])
+            except Exception:
+                logger.exception("Forecast recompute failed for %s", envelope["symbols"][0])
+                continue
+            if forecast_ctx is None:
+                continue
+            envelope["data"]["forecast"] = forecast_ctx
+            envelope["quality_components"]["forecast_change"] = forecast_change_score(
+                forecast_ctx["probability_change_pct"]
+            )
+
+        settings = get_settings()
         decisions = []
         for envelope in envelopes:
             existing = existing_by_key.get(envelope["alert_key"])
             quality_score = score_alert_quality(envelope["quality_components"])
             tier = gate_severity(envelope["raw_tier"], quality_score)
+            # V9: per-category cooldown (app.config.settings.alert_cooldown_minutes),
+            # with a "critical" override so a critical-tier episode is never
+            # treated as "already notified, suppress" the way lower tiers are.
+            cooldown_minutes = resolve_cooldown_minutes(
+                envelope["category"], settings.alert_cooldown_minutes
+            )
+            if tier == "critical":
+                cooldown_minutes = settings.alert_cooldown_minutes.get("critical", cooldown_minutes)
             action = decide_alert_action(
                 existing_active=existing is not None,
                 existing_tier=existing.tier if existing is not None else None,
                 new_tier=tier,
                 now=now,
                 last_updated_at=existing.last_updated_at if existing is not None else None,
+                resolve_after_minutes=cooldown_minutes,
             )
             resolve_id = existing.id if action == "resolve_then_new" else None
             escalate_id = existing.id if action == "escalate" else None
@@ -567,6 +655,7 @@ class MarketScannerEngine:
                     "direction": envelope.get("direction"),
                     "readings": envelope.get("readings", []),
                     "context": envelope.get("context_summary", {}),
+                    "forecast": envelope["data"].get("forecast"),
                 }
             )
         return results
