@@ -59,6 +59,7 @@ from app.api.status import router as status_router
 from app.api.strategy import router as strategy_router
 from app.api.technical import router as technical_router
 from app.api.terminal import router as terminal_router
+from app.api.trade_setup import router as trade_setup_router
 from app.api.watchdog import router as watchdog_router
 from app.api.whales import router as whales_router
 from app.api.whatif import router as whatif_router
@@ -147,6 +148,7 @@ app.include_router(watchdog_router)
 app.include_router(scanner_router)
 app.include_router(executive_summary_router)
 app.include_router(accuracy_router)
+app.include_router(trade_setup_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

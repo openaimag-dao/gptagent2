@@ -66,6 +66,7 @@ from app.services.signals.engine import SignalEngine
 from app.services.similar_market.engine import SimilarMarketEngine, build_historical_lesson
 from app.services.technical.engine import build_technical_analysis_engine
 from app.services.terminal.engine import TerminalEngine
+from app.services.trade_setup.engine import evaluate_trade_setup_for_symbol
 from app.services.trade_setup.no_trade import evaluate_no_trade_for_symbol
 from app.services.watchdog.engine import build_watchdog_engine
 from app.services.whales.engine import WhaleIntelligenceEngine
@@ -126,6 +127,7 @@ from app.telegram.formatters import (
     format_status,
     format_strategy_result,
     format_technical,
+    format_trade_setup,
     format_walk_forward,
     format_watchdog,
     format_watchdog_ai,
@@ -254,7 +256,10 @@ HELP_TEXT = (
     "indicator values (e.g. /technical BTC)\n"
     "/notrade [SYMBOL] -- NO-TRADE Engine: TRADE_OK or NO_TRADE and why (insufficient "
     "sample, low probability, conflicting agents, extreme volatility, regime uncertainty, "
-    "an invalidated forecast, or stale data) -- never forced into always producing a call"
+    "an invalidated forecast, or stale data) -- never forced into always producing a call\n"
+    "/tradesetup [SYMBOL] -- Trade Setup Engine: entry/stop-loss/take-profit/invalidation "
+    "level derived from the forecast's own ATR band and key levels, gated by NO-TRADE "
+    "(never a setup for a symbol NO-TRADE has already flagged)"
 )
 
 # Registered with Telegram via Bot.set_my_commands() so the client's "/" menu
@@ -323,6 +328,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("shocks", "Active Autonomous Critical Alert System episodes"),
     ("technical", "AI-interpreted technical analysis (TradingView MCP provider)"),
     ("notrade", "NO-TRADE Engine: is this symbol's forecast actually trade-actionable"),
+    ("tradesetup", "Trade Setup Engine: entry/stop-loss/take-profit/invalidation level"),
 ]
 
 
@@ -1343,6 +1349,13 @@ async def cmd_notrade(message: Message, command: CommandObject) -> None:
     symbol = (command.args or "BTC").strip().upper()
     result = await evaluate_no_trade_for_symbol(get_session_factory(), symbol)
     await _answer(message, format_no_trade_verdict(symbol, result))
+
+
+@router.message(Command("tradesetup"))
+async def cmd_tradesetup(message: Message, command: CommandObject) -> None:
+    symbol = (command.args or "BTC").strip().upper()
+    result = await evaluate_trade_setup_for_symbol(get_session_factory(), symbol)
+    await _answer(message, format_trade_setup(symbol, result))
 
 
 @router.message(Command("status"))

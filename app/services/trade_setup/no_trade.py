@@ -200,7 +200,7 @@ def evaluate_no_trade(
     }
 
 
-async def _latest_regime_confidence_pct(
+async def latest_regime_confidence_pct(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> int | None:
     from app.database.models import MarketRegimeSnapshot
@@ -210,6 +210,27 @@ async def _latest_regime_confidence_pct(
             select(MarketRegimeSnapshot).order_by(MarketRegimeSnapshot.computed_at.desc()).limit(1)
         )
     return row.confidence_pct if row is not None else None
+
+
+def no_trade_result_from_payload(payload: dict, regime_confidence_pct: int | None) -> dict:
+    """Pure function: extracts evaluate_no_trade()'s inputs from an
+    already-computed ForecastEngine payload -- shared by
+    evaluate_no_trade_for_symbol below and by the Trade Setup Engine (which
+    already has a payload in hand and must not trigger a second, redundant
+    ForecastEngine.compute() call just to get a NO-TRADE verdict)."""
+    consensus = payload.get("consensus") or {}
+    reference_timestamp = payload.get("reference_timestamp")
+    return evaluate_no_trade(
+        sample_size=payload.get("sample_size"),
+        probability_pct=payload.get("probability_pct"),
+        dissent_pct=consensus.get("conflict_pct"),
+        expected_volatility_pct=payload.get("expected_volatility_pct"),
+        regime_confidence_pct=regime_confidence_pct,
+        forecast_status=payload.get("forecast_status"),
+        reference_timestamp=(
+            datetime.fromisoformat(reference_timestamp) if reference_timestamp else None
+        ),
+    )
 
 
 async def evaluate_no_trade_for_symbol(
@@ -230,18 +251,8 @@ async def evaluate_no_trade_for_symbol(
     if payload is None:
         return None
 
-    consensus = payload.get("consensus") or {}
-    reference_timestamp = payload.get("reference_timestamp")
-    result = evaluate_no_trade(
-        sample_size=payload.get("sample_size"),
-        probability_pct=payload.get("probability_pct"),
-        dissent_pct=consensus.get("conflict_pct"),
-        expected_volatility_pct=payload.get("expected_volatility_pct"),
-        regime_confidence_pct=await _latest_regime_confidence_pct(session_factory),
-        forecast_status=payload.get("forecast_status"),
-        reference_timestamp=(
-            datetime.fromisoformat(reference_timestamp) if reference_timestamp else None
-        ),
+    result = no_trade_result_from_payload(
+        payload, await latest_regime_confidence_pct(session_factory)
     )
     result["symbol"] = symbol.upper()
     result["horizon"] = horizon

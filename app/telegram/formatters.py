@@ -1886,6 +1886,63 @@ def format_no_trade_verdict(symbol: str, result: dict | None) -> str:
     return "\n".join(lines)
 
 
+def format_trade_setup(symbol: str, result: dict | None) -> str:
+    """V9 Trade Setup Engine -- entry/stop/target derived from the
+    forecast's own ATR-scaled levels, never a fabricated setup when no
+    forecast exists or the forecast has no directional edge. `result` is
+    app.services.trade_setup.engine.evaluate_trade_setup_for_symbol()'s
+    own return shape."""
+    if result is None:
+        return (
+            f"No forecast available for {symbol} -- insufficient history/probability "
+            "data to build a trade setup."
+        )
+
+    recommendation = result["recommendation"]
+    emoji = "✅" if recommendation == "TRADE_OK" else "⛔"
+    lines = [f"{emoji} *TRADE SETUP -- {symbol}*", ""]
+    lines.append(f"Verdict: *{recommendation.replace('_', ' ')}*")
+
+    direction = result.get("direction")
+    probability = result.get("probability_pct")
+    if direction is not None and probability is not None:
+        lines.append(f"Forecast: {direction} ({probability}% probability)")
+    tier = result.get("conviction_tier")
+    if tier is not None:
+        lines.append(f"Conviction: {tier}")
+    lines.append("")
+
+    if recommendation == "TRADE_OK":
+        side = result.get("side")
+        entry = result.get("entry_price")
+        stop = result.get("stop_loss_price")
+        target = result.get("take_profit_price")
+        rr = result.get("risk_reward_ratio")
+        if side is not None and entry is not None:
+            lines.append(f"Side: *{side}*")
+            lines.append(f"Entry (reference): {entry}")
+            if stop is not None:
+                lines.append(f"Stop-loss: {stop}")
+            if target is not None:
+                lines.append(f"Take-profit: {target}")
+            if rr is not None:
+                lines.append(f"Risk:Reward: 1:{rr:.1f}")
+        invalidation = result.get("invalidation_level")
+        if invalidation is not None:
+            lines.append(f"Invalidation level: {invalidation}")
+        lines.append("")
+
+    reasons = result.get("reasons") or []
+    if reasons:
+        lines.append("Reasons:")
+        for reason in reasons:
+            lines.append(f"- {reason['description']}")
+    elif recommendation != "TRADE_OK":
+        lines.append("No gating conditions triggered.")
+
+    return "\n".join(lines)
+
+
 def format_alert_rule_created(rule) -> str:
     return (
         f"*Alert rule #{rule.id} created*\n"

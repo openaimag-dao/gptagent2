@@ -50,6 +50,33 @@ _RISK_REWARD_RATIO = 2.0
 _DEFAULT_RISK_PCT = 0.01
 
 
+def compute_atr_levels(
+    side: str,
+    reference_price: float,
+    atr: float,
+    atr_stop_multiplier: float = _ATR_STOP_MULTIPLIER,
+    risk_reward_ratio: float = _RISK_REWARD_RATIO,
+) -> dict:
+    """Pure function: the one ATR-scaled stop-loss/take-profit formula this
+    project uses for a directional call (`side` is "BUY" or "SELL"). Pulled
+    out of `compute_advice` below so other engines needing the same
+    stop/target convention (e.g. the Trade Setup Engine) reuse this exact
+    formula instead of reimplementing it."""
+    stop_distance = atr_stop_multiplier * atr
+    reward_distance = stop_distance * risk_reward_ratio
+    if side == "BUY":
+        stop_loss_price = round(reference_price - stop_distance, 8)
+        take_profit_price = round(reference_price + reward_distance, 8)
+    else:
+        stop_loss_price = round(reference_price + stop_distance, 8)
+        take_profit_price = round(reference_price - reward_distance, 8)
+    return {
+        "stop_loss_price": stop_loss_price,
+        "take_profit_price": take_profit_price,
+        "risk_reward_ratio": risk_reward_ratio,
+    }
+
+
 @dataclass(frozen=True)
 class PortfolioAdvice:
     symbol: str
@@ -150,15 +177,10 @@ def compute_advice(
     position_size_note: str | None = None
 
     if atr is not None and atr > 0 and recommendation in ("BUY", "SELL"):
-        stop_distance = _ATR_STOP_MULTIPLIER * atr
-        reward_distance = stop_distance * _RISK_REWARD_RATIO
-        if recommendation == "BUY":
-            stop_loss_price = round(close - stop_distance, 8)
-            take_profit_price = round(close + reward_distance, 8)
-        else:
-            stop_loss_price = round(close + stop_distance, 8)
-            take_profit_price = round(close - reward_distance, 8)
-        risk_reward_ratio = _RISK_REWARD_RATIO
+        levels = compute_atr_levels(recommendation, close, atr)
+        stop_loss_price = levels["stop_loss_price"]
+        take_profit_price = levels["take_profit_price"]
+        risk_reward_ratio = levels["risk_reward_ratio"]
 
         if recommendation == "BUY" and portfolio_value:
             risk_amount = portfolio_value * risk_pct

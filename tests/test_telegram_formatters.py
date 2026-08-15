@@ -55,6 +55,7 @@ from app.telegram.formatters import (
     format_single_asset,
     format_status,
     format_technical,
+    format_trade_setup,
     format_watchdog,
     format_watchdog_brief,
     format_watchdog_market,
@@ -1495,6 +1496,58 @@ def test_format_no_trade_verdict_no_trade_lists_reasons():
     assert "NO TRADE" in text
     assert "Direction probability 40% below 55%" in text
     assert "Expected volatility 20% exceeds 15%" in text
+
+
+def test_format_trade_setup_none_when_no_forecast():
+    text = format_trade_setup("BTC", None)
+    assert "No forecast available for BTC" in text
+
+
+def test_format_trade_setup_trade_ok_shows_levels():
+    result = {
+        "recommendation": "TRADE_OK",
+        "reasons": [],
+        "direction": "Bullish",
+        "probability_pct": 72,
+        "conviction_tier": "high",
+        "side": "BUY",
+        "entry_price": 100.0,
+        "stop_loss_price": 90.0,
+        "take_profit_price": 120.0,
+        "risk_reward_ratio": 2.0,
+        "invalidation_level": 95.0,
+    }
+    text = format_trade_setup("BTC", result)
+    assert "TRADE OK" in text
+    assert "Bullish (72% probability)" in text
+    assert "Side: *BUY*" in text
+    assert "Entry (reference): 100.0" in text
+    assert "Stop-loss: 90.0" in text
+    assert "Take-profit: 120.0" in text
+    assert "Risk:Reward: 1:2.0" in text
+    assert "Invalidation level: 95.0" in text
+
+
+def test_format_trade_setup_no_trade_lists_reasons():
+    result = {
+        "recommendation": "NO_TRADE",
+        "reasons": [
+            {"code": "no_directional_edge", "description": "Forecast direction is 'Neutral'"},
+        ],
+        "direction": "Neutral",
+        "probability_pct": 40,
+        "conviction_tier": "low",
+        "side": None,
+        "entry_price": 100.0,
+        "stop_loss_price": None,
+        "take_profit_price": None,
+        "risk_reward_ratio": None,
+        "invalidation_level": None,
+    }
+    text = format_trade_setup("BTC", result)
+    assert "NO TRADE" in text
+    assert "Forecast direction is 'Neutral'" in text
+    assert "Side:" not in text
 
 
 def _scanner_detection():
