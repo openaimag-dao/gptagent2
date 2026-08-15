@@ -38,6 +38,7 @@ from app.database.models import (
     WatchdogSnapshot,
 )
 from app.services.agents.pattern_agent import _recency_weighted_direction
+from app.services.alert_performance.engine import compute_baseline_return_pct
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import MarketRegime, RegimeDetector, build_regime_index
 from app.services.analysis.report import derive_risk_level
@@ -446,6 +447,14 @@ _DIRECTION_SIGN: dict[str, int] = {
 }
 
 
+def _realized_sign(current_price: float, realized_price: float) -> int:
+    if realized_price > current_price:
+        return 1
+    if realized_price < current_price:
+        return -1
+    return 0
+
+
 def grade_direction(direction: str, current_price: float, realized_price: float) -> bool | None:
     """Pure function: did this forecast's own directional call match the
     real sign of price change from `current_price` (the reference row's
@@ -455,13 +464,45 @@ def grade_direction(direction: str, current_price: float, realized_price: float)
     predicted_sign = _DIRECTION_SIGN.get(direction)
     if not predicted_sign:
         return None
-    if realized_price > current_price:
-        realized_sign = 1
-    elif realized_price < current_price:
-        realized_sign = -1
-    else:
-        realized_sign = 0
-    return predicted_sign == realized_sign
+    return predicted_sign == _realized_sign(current_price, realized_price)
+
+
+def grade_momentum_baseline(
+    prior_return_pct: float | None, current_price: float, realized_price: float
+) -> bool | None:
+    """Pure function: POST-V9 Phase 14 -- would the naive "yesterday's
+    move continues" baseline have called this forecast's own realized
+    outcome correctly? Uses the exact same realized-sign criterion
+    grade_direction applies to the real forecast, so the two accuracy
+    rates are directly comparable in aggregate (see
+    app.services.accuracy.engine._aggregate_stats). None when there's no
+    prior period to read a direction from, or when the prior period was
+    itself exactly flat -- like a Neutral forecast call, a flat baseline
+    makes no directional claim to grade."""
+    if not prior_return_pct:
+        return None
+    predicted_sign = 1 if prior_return_pct > 0 else -1
+    return predicted_sign == _realized_sign(current_price, realized_price)
+
+
+def compute_historical_mean_baseline_error_pct(
+    historical_mean_baseline_return_pct: float | None,
+    current_price: float,
+    realized_price: float,
+) -> float | None:
+    """Pure function: POST-V9 Phase 14 -- the price-target error a naive
+    "assume the future equals this symbol's own historical average
+    forward return" baseline would have made, computed the exact same way
+    `error_pct` is computed for the real forecast (both are
+    100*(realized-target)/target), so the two are directly comparable
+    magnitude-for-magnitude. None when there's no historical baseline
+    return to build a naive target from."""
+    if historical_mean_baseline_return_pct is None:
+        return None
+    naive_target_price = current_price * (1 + historical_mean_baseline_return_pct / 100)
+    if naive_target_price == 0:
+        return None
+    return round(100 * (realized_price - naive_target_price) / naive_target_price, 4)
 
 
 def grade_confidence(error_pct: float, expected_volatility_pct: float | None) -> bool | None:
@@ -488,8 +529,13 @@ async def grade_price_forecasts(
     Phase 17: also transitions `forecast_status` via status_after_grading
     -- a still-ACTIVE row becomes GRADED, while one that was already
     INVALIDATED/SUPERSEDED before its horizon elapsed keeps that status
-    (grading never erases an existing lifecycle marker). Returns how many
-    rows were graded this call."""
+    (grading never erases an existing lifecycle marker). POST-V9 Phase 14:
+    also fills in `momentum_baseline_correct`/
+    `historical_mean_baseline_error_pct` -- two naive-baseline comparisons
+    computed entirely from the same `rows` already fetched for grading, no
+    extra I/O -- so app.services.accuracy.engine can report whether the
+    forecast actually beats doing nothing clever. Returns how many rows
+    were graded this call."""
     async with session_factory() as session:
         ungraded = list(
             await session.scalars(
@@ -505,6 +551,7 @@ async def grade_price_forecasts(
 
     rows = await get_series(session_factory, model, symbol, Timeframe.DAILY)
     index_by_timestamp = {r.timestamp: i for i, r in enumerate(rows)}
+    returns_series = [float(r.return_pct) if r.return_pct is not None else None for r in rows]
 
     graded = 0
     async with session_factory() as session:
@@ -533,6 +580,11 @@ async def grade_price_forecasts(
                 else None
             )
 
+            prior_return_pct = returns_series[idx - 1] if idx > 0 else None
+            historical_mean_baseline_return_pct = compute_baseline_return_pct(
+                returns_series, idx, horizon_periods
+            )
+
             db_row = await session.get(PriceForecastSnapshot, snapshot.id)
             db_row.realized_price = realized_price
             db_row.error_pct = round(error_pct, 4)
@@ -540,6 +592,12 @@ async def grade_price_forecasts(
                 snapshot.direction, current_price, realized_price
             )
             db_row.confidence_correct = grade_confidence(error_pct, expected_volatility_pct)
+            db_row.momentum_baseline_correct = grade_momentum_baseline(
+                prior_return_pct, current_price, realized_price
+            )
+            db_row.historical_mean_baseline_error_pct = compute_historical_mean_baseline_error_pct(
+                historical_mean_baseline_return_pct, current_price, realized_price
+            )
             db_row.evaluated_at = datetime.now(UTC)
             db_row.forecast_status = status_after_grading(db_row.forecast_status)
             graded += 1

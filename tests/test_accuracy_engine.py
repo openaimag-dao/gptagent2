@@ -23,6 +23,8 @@ def _row(
     target_price=100.0,
     realized_price=101.0,
     confidence_tier="Strong",
+    momentum_baseline_correct=None,
+    historical_mean_baseline_error_pct=None,
 ):
     return SimpleNamespace(
         symbol=symbol,
@@ -35,6 +37,8 @@ def _row(
         target_price=target_price,
         realized_price=realized_price,
         confidence_tier=confidence_tier,
+        momentum_baseline_correct=momentum_baseline_correct,
+        historical_mean_baseline_error_pct=historical_mean_baseline_error_pct,
     )
 
 
@@ -58,6 +62,13 @@ def test_aggregate_stats_real_averages():
     assert stats["avg_abs_error_pct"] == 2.0
     assert stats["direction_accuracy_pct"] == 50.0
     assert stats["confidence_accuracy_pct"] == 50.0
+    # POST-V9 Phase 14: no baseline data on these fixture rows -> honestly
+    # absent, not fabricated
+    assert stats["beats_random_walk"] is False  # 50% is not > 50%
+    assert stats["momentum_baseline_accuracy_pct"] is None
+    assert stats["beats_momentum_baseline"] is None
+    assert stats["historical_mean_baseline_avg_abs_error_pct"] is None
+    assert stats["beats_historical_mean_baseline"] is None
 
 
 def test_aggregate_stats_honest_none_when_nothing_graded():
@@ -67,6 +78,52 @@ def test_aggregate_stats_honest_none_when_nothing_graded():
     assert stats["avg_abs_error_pct"] is None
     assert stats["direction_accuracy_pct"] is None
     assert stats["confidence_accuracy_pct"] is None
+    assert stats["beats_random_walk"] is None
+
+
+# ---- POST-V9 Phase 14: baseline comparison ----
+
+
+def test_aggregate_stats_beats_random_walk_when_above_50_pct():
+    rows = [_row(direction_correct=True)] * 6 + [_row(direction_correct=False)] * 4
+    stats = _aggregate_stats(rows)
+    assert stats["direction_accuracy_pct"] == 60.0
+    assert stats["beats_random_walk"] is True
+
+
+def test_aggregate_stats_momentum_baseline_comparison():
+    rows = [
+        _row(direction_correct=True, momentum_baseline_correct=False),
+        _row(direction_correct=True, momentum_baseline_correct=False),
+        _row(direction_correct=False, momentum_baseline_correct=True),
+    ]
+    stats = _aggregate_stats(rows)
+    assert stats["direction_accuracy_pct"] == round(100 * 2 / 3, 2)
+    assert stats["momentum_baseline_accuracy_pct"] == round(100 * 1 / 3, 2)
+    assert stats["beats_momentum_baseline"] is True
+
+
+def test_aggregate_stats_does_not_beat_momentum_baseline_when_worse():
+    rows = [
+        _row(direction_correct=False, momentum_baseline_correct=True),
+        _row(direction_correct=False, momentum_baseline_correct=True),
+        _row(direction_correct=True, momentum_baseline_correct=False),
+    ]
+    stats = _aggregate_stats(rows)
+    assert stats["beats_momentum_baseline"] is False
+
+
+def test_aggregate_stats_historical_mean_baseline_comparison():
+    rows = [
+        _row(error_pct=1.0, historical_mean_baseline_error_pct=5.0),
+        _row(error_pct=-1.0, historical_mean_baseline_error_pct=-5.0),
+    ]
+    stats = _aggregate_stats(rows)
+    assert stats["avg_abs_error_pct"] == 1.0
+    assert stats["historical_mean_baseline_avg_abs_error_pct"] == 5.0
+    # smaller absolute error is better -- the forecast's own 1.0% beats the
+    # naive baseline's 5.0%
+    assert stats["beats_historical_mean_baseline"] is True
 
 
 def test_bucket_accuracy_groups_by_day():

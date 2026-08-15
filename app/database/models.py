@@ -1213,6 +1213,21 @@ class PriceForecastSnapshot(Base):
     forecast_status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
     invalidation_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # POST-V9 Phase 14: filled in alongside the grading fields above, by
+    # the same grade_price_forecasts() call, using data it already fetched
+    # (no extra I/O). momentum_baseline_correct grades the naive "the last
+    # period's move continues" call against the same realized outcome
+    # direction_correct is graded against, so the two are directly
+    # comparable. historical_mean_baseline_error_pct is the price-target
+    # error a naive "assume the future equals this symbol's own historical
+    # average forward return" baseline would have made, computed the exact
+    # same way error_pct is -- directly comparable magnitude-for-magnitude.
+    # Both nullable: a baseline with nothing to compare against (e.g. no
+    # prior period, no historical sample) is honestly absent, never guessed.
+    momentum_baseline_correct: Mapped[bool | None] = mapped_column(nullable=True)
+    historical_mean_baseline_error_pct: Mapped[float | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )

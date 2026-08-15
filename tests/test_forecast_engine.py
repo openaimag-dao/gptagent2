@@ -13,6 +13,7 @@ from app.services.forecast.engine import (
     check_and_invalidate_forecasts,
     classify_direction_label,
     compute_expected_max_drawdown_pct,
+    compute_historical_mean_baseline_error_pct,
     compute_momentum_score,
     compute_prediction_range,
     compute_price_path,
@@ -23,6 +24,7 @@ from app.services.forecast.engine import (
     derive_risk_meter,
     grade_confidence,
     grade_direction,
+    grade_momentum_baseline,
     grade_price_forecasts,
     price_forecast_quality_multiplier,
     summarize_forecast_accuracy,
@@ -445,7 +447,7 @@ async def test_grade_price_forecasts_returns_zero_without_ungraded_rows():
 
 async def test_grade_price_forecasts_skips_a_horizon_that_hasnt_elapsed_yet():
     ts0 = datetime(2026, 8, 1, tzinfo=UTC)
-    rows = [SimpleNamespace(timestamp=ts0, close=100.0)]
+    rows = [SimpleNamespace(timestamp=ts0, close=100.0, return_pct=None)]
     ungraded = SimpleNamespace(id=1, reference_timestamp=ts0, horizon="24h", target_price=103.0)
     db_row = SimpleNamespace(realized_price=None, error_pct=None, evaluated_at=None)
     session_factory, session = _forecast_session([ungraded], db_row)
@@ -491,11 +493,55 @@ def test_grade_confidence_none_without_volatility_band():
     assert grade_confidence(1.0, 0) is None
 
 
+# ---- POST-V9 Phase 14: baseline challenge pure functions --------------------
+
+
+def test_grade_momentum_baseline_none_without_prior_return():
+    assert grade_momentum_baseline(None, 100.0, 105.0) is None
+
+
+def test_grade_momentum_baseline_none_when_prior_return_flat():
+    assert grade_momentum_baseline(0.0, 100.0, 105.0) is None
+
+
+def test_grade_momentum_baseline_correct_when_up_move_continues():
+    assert grade_momentum_baseline(0.02, 100.0, 105.0) is True
+
+
+def test_grade_momentum_baseline_incorrect_when_up_move_reverses():
+    assert grade_momentum_baseline(0.02, 100.0, 95.0) is False
+
+
+def test_grade_momentum_baseline_correct_when_down_move_continues():
+    assert grade_momentum_baseline(-0.02, 100.0, 95.0) is True
+
+
+def test_grade_momentum_baseline_incorrect_when_down_move_reverses():
+    assert grade_momentum_baseline(-0.02, 100.0, 105.0) is False
+
+
+def test_compute_historical_mean_baseline_error_pct_none_without_baseline():
+    assert compute_historical_mean_baseline_error_pct(None, 100.0, 105.0) is None
+
+
+def test_compute_historical_mean_baseline_error_pct_exact_match_is_zero():
+    # naive target = 100 * (1 + 5.0/100) = 105.0, exactly matches realized
+    assert compute_historical_mean_baseline_error_pct(5.0, 100.0, 105.0) == 0.0
+
+
+def test_compute_historical_mean_baseline_error_pct_computes_signed_error():
+    # naive target = 100 * (1 + 2.0/100) = 102.0, realized = 105.0
+    # error = 100 * (105.0 - 102.0) / 102.0
+    assert compute_historical_mean_baseline_error_pct(2.0, 100.0, 105.0) == round(
+        100 * (105.0 - 102.0) / 102.0, 4
+    )
+
+
 async def test_grade_price_forecasts_grades_an_elapsed_row():
     ts0 = datetime(2026, 8, 1, tzinfo=UTC)
     rows = [
-        SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0),
-        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0, atr=2.0),
+        SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0, return_pct=None),
+        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0, atr=2.0, return_pct=0.05),
     ]
     ungraded = SimpleNamespace(
         id=1,
@@ -526,14 +572,57 @@ async def test_grade_price_forecasts_grades_an_elapsed_row():
     assert db_row.evaluated_at is not None
     # POST-V9 Phase 17: a still-ACTIVE forecast transitions to GRADED once graded.
     assert db_row.forecast_status == "GRADED"
+    # POST-V9 Phase 14: the very first row in history has no prior period
+    # and no prior baseline sample -- honestly None, not fabricated.
+    assert db_row.momentum_baseline_correct is None
+    assert db_row.historical_mean_baseline_error_pct is None
     session.commit.assert_awaited()
+
+
+async def test_grade_price_forecasts_computes_baseline_comparisons():
+    ts0 = datetime(2026, 8, 1, tzinfo=UTC)
+    rows = [
+        SimpleNamespace(timestamp=ts0 - timedelta(days=2), close=95.0, atr=2.0, return_pct=0.02),
+        SimpleNamespace(timestamp=ts0 - timedelta(days=1), close=100.0, atr=2.0, return_pct=0.05),
+        SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0, return_pct=None),
+        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0, atr=2.0, return_pct=0.05),
+    ]
+    ungraded = SimpleNamespace(
+        id=1,
+        reference_timestamp=ts0,
+        horizon="24h",
+        target_price=103.0,
+        current_price=100.0,
+        direction="Bullish",
+    )
+    db_row = SimpleNamespace(
+        realized_price=None,
+        error_pct=None,
+        direction_correct=None,
+        confidence_correct=None,
+        evaluated_at=None,
+        forecast_status="ACTIVE",
+    )
+    session_factory, session = _forecast_session([ungraded], db_row)
+
+    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+        graded = await grade_price_forecasts(session_factory, "BTC", object())
+
+    assert graded == 1
+    # prior period (idx=1) had +5% -> naive momentum predicts "up";
+    # realized_price 105 > current_price 100 -> up actually happened -> correct
+    assert db_row.momentum_baseline_correct is True
+    # the one prior forward-return window knowable at reference time (idx=0
+    # -> idx=1, +5%) gives a 5.0% historical-mean baseline -> naive target
+    # 100*(1.05)=105.0, exactly matching the real realized_price of 105.0
+    assert db_row.historical_mean_baseline_error_pct == 0.0
 
 
 async def test_grade_price_forecasts_preserves_invalidated_status():
     ts0 = datetime(2026, 8, 1, tzinfo=UTC)
     rows = [
-        SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0),
-        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0, atr=2.0),
+        SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0, return_pct=None),
+        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0, atr=2.0, return_pct=0.05),
     ]
     ungraded = SimpleNamespace(
         id=1,
@@ -564,7 +653,9 @@ async def test_grade_price_forecasts_preserves_invalidated_status():
 
 
 async def test_grade_price_forecasts_skips_an_unmatched_reference_timestamp():
-    rows = [SimpleNamespace(timestamp=datetime(2026, 8, 1, tzinfo=UTC), close=100.0)]
+    rows = [
+        SimpleNamespace(timestamp=datetime(2026, 8, 1, tzinfo=UTC), close=100.0, return_pct=None)
+    ]
     ungraded = SimpleNamespace(
         id=1,
         reference_timestamp=datetime(2020, 1, 1, tzinfo=UTC),
