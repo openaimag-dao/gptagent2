@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.services.agents.base import AgentOutput
 from app.services.reliability.engine import (
     AgentReliabilityEngine,
+    compute_agent_vote_correlation,
     compute_hierarchical_reliability_pct,
+    compute_redundancy_penalty_pct,
     compute_shrunk_reliability_pct,
 )
 
@@ -398,3 +400,157 @@ def test_compute_shrunk_reliability_pct_short_half_life_ignores_stale_calls_equa
     # Both decayed to (numerically) zero weight equally -> falls back to the
     # 50% prior rather than a NaN/division artifact.
     assert pct == 50.0
+
+
+# ---- POST-V9 Phase 6: compute_agent_vote_correlation ----
+
+_ALTERNATING = ["bullish", "bearish", "bullish", "bearish", "neutral", "bullish"]
+_OPPOSITE_OF_ALTERNATING = ["bearish", "bullish", "bearish", "bullish", "neutral", "bearish"]
+_INDEPENDENT_A = ["bullish", "bullish", "bearish", "bearish", "neutral", "bullish"]
+_INDEPENDENT_B = ["bearish", "bullish", "bullish", "bearish", "bullish", "bearish"]
+
+
+def test_compute_agent_vote_correlation_identical_agents_is_one():
+    correlation = compute_agent_vote_correlation(_ALTERNATING, _ALTERNATING, min_sample_size=3)
+    assert correlation == 1.0
+
+
+def test_compute_agent_vote_correlation_opposite_agents_is_negative_one():
+    correlation = compute_agent_vote_correlation(
+        _ALTERNATING, _OPPOSITE_OF_ALTERNATING, min_sample_size=3
+    )
+    assert correlation == -1.0
+
+
+def test_compute_agent_vote_correlation_independent_agents_is_near_zero():
+    correlation = compute_agent_vote_correlation(_INDEPENDENT_A, _INDEPENDENT_B, min_sample_size=3)
+    assert correlation is not None
+    assert -0.5 < correlation < 0.5
+
+
+def test_compute_agent_vote_correlation_none_when_insufficient_history():
+    assert compute_agent_vote_correlation(["bullish", "bearish"], ["bullish", "bearish"], 5) is None
+
+
+def test_compute_agent_vote_correlation_none_when_misaligned_lengths():
+    assert compute_agent_vote_correlation(["bullish", "bearish", "bullish"], ["bullish"], 1) is None
+
+
+def test_compute_agent_vote_correlation_none_when_constant_series():
+    # Zero variance -> mathematically undefined correlation, not a fake 0.
+    constant = ["bullish"] * 5
+    assert compute_agent_vote_correlation(constant, _ALTERNATING[:5], min_sample_size=3) is None
+
+
+# ---- POST-V9 Phase 6: compute_redundancy_penalty_pct ----
+
+
+def test_compute_redundancy_penalty_pct_scales_with_positive_correlation():
+    assert compute_redundancy_penalty_pct(1.0, max_penalty_pct=30.0) == 30.0
+    assert compute_redundancy_penalty_pct(0.5, max_penalty_pct=30.0) == 15.0
+
+
+def test_compute_redundancy_penalty_pct_zero_for_negative_or_zero_correlation():
+    assert compute_redundancy_penalty_pct(-1.0, max_penalty_pct=30.0) == 0.0
+    assert compute_redundancy_penalty_pct(0.0, max_penalty_pct=30.0) == 0.0
+
+
+def test_compute_redundancy_penalty_pct_zero_when_correlation_none():
+    assert compute_redundancy_penalty_pct(None, max_penalty_pct=30.0) == 0.0
+
+
+# ---- POST-V9 Phase 6: AgentReliabilityEngine.evaluate_agent_correlations ----
+
+
+def _prediction_log(agent, direction, reference_timestamp):
+    return SimpleNamespace(
+        agent=agent, direction=direction, reference_timestamp=reference_timestamp
+    )
+
+
+async def test_evaluate_agent_correlations_identical_agents():
+    timestamps = [datetime(2026, 1, i, tzinfo=UTC) for i in range(1, 7)]
+    logs = [
+        _prediction_log(agent, direction, ts)
+        for ts, direction in zip(timestamps, _ALTERNATING, strict=True)
+        for agent in ("macro", "crypto")
+    ]
+
+    session = AsyncMock()
+    session.scalars.return_value = logs
+    session_factory = MagicMock(return_value=session)
+    session.__aenter__.return_value = session
+
+    engine = AgentReliabilityEngine(session_factory)
+    result = await engine.evaluate_agent_correlations(window=10)
+
+    pair = result[("crypto", "macro")]
+    assert pair["correlation"] == 1.0
+    assert pair["sample_count"] == 6
+    assert pair["redundancy_penalty_pct"] > 0.0
+
+
+async def test_evaluate_agent_correlations_opposite_agents_no_penalty():
+    timestamps = [datetime(2026, 1, i, tzinfo=UTC) for i in range(1, 7)]
+    logs = [
+        _prediction_log("macro", direction, ts)
+        for ts, direction in zip(timestamps, _ALTERNATING, strict=True)
+    ] + [
+        _prediction_log("crypto", direction, ts)
+        for ts, direction in zip(timestamps, _OPPOSITE_OF_ALTERNATING, strict=True)
+    ]
+
+    session = AsyncMock()
+    session.scalars.return_value = logs
+    session_factory = MagicMock(return_value=session)
+    session.__aenter__.return_value = session
+
+    engine = AgentReliabilityEngine(session_factory)
+    result = await engine.evaluate_agent_correlations(window=10)
+
+    pair = result[("crypto", "macro")]
+    assert pair["correlation"] == -1.0
+    assert pair["redundancy_penalty_pct"] == 0.0
+
+
+async def test_evaluate_agent_correlations_insufficient_history_reports_none_not_omitted():
+    timestamps = [datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 2, tzinfo=UTC)]
+    logs = [
+        _prediction_log(agent, "bullish", ts) for ts in timestamps for agent in ("macro", "crypto")
+    ]
+
+    session = AsyncMock()
+    session.scalars.return_value = logs
+    session_factory = MagicMock(return_value=session)
+    session.__aenter__.return_value = session
+
+    engine = AgentReliabilityEngine(session_factory)
+    result = await engine.evaluate_agent_correlations(window=10)
+
+    pair = result[("crypto", "macro")]
+    assert pair["correlation"] is None
+    assert pair["sample_count"] == 2
+    assert pair["redundancy_penalty_pct"] == 0.0
+
+
+async def test_evaluate_agent_correlations_window_bounds_shared_timestamps_considered():
+    # 40 shared timestamps, but window=10 -- only the most recent 10 should
+    # feed the correlation, keeping cost bounded regardless of total log
+    # volume (the rolling-bounded-window requirement from the Phase 6 spec).
+    day = datetime(2026, 1, 2, tzinfo=UTC) - datetime(2026, 1, 1, tzinfo=UTC)
+    timestamps = [datetime(2026, 1, 1, tzinfo=UTC) + (i * day) for i in range(40)]
+    logs = [
+        _prediction_log(agent, "bullish" if i % 2 == 0 else "bearish", timestamps[i])
+        for i in range(40)
+        for agent in ("macro", "crypto")
+    ]
+
+    session = AsyncMock()
+    session.scalars.return_value = logs
+    session_factory = MagicMock(return_value=session)
+    session.__aenter__.return_value = session
+
+    engine = AgentReliabilityEngine(session_factory)
+    result = await engine.evaluate_agent_correlations(window=10)
+
+    assert result[("crypto", "macro")]["sample_count"] == 10

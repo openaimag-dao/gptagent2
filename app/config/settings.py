@@ -212,6 +212,22 @@ class Settings(BaseSettings):
     # clear this bar.
     reliability_hierarchical_min_effective_sample: float = 5.0
 
+    # ---- Agent vote correlation / redundancy (POST-V9 Phase 6) ----
+    # How many of an agent-pair's most recent SHARED reference_timestamps
+    # (both agents logged a direction) to correlate -- a rolling bounded
+    # window, not a full pairwise matrix over all stored history, so the
+    # cost of evaluate_agent_correlations() stays bounded as prediction
+    # logs accumulate.
+    agent_correlation_window: int = 30
+    # Below this many shared observations, a pair's correlation is honestly
+    # reported as unavailable (None) rather than a noisy small-sample guess.
+    agent_correlation_min_sample_size: int = 5
+    # Upper bound (percentage points) on how much of an agent's consensus
+    # weight a perfectly-correlated (redundant) partner can discount --
+    # mirrors reliability_shrinkage_pseudo_count's role of keeping any
+    # single adjustment bounded rather than able to zero out an agent.
+    agent_correlation_max_redundancy_penalty_pct: float = 30.0
+
     # ---- Alert performance analytics (V9 Increment 9) ----
     # How many days after an alert fires to look up its symbol's forward
     # price change -- an alert is only gradable once real synced history

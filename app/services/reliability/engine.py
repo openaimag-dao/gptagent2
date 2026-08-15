@@ -21,11 +21,12 @@ consumes) with two real-but-honest adjustments:
   - Recency (half-life) decay, so a stale track record from months ago
     counts for less than this week's calls -- an agent's reliability score
     tracks its CURRENT edge, not a diluted all-time average.
-Explicitly NOT implemented here (see this module's own docstring for why
-this is the honest boundary, not a gap): inter-agent correlation/redundancy
-discounting (no existing infrastructure measures agent-vs-agent vote
-correlation; would need a new historical vote-correlation matrix, a
-materially larger subsystem than this module's scope).
+POST-V9 Phase 6 adds `evaluate_agent_correlations`: a rolling-window,
+pairwise vote correlation between agents (not a full all-history pairwise
+matrix -- see that method's docstring for the cost-control reasoning) plus
+a bounded redundancy penalty derived from it, so two agents that vote
+almost identically stop being counted as two independent opinions. This
+closes the gap this module's docstring used to flag as unimplemented.
 
 POST-V9 Phase 5 extends (not replaces) the flat, agent-global accuracy
 above with `evaluate_reliability_hierarchical`, which conditions accuracy
@@ -64,6 +65,48 @@ _HORIZON_PERIODS = 1
 _PRIOR_ACCURACY_PCT = 50.0
 
 _DIRECTION_TO_PREDICTED = {"bullish": "up", "bearish": "down", "neutral": "flat"}
+_DIRECTION_TO_SIGNED = {"bullish": 1.0, "bearish": -1.0, "neutral": 0.0}
+
+
+def compute_agent_vote_correlation(
+    votes_a: list[str], votes_b: list[str], min_sample_size: int
+) -> float | None:
+    """Pure function: two agents' aligned direction sequences (same length,
+    index i of each is both agents' direction on the same
+    reference_timestamp) -> their Pearson correlation, mapping
+    bullish/bearish/neutral to +1/0/-1. None (never a guessed value) when
+    there are fewer than `min_sample_size` paired observations, the inputs
+    are misaligned, or either series has zero variance (a constant series
+    -- e.g. an agent that only ever votes "bullish" -- makes correlation
+    mathematically undefined, not 0)."""
+    if len(votes_a) != len(votes_b) or len(votes_a) < min_sample_size:
+        return None
+    signed_a = [_DIRECTION_TO_SIGNED.get(v, 0.0) for v in votes_a]
+    signed_b = [_DIRECTION_TO_SIGNED.get(v, 0.0) for v in votes_b]
+    n = len(signed_a)
+    mean_a = sum(signed_a) / n
+    mean_b = sum(signed_b) / n
+    covariance = sum((a - mean_a) * (b - mean_b) for a, b in zip(signed_a, signed_b, strict=True))
+    variance_a = sum((a - mean_a) ** 2 for a in signed_a)
+    variance_b = sum((b - mean_b) ** 2 for b in signed_b)
+    if variance_a == 0 or variance_b == 0:
+        return None
+    return round(covariance / (variance_a * variance_b) ** 0.5, 4)
+
+
+def compute_redundancy_penalty_pct(correlation: float | None, max_penalty_pct: float) -> float:
+    """Pure function: an agent-pair's vote correlation -> how much
+    consensus-weight discount (in percentage points, bounded by
+    `max_penalty_pct`) that redundancy should cost. Only positive
+    correlation is penalized -- negative or independent agents
+    (correlation <= 0) add diversification, not redundancy, so they get
+    zero penalty, never a bonus. A None correlation (insufficient shared
+    history) is honestly zero penalty, not a guessed one -- this module
+    never discounts an agent's weight on unproven redundancy."""
+    if correlation is None or correlation <= 0:
+        return 0.0
+    return round(min(correlation, 1.0) * max_penalty_pct, 2)
+
 
 # (symbol, horizon_periods, regime) key used by the hierarchical fallback
 # ladder. symbol is always None in the live pipeline today -- see module
@@ -354,3 +397,52 @@ class AgentReliabilityEngine:
             )
             for agent, keyed_results in keyed_by_agent.items()
         }
+
+    async def evaluate_agent_correlations(
+        self, window: int | None = None
+    ) -> dict[tuple[str, str], dict]:
+        """Pairwise agent vote correlation over a rolling bounded window of
+        each pair's most recent SHARED reference_timestamps -- deliberately
+        not a full pairwise matrix recomputed over all stored history
+        (cost stays bounded by `window` per pair, not by total log volume).
+        Returns {(agent_a, agent_b): {"correlation", "sample_count",
+        "redundancy_penalty_pct"}} for every pair of agents that has ever
+        logged a direction on a shared timestamp. Pairs below
+        settings.agent_correlation_min_sample_size are included with
+        correlation=None and redundancy_penalty_pct=0.0 rather than
+        silently omitted, so a caller always sees why no penalty applies."""
+        settings = get_settings()
+        window_size = window if window is not None else settings.agent_correlation_window
+
+        async with self._session_factory() as session:
+            logs = list(await session.scalars(select(AgentPredictionLog)))
+
+        votes_by_timestamp: dict[datetime, dict[str, str]] = {}
+        for log in logs:
+            votes_by_timestamp.setdefault(log.reference_timestamp, {})[log.agent] = log.direction
+
+        agents = sorted({log.agent for log in logs})
+        results: dict[tuple[str, str], dict] = {}
+        for i, agent_a in enumerate(agents):
+            for agent_b in agents[i + 1 :]:
+                shared_timestamps = sorted(
+                    (
+                        ts
+                        for ts, votes in votes_by_timestamp.items()
+                        if agent_a in votes and agent_b in votes
+                    ),
+                    reverse=True,
+                )[:window_size]
+                votes_a = [votes_by_timestamp[ts][agent_a] for ts in shared_timestamps]
+                votes_b = [votes_by_timestamp[ts][agent_b] for ts in shared_timestamps]
+                correlation = compute_agent_vote_correlation(
+                    votes_a, votes_b, settings.agent_correlation_min_sample_size
+                )
+                results[(agent_a, agent_b)] = {
+                    "correlation": correlation,
+                    "sample_count": len(shared_timestamps),
+                    "redundancy_penalty_pct": compute_redundancy_penalty_pct(
+                        correlation, settings.agent_correlation_max_redundancy_penalty_pct
+                    ),
+                }
+        return results
