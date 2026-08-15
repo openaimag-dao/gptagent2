@@ -261,6 +261,7 @@ ul.structured-list { margin: 3px 0 0; padding-left: 18px; }
   letter-spacing: 0.12em;
 }
 .forecast-symbol { font-size: 20px; font-weight: 700; margin-top: 2px; }
+.forecast-status-line { font-size: 12px; font-weight: 600; margin-top: 4px; }
 
 .forecast-tabs { display: flex; gap: 6px; }
 .forecast-tab {

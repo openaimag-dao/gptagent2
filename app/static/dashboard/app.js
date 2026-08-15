@@ -467,6 +467,65 @@ function forecastAiExplanation(aiExplanation) {
   return nodes;
 }
 
+// V9 Increment 10: reads the most recent history row for the currently
+// selected horizon (history covers every horizon, mixed together) rather
+// than the live `payload` -- a freshly computed forecast is always
+// "ACTIVE" by construction (invalidation is decided by the separate
+// check_and_invalidate_forecasts scheduler job against the PERSISTED row,
+// which can flip a forecast to INVALIDATED well after it was computed).
+function forecastInvalidationBadge(history, horizon) {
+  if (!history || !history.forecasts) return null;
+  const latest = history.forecasts.find((f) => f.horizon === horizon);
+  if (!latest) return null;
+  const invalidated = latest.forecast_status === "INVALIDATED";
+  const parts = [
+    el(
+      "span",
+      { class: invalidated ? "down" : "up" },
+      invalidated ? "⚠ INVALIDATED" : "✓ ACTIVE"
+    ),
+  ];
+  if (latest.forecast_version) parts.push(el("span", { class: "sub" }, ` · v${latest.forecast_version}`));
+  if (invalidated && latest.invalidation_reason) {
+    parts.push(el("span", { class: "sub" }, ` -- ${latest.invalidation_reason}`));
+  }
+  return el("div", { class: "forecast-status-line" }, parts);
+}
+
+// V9 Increment 1's empirical forward-return distribution (p10-p90 across
+// the same RSI[+regime]-bucketed historical sample ProbabilityEngine
+// already computes) -- a real measured spread, not the price-target card's
+// own normal-approximation bands above.
+function forecastQuantileBands(payload) {
+  const q = payload.forward_return_quantiles;
+  if (!q || q.p10_pct == null) {
+    return el(
+      "p",
+      { class: "sub" },
+      "Forward-return distribution needs more historical samples for this bucket."
+    );
+  }
+  const nodes = [
+    el("div", { class: "grid" }, [
+      card("P10", fmtPct(q.p10_pct)),
+      card("P25", fmtPct(q.p25_pct)),
+      card("P50 (Median)", fmtPct(q.p50_pct)),
+      card("P75", fmtPct(q.p75_pct)),
+      card("P90", fmtPct(q.p90_pct)),
+    ]),
+  ];
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      payload.regime_conditioned
+        ? `Conditioned on the current market regime (${payload.reference_regime || "n/a"}).`
+        : "Not regime-conditioned this cycle -- too few same-regime samples, using the full history instead."
+    )
+  );
+  return nodes;
+}
+
 function forecastKeyLevels(levels) {
   if (!levels) return null;
   return el("div", { class: "grid" }, [
@@ -544,17 +603,19 @@ function forecastHistorySection(history) {
   return nodes;
 }
 
-function buildForecastCard(payload, onHorizonChange, historyNodes) {
+function buildForecastCard(payload, onHorizonChange, historyNodes, history) {
   const style = FORECAST_DIRECTION_STYLE[payload.direction] || FORECAST_DIRECTION_STYLE.Neutral;
   const tier = payload.confidence ? payload.confidence.tier : null;
   const confidenceLabel = tier ? `${FORECAST_TIER_LABELS[tier] || tier} (${tier})` : "n/a";
 
   const root = el("div", { class: "forecast-center" });
 
+  const statusBadge = forecastInvalidationBadge(history, payload.horizon);
   const header = el("div", { class: "forecast-header" }, [
     el("div", {}, [
       el("div", { class: "forecast-eyebrow" }, "AI FORECAST CENTER"),
       el("div", { class: "forecast-symbol" }, `${payload.symbol} · ${payload.horizon}`),
+      statusBadge,
     ]),
     el(
       "div",
@@ -667,6 +728,8 @@ function buildForecastCard(payload, onHorizonChange, historyNodes) {
   root.appendChild(confidenceBreakdown);
   root.appendChild(el("h3", {}, "Probability Distribution"));
   root.appendChild(distribution);
+  root.appendChild(el("h3", {}, "Empirical Forward-Return Distribution"));
+  for (const node of [].concat(forecastQuantileBands(payload))) root.appendChild(node);
   root.appendChild(el("h3", {}, "AI Consensus"));
   root.appendChild(forecastConsensusSection(payload.consensus));
   root.appendChild(el("h3", {}, "AI Explanation"));
@@ -697,7 +760,7 @@ async function renderForecastCenter() {
       );
       return;
     }
-    container.appendChild(buildForecastCard(payload, load, forecastHistorySection(history)));
+    container.appendChild(buildForecastCard(payload, load, forecastHistorySection(history), history));
   }
 
   await load("24h");
@@ -885,6 +948,44 @@ function renderWhalePositioning(data) {
   return nodes;
 }
 
+// V9 Increment 9/10: real, graded hit-rate over past alerts -- never a
+// simulated number. Renders nothing (not an empty-state block) until at
+// least one alert has actually been graded, matching how
+// renderWhalePositioning/renderTopOpportunities above stay silent rather
+// than showing a placeholder for data that just hasn't arrived yet.
+function renderAlertPerformance(summary, byType) {
+  if (!summary || summary.graded_count === 0) return [];
+  const nodes = [el("h2", {}, "Alert Performance")];
+  nodes.push(
+    el("div", { class: "grid" }, [
+      card("Graded Alerts", summary.graded_count),
+      card("Significant-Move Rate", `${summary.significant_move_rate_pct}%`),
+      card(
+        "Direction-Continued Rate",
+        summary.direction_continued_rate_pct != null ? `${summary.direction_continued_rate_pct}%` : "n/a",
+        summary.directional_alerts_count ? `of ${summary.directional_alerts_count} directional alerts` : null
+      ),
+      card("Avg Absolute Move", `${summary.avg_abs_realized_move_pct}%`),
+    ])
+  );
+  if (byType && byType.length) {
+    nodes.push(
+      table(
+        ["Alert Type", "Graded", "Significant %", "Direction-Continued %"],
+        byType
+          .slice(0, 10)
+          .map((row) => [
+            row.alert_type,
+            row.graded_count,
+            `${row.significant_move_rate_pct}%`,
+            row.direction_continued_rate_pct != null ? `${row.direction_continued_rate_pct}%` : "n/a",
+          ])
+      )
+    );
+  }
+  return nodes;
+}
+
 function renderTopOpportunities(data) {
   if (!data || !data.opportunities || !data.opportunities.length) return [];
   const nodes = [el("h2", {}, "Top Opportunities")];
@@ -925,6 +1026,8 @@ async function renderOverview() {
     opportunities,
     marketMovers,
     whales,
+    alertPerformance,
+    alertPerformanceByType,
   ] = await Promise.all([
     renderForecastCenter(),
     renderExecutiveSummary(),
@@ -936,6 +1039,8 @@ async function renderOverview() {
     safe("/api/opportunities"),
     safe("/api/scanner/movers"),
     safe("/api/whales"),
+    safe("/api/alert-performance"),
+    safe("/api/alert-performance/by-type"),
   ]);
 
   const nodes = [forecastCenter, execSummary, el("h2", {}, "Overview")];
@@ -971,6 +1076,7 @@ async function renderOverview() {
   nodes.push(...renderMarketMovers(marketMovers));
   nodes.push(...renderWhalePositioning(whales));
   nodes.push(...renderTopOpportunities(opportunities));
+  nodes.push(...renderAlertPerformance(alertPerformance, alertPerformanceByType));
 
   return nodes;
 }
