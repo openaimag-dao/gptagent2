@@ -91,6 +91,16 @@ async def evaluate_predictions(
                 "realized": realized,
                 "correct": predicted == realized,
                 "realized_return_pct": round(realized_return_pct, 2),
+                # POST-V9 Phase 4: the same quantile band/regime already
+                # stored on this snapshot at prediction time, carried
+                # through so compute_quantile_coverage() can check it
+                # against realized_return_pct above without a second join.
+                "p10_pct": float(snapshot.p10_pct) if snapshot.p10_pct is not None else None,
+                "p25_pct": float(snapshot.p25_pct) if snapshot.p25_pct is not None else None,
+                "p50_pct": float(snapshot.p50_pct) if snapshot.p50_pct is not None else None,
+                "p75_pct": float(snapshot.p75_pct) if snapshot.p75_pct is not None else None,
+                "p90_pct": float(snapshot.p90_pct) if snapshot.p90_pct is not None else None,
+                "reference_regime": snapshot.reference_regime,
             }
         )
     return evaluated

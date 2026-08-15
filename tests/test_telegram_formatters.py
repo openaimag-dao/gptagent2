@@ -838,6 +838,47 @@ def test_format_quality_present():
     assert "Macro precision: 75.0% | Macro recall: 72.0%" in text
     assert "60-80%" in text
     assert "1 period(s)" in text
+    # no quantile_coverage key in this fixture -- must not crash or print a
+    # section header for data that was never provided
+    assert "Quantile Coverage" not in text
+
+
+def test_format_quality_renders_quantile_coverage_section():
+    result = {
+        "symbol": "BTC",
+        "timeframe": "1d",
+        "evaluated_predictions": 10,
+        "accuracy_pct": 70.0,
+        "brier_score": 0.25,
+        "average_error_pct": 20.0,
+        "precision_recall": {
+            "macro_precision_pct": 75.0,
+            "macro_recall_pct": 72.0,
+            "per_class": {},
+        },
+        "calibration": [],
+        "time_horizon_accuracy": [],
+        "quantile_coverage": {
+            "p10_p90": {
+                "expected_coverage_pct": 80.0,
+                "realized_coverage_pct": 62.0,
+                "sample_count": 12,
+                "sample_sufficiency": "usable",
+                "coverage_gap_pct": -18.0,
+            },
+            "p25_p75": {
+                "expected_coverage_pct": 50.0,
+                "realized_coverage_pct": None,
+                "sample_count": 0,
+                "sample_sufficiency": "insufficient",
+                "coverage_gap_pct": None,
+            },
+        },
+    }
+    text = format_quality(result, "BTC", "1d")
+    assert "Quantile Coverage" in text
+    assert "p10_p90 (n=12): expected 80.0%, realized 62.0% (usable)" in text
+    assert "p25_p75: not enough graded predictions yet" in text
 
 
 def test_format_report_none():

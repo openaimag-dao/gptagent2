@@ -294,6 +294,24 @@ def format_quality(result: dict | None, symbol: str, timeframe: str) -> str:
             lines.append(
                 f"- {row['horizon_periods']} period(s) (n={row['count']}): {row['accuracy_pct']}%"
             )
+    coverage = result.get("quantile_coverage")
+    if coverage:
+        lines.append("")
+        lines.append("*Quantile Coverage*")
+        for name, stats in coverage.items():
+            if stats["realized_coverage_pct"] is None:
+                lines.append(f"- {name}: not enough graded predictions yet")
+                continue
+            flag = (
+                ""
+                if stats["sample_sufficiency"] == "reliable"
+                else f" ({stats['sample_sufficiency']})"
+            )
+            lines.append(
+                f"- {name} (n={stats['sample_count']}): "
+                f"expected {stats['expected_coverage_pct']}%, "
+                f"realized {stats['realized_coverage_pct']}%{flag}"
+            )
     return "\n".join(lines)
 
 

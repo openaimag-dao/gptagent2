@@ -14,6 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import get_settings
 from app.services.history.schemas import Timeframe
 from app.services.learning.engine import evaluate_predictions
+from app.services.probability.engine import (
+    compute_quantile_coverage,
+    compute_quantile_coverage_by_group,
+)
 from app.services.quality.metrics import (
     compute_average_error,
     compute_brier_score,
@@ -52,5 +56,27 @@ class PredictionQualityEngine:
             "average_error_pct": compute_average_error(evaluated),
             "calibration": calibration,
             "time_horizon_accuracy": compute_time_horizon_accuracy(evaluated),
+            # POST-V9 Phase 4: does the forecast engine's own p10-p90/p25-p75
+            # quantile bands actually contain the realized outcome as often
+            # as their definition claims (80%/50%)? Broken down by regime
+            # and horizon so a healthy aggregate can't hide a regime/horizon
+            # where coverage is badly off.
+            "quantile_coverage": compute_quantile_coverage(
+                evaluated,
+                min_sample_size=settings.calibration_min_sample_size,
+                reliable_sample_size=settings.calibration_reliable_sample_size,
+            ),
+            "quantile_coverage_by_regime": compute_quantile_coverage_by_group(
+                evaluated,
+                "reference_regime",
+                min_sample_size=settings.calibration_min_sample_size,
+                reliable_sample_size=settings.calibration_reliable_sample_size,
+            ),
+            "quantile_coverage_by_horizon": compute_quantile_coverage_by_group(
+                evaluated,
+                "horizon_periods",
+                min_sample_size=settings.calibration_min_sample_size,
+                reliable_sample_size=settings.calibration_reliable_sample_size,
+            ),
             "computed_at": datetime.now(UTC).isoformat(),
         }
