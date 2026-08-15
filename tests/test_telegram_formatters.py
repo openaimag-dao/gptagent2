@@ -1570,6 +1570,55 @@ def test_format_trade_setup_trade_ok_shows_levels():
     assert "Invalidation level: 95.0" in text
 
 
+def test_format_trade_setup_renders_trade_economics_when_present():
+    result = {
+        "recommendation": "TRADE_OK",
+        "reasons": [],
+        "direction": "Bullish",
+        "probability_pct": 72,
+        "conviction_tier": "high",
+        "side": "BUY",
+        "entry_price": 100.0,
+        "stop_loss_price": 90.0,
+        "take_profit_price": 120.0,
+        "risk_reward_ratio": 2.0,
+        "invalidation_level": 95.0,
+        "trade_economics": {
+            "sample_count": 42,
+            "sample_sufficiency": "usable",
+            "win_rate_pct": 55.0,
+            "expectancy_pct": 1.2,
+            "profit_factor": 1.8,
+            "avg_mfe_pct": 6.0,
+            "avg_mae_pct": 2.5,
+        },
+    }
+    text = format_trade_setup("BTC", result)
+    assert "Trade Economics" in text
+    assert "n=42 (usable): win rate 55.0%, expectancy 1.2%/trade" in text
+    assert "Profit factor: 1.8" in text
+    assert "Avg favorable excursion: 6.0% | Avg adverse excursion: 2.5%" in text
+
+
+def test_format_trade_setup_omits_economics_section_when_none():
+    result = {
+        "recommendation": "TRADE_OK",
+        "reasons": [],
+        "direction": "Bullish",
+        "probability_pct": 72,
+        "conviction_tier": "high",
+        "side": "BUY",
+        "entry_price": 100.0,
+        "stop_loss_price": 90.0,
+        "take_profit_price": 120.0,
+        "risk_reward_ratio": 2.0,
+        "invalidation_level": 95.0,
+        "trade_economics": None,
+    }
+    text = format_trade_setup("BTC", result)
+    assert "Trade Economics" not in text
+
+
 def test_format_trade_setup_no_trade_lists_reasons():
     result = {
         "recommendation": "NO_TRADE",

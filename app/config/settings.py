@@ -238,6 +238,19 @@ class Settings(BaseSettings):
     # else to weigh it against).
     consensus_max_agent_weight_pct: float = 60.0
 
+    # ---- Trade Setup historical expectancy backtest (POST-V9 Phase 9) ----
+    # How many forward daily bars the walk-forward simulator searches for a
+    # stop/target touch before calling a hypothetical trade "open" (neither
+    # hit within the window) -- independent of the forecast horizon itself,
+    # since a 2:1 R:R stop/target can take longer to resolve than the
+    # horizon the forecast call was made for.
+    trade_setup_backtest_max_holding_days: int = 30
+    # Below this many backtested (non-"open") trade instances, expectancy
+    # stats are honestly reported as "insufficient" rather than implying a
+    # validated edge off a handful of historical trades.
+    trade_setup_backtest_min_sample_size: int = 30
+    trade_setup_backtest_reliable_sample_size: int = 100
+
     # ---- Alert performance analytics (V9 Increment 9) ----
     # How many days after an alert fires to look up its symbol's forward
     # price change -- an alert is only gradable once real synced history

@@ -1964,6 +1964,23 @@ def format_trade_setup(symbol: str, result: dict | None) -> str:
     elif recommendation != "TRADE_OK":
         lines.append("No gating conditions triggered.")
 
+    economics = result.get("trade_economics")
+    if economics is not None:
+        lines.append("")
+        lines.append("*Trade Economics* (historical backtest of this setup's shape)")
+        lines.append(
+            f"n={economics['sample_count']} ({economics['sample_sufficiency']}): "
+            f"win rate {economics['win_rate_pct']}%, "
+            f"expectancy {economics['expectancy_pct']}%/trade"
+        )
+        if economics.get("profit_factor") is not None:
+            lines.append(f"Profit factor: {economics['profit_factor']}")
+        if economics.get("avg_mfe_pct") is not None or economics.get("avg_mae_pct") is not None:
+            lines.append(
+                f"Avg favorable excursion: {economics.get('avg_mfe_pct')}% | "
+                f"Avg adverse excursion: {economics.get('avg_mae_pct')}%"
+            )
+
     return "\n".join(lines)
 
 
