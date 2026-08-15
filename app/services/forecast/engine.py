@@ -47,7 +47,12 @@ from app.services.common.scoring import center_scaled
 from app.services.conviction.engine import classify_conviction
 from app.services.data_quality.engine import assess_symbol_quality, compute_data_quality_score
 from app.services.explanation.engine import ExplanationEngine
-from app.services.forecast.invalidation import evaluate_invalidation
+from app.services.forecast.invalidation import (
+    ForecastStatus,
+    evaluate_invalidation,
+    status_after_grading,
+    status_after_superseded,
+)
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
@@ -479,8 +484,12 @@ async def grade_price_forecasts(
     stored history -- mirrors
     app.services.learning.engine.evaluate_predictions()'s index-by-
     timestamp join exactly (same reasoning: a forecast only becomes
-    gradable once real history reaches that far, never guessed). Returns
-    how many rows were graded this call."""
+    gradable once real history reaches that far, never guessed). POST-V9
+    Phase 17: also transitions `forecast_status` via status_after_grading
+    -- a still-ACTIVE row becomes GRADED, while one that was already
+    INVALIDATED/SUPERSEDED before its horizon elapsed keeps that status
+    (grading never erases an existing lifecycle marker). Returns how many
+    rows were graded this call."""
     async with session_factory() as session:
         ungraded = list(
             await session.scalars(
@@ -532,6 +541,7 @@ async def grade_price_forecasts(
             )
             db_row.confidence_correct = grade_confidence(error_pct, expected_volatility_pct)
             db_row.evaluated_at = datetime.now(UTC)
+            db_row.forecast_status = status_after_grading(db_row.forecast_status)
             graded += 1
         await session.commit()
     return graded
@@ -553,7 +563,7 @@ async def check_and_invalidate_forecasts(
             await session.scalars(
                 select(PriceForecastSnapshot).where(
                     PriceForecastSnapshot.symbol == symbol,
-                    PriceForecastSnapshot.forecast_status == "ACTIVE",
+                    PriceForecastSnapshot.forecast_status == ForecastStatus.ACTIVE.value,
                     PriceForecastSnapshot.evaluated_at.is_(None),
                 )
             )
@@ -586,7 +596,7 @@ async def check_and_invalidate_forecasts(
             if result["status"] != "INVALIDATED":
                 continue
             db_row = await session.get(PriceForecastSnapshot, snapshot.id)
-            db_row.forecast_status = "INVALIDATED"
+            db_row.forecast_status = ForecastStatus.INVALIDATED.value
             db_row.invalidation_reason = result["invalidation_reason"]
             db_row.invalidated_at = datetime.now(UTC)
             invalidated += 1
@@ -988,7 +998,7 @@ class ForecastEngine:
             payload, latest.timestamp, conviction["tier"], regime_at_forecast
         )
         payload["forecast_version"] = forecast_version
-        payload["forecast_status"] = "ACTIVE"
+        payload["forecast_status"] = ForecastStatus.ACTIVE.value
         return payload
 
     async def _persist(
@@ -1002,7 +1012,11 @@ class ForecastEngine:
         an existing forecast is never overwritten). `forecast_version` is
         the Nth forecast computed for this exact (symbol, horizon) pair,
         making that lineage explicit rather than implicit in insertion
-        order. Returns the version number assigned."""
+        order. POST-V9 Phase 17: also supersedes any prior row for this
+        same (symbol, horizon) that's still ACTIVE (status_after_superseded
+        -- their own predicted values are untouched, only the lifecycle
+        marker changes), so at most one ACTIVE forecast ever exists per
+        (symbol, horizon) at a time. Returns the version number assigned."""
         async with self._session_factory() as session:
             prior_version = await session.scalar(
                 select(func.max(PriceForecastSnapshot.forecast_version)).where(
@@ -1011,6 +1025,19 @@ class ForecastEngine:
                 )
             )
             next_version = (prior_version or 0) + 1
+
+            prior_active = list(
+                await session.scalars(
+                    select(PriceForecastSnapshot).where(
+                        PriceForecastSnapshot.symbol == payload["symbol"],
+                        PriceForecastSnapshot.horizon == payload["horizon"],
+                        PriceForecastSnapshot.forecast_status == ForecastStatus.ACTIVE.value,
+                    )
+                )
+            )
+            for row in prior_active:
+                row.forecast_status = status_after_superseded(row.forecast_status)
+
             session.add(
                 PriceForecastSnapshot(
                     symbol=payload["symbol"],

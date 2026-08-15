@@ -511,6 +511,7 @@ async def test_grade_price_forecasts_grades_an_elapsed_row():
         direction_correct=None,
         confidence_correct=None,
         evaluated_at=None,
+        forecast_status="ACTIVE",
     )
     session_factory, session = _forecast_session([ungraded], db_row)
 
@@ -523,7 +524,43 @@ async def test_grade_price_forecasts_grades_an_elapsed_row():
     assert db_row.direction_correct is True  # predicted Bullish, realized 105 > 100 current_price
     assert db_row.confidence_correct is not None
     assert db_row.evaluated_at is not None
+    # POST-V9 Phase 17: a still-ACTIVE forecast transitions to GRADED once graded.
+    assert db_row.forecast_status == "GRADED"
     session.commit.assert_awaited()
+
+
+async def test_grade_price_forecasts_preserves_invalidated_status():
+    ts0 = datetime(2026, 8, 1, tzinfo=UTC)
+    rows = [
+        SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0),
+        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0, atr=2.0),
+    ]
+    ungraded = SimpleNamespace(
+        id=1,
+        reference_timestamp=ts0,
+        horizon="24h",
+        target_price=103.0,
+        current_price=100.0,
+        direction="Bullish",
+    )
+    db_row = SimpleNamespace(
+        realized_price=None,
+        error_pct=None,
+        direction_correct=None,
+        confidence_correct=None,
+        evaluated_at=None,
+        forecast_status="INVALIDATED",
+    )
+    session_factory, session = _forecast_session([ungraded], db_row)
+
+    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+        graded = await grade_price_forecasts(session_factory, "BTC", object())
+
+    assert graded == 1
+    # grading fills in the outcome fields but never erases an existing
+    # INVALIDATED marker by resetting it to a generic graded status
+    assert db_row.forecast_status == "INVALIDATED"
+    assert db_row.evaluated_at is not None
 
 
 async def test_grade_price_forecasts_skips_an_unmatched_reference_timestamp():
@@ -686,3 +723,33 @@ async def test_persist_starts_at_version_one_when_no_prior_forecast():
     )
 
     assert version == 1
+
+
+async def test_persist_supersedes_prior_active_forecasts_for_same_symbol_horizon():
+    # POST-V9 Phase 17: at most one ACTIVE forecast per (symbol, horizon)
+    # at a time -- a prior ACTIVE row must be marked SUPERSEDED, not left
+    # ACTIVE alongside the new one.
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(return_value=2)
+    prior_active_row = SimpleNamespace(forecast_status="ACTIVE")
+    session.scalars = AsyncMock(return_value=[prior_active_row])
+
+    payload = {
+        "symbol": "BTC",
+        "horizon": "24h",
+        "current_price": 100.0,
+        "target_price": 103.0,
+        "expected_change_pct": 3.0,
+        "direction": "Bullish",
+        "probability_pct": 70,
+        "price_path": [],
+        "probability_distribution": [],
+        "key_levels": {},
+    }
+    version = await engine._persist(
+        payload, datetime(2026, 8, 2, tzinfo=UTC), "high", regime_at_forecast="bull"
+    )
+
+    assert version == 3
+    assert prior_active_row.forecast_status == "SUPERSEDED"
+    session.add.assert_called_once()  # the new row -- the old one is UPDATEd, not re-inserted
