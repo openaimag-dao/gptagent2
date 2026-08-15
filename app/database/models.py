@@ -1209,3 +1209,43 @@ class PriceForecastSnapshot(Base):
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+
+class AlertPerformanceGrade(Base):
+    """V9 Increment 9: Alert Performance Analytics -- one row per graded
+    AlertLog entry, filled in by app.services.alert_performance.engine's
+    grading job once its own horizon has elapsed in stored history. A
+    separate table rather than new columns on AlertLog: AlertLog is shared,
+    append-only, and written by four different alert-producing systems
+    (Smart Alert Engine, AlertRuleEngine, the v5.1 Critical Alert System,
+    the v5.5 Market Scanner) with different `data` shapes -- grading lives
+    here so none of those writers need to change.
+
+    `symbol`/`implied_direction` are best-effort, honestly-resolved reads
+    of the source AlertLog row's own `data` JSON (see
+    app.services.alert_performance.engine.resolve_alert_symbol /
+    resolve_alert_direction) -- an alert whose `data` has no resolvable
+    symbol is simply never graded (no row here), never guessed.
+    `implied_direction` is `None` whenever the alert's own data made no
+    directional claim (e.g. a volume-spike or regime-change alert), in
+    which case `direction_continued` also stays `None` -- there is nothing
+    to grade right or wrong. `significant_move` is the one grade every
+    gradable alert gets: did a real move of at least the configured
+    threshold happen afterward, regardless of direction -- "was this alert
+    followed by something that actually mattered, or was it noise"."""
+
+    __tablename__ = "alert_performance_grades"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    alert_log_id: Mapped[int] = mapped_column(index=True, unique=True)
+    alert_type: Mapped[str] = mapped_column(String(40), index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    horizon_days: Mapped[int] = mapped_column()
+    reference_price: Mapped[float] = mapped_column(Numeric(24, 8))
+    evaluated_price: Mapped[float] = mapped_column(Numeric(24, 8))
+    realized_move_pct: Mapped[float] = mapped_column(Numeric(10, 4))
+    significant_move: Mapped[bool] = mapped_column()
+    implied_direction: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    direction_continued: Mapped[bool | None] = mapped_column(nullable=True)
+    graded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

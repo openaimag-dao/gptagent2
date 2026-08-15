@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.accuracy import router as accuracy_router
 from app.api.admin import router as admin_router
 from app.api.agents import router as agents_router
+from app.api.alert_performance import router as alert_performance_router
 from app.api.alerts import router as alerts_router
 from app.api.backtest import router as backtest_router
 from app.api.brain import router as brain_router
@@ -142,6 +143,7 @@ app.include_router(breakout_router)
 app.include_router(onchain_router)
 app.include_router(opportunities_router)
 app.include_router(alerts_router)
+app.include_router(alert_performance_router)
 app.include_router(shocks_router)
 app.include_router(technical_router)
 app.include_router(watchdog_router)

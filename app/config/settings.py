@@ -201,3 +201,14 @@ class Settings(BaseSettings):
     # average (a regime shift that broke a previously-good agent shows up
     # within roughly one half-life instead of being diluted forever).
     reliability_recency_half_life_days: float = 30.0
+
+    # ---- Alert performance analytics (V9 Increment 9) ----
+    # How many days after an alert fires to look up its symbol's forward
+    # price change -- an alert is only gradable once real synced history
+    # reaches this far past `triggered_at` (never guessed early).
+    alert_grading_horizon_days: int = 3
+    # Minimum |realized_move_pct| over that horizon to count as a
+    # "significant" (non-noise) move -- the one hit-rate every gradable
+    # alert type gets, independent of whether the alert made a directional
+    # claim.
+    alert_grading_significant_move_pct: float = 3.0

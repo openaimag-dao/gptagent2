@@ -10,6 +10,7 @@ from app.config import get_settings
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.agents.orchestrator import build_agent_orchestrator
+from app.services.alert_performance.engine import grade_alert_performance
 from app.services.alerts.engine import build_alert_engine
 from app.services.alerts.rules import build_alert_rule_engine
 from app.services.analysis.correlation import CorrelationEngine
@@ -103,6 +104,7 @@ MONTHLY_PERFORMANCE_JOB_ID = "broadcast_monthly_performance"
 FORECAST_JOB_ID = "compute_forecast"
 FORECAST_GRADING_JOB_ID = "grade_forecasts"
 FORECAST_INVALIDATION_JOB_ID = "invalidate_forecasts"
+ALERT_PERFORMANCE_GRADING_JOB_ID = "grade_alert_performance"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -560,6 +562,22 @@ async def invalidate_forecasts_job() -> None:
         logger.exception("Forecast invalidation job failed")
 
 
+async def grade_alert_performance_job() -> None:
+    """V9 Increment 9: fills in AlertPerformanceGrade rows for every
+    ungraded AlertLog entry whose resolvable symbol has real synced
+    history reaching the configured grading horizon past `triggered_at`.
+    Unlike the BTC-only forecast jobs above, this grades across every
+    symbol an alert's own `data` resolves to -- it's a read-through join
+    against whatever history is already synced, not a new per-symbol
+    compute."""
+    try:
+        graded = await grade_alert_performance(get_session_factory())
+        if graded:
+            logger.info("Alert performance grading: %d alert(s) graded", graded)
+    except Exception:
+        logger.exception("Alert performance grading job failed")
+
+
 async def test_hypotheses_job() -> None:
     engine = HypothesisEngine(get_session_factory())
     try:
@@ -841,6 +859,14 @@ def start_scheduler() -> AsyncIOScheduler:
         invalidate_forecasts_job,
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=FORECAST_INVALIDATION_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        grade_alert_performance_job,
+        trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
+        id=ALERT_PERFORMANCE_GRADING_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,

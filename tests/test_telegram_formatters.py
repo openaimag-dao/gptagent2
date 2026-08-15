@@ -17,6 +17,7 @@ from app.telegram.formatters import (
     format_active_shocks,
     format_advice,
     format_alert_history,
+    format_alert_performance,
     format_alert_rule_created,
     format_alert_rules,
     format_asset_class,
@@ -1548,6 +1549,41 @@ def test_format_trade_setup_no_trade_lists_reasons():
     assert "NO TRADE" in text
     assert "Forecast direction is 'Neutral'" in text
     assert "Side:" not in text
+
+
+def test_format_alert_performance_no_data_yet():
+    summary = {
+        "graded_count": 0,
+        "significant_move_rate_pct": None,
+        "directional_alerts_count": 0,
+        "direction_continued_rate_pct": None,
+        "avg_abs_realized_move_pct": None,
+    }
+    text = format_alert_performance(summary, [])
+    assert "No alerts graded yet" in text
+
+
+def test_format_alert_performance_with_data():
+    summary = {
+        "graded_count": 10,
+        "significant_move_rate_pct": 60.0,
+        "directional_alerts_count": 6,
+        "direction_continued_rate_pct": 66.7,
+        "avg_abs_realized_move_pct": 4.2,
+    }
+    by_type = [
+        {"alert_type": "scanner:price_event", "graded_count": 7, "significant_move_rate_pct": 71.4},
+        {
+            "alert_type": "critical_shock:price_shock",
+            "graded_count": 3,
+            "significant_move_rate_pct": 33.3,
+        },
+    ]
+    text = format_alert_performance(summary, by_type)
+    assert "Graded alerts: 10" in text
+    assert "Significant-move rate: 60.0%" in text
+    assert "Direction-continued rate: 66.7%" in text
+    assert "scanner:price_event: 7 graded, 71.4% significant" in text
 
 
 def _scanner_detection():

@@ -1943,6 +1943,38 @@ def format_trade_setup(symbol: str, result: dict | None) -> str:
     return "\n".join(lines)
 
 
+def format_alert_performance(summary: dict, by_type: list[dict]) -> str:
+    """V9 Increment 9: Alert Performance Analytics -- real, graded hit-rate
+    over past alerts, never a simulated number. `summary` is
+    summarize_alert_performance()'s own return shape (overall, no
+    alert_type filter); `by_type` is
+    summarize_alert_performance_by_type()'s own return shape."""
+    lines = ["*ALERT PERFORMANCE*", ""]
+    if summary["graded_count"] == 0:
+        lines.append("No alerts graded yet -- check back once alerts have had time to play out.")
+        return "\n".join(lines)
+
+    lines.append(f"Graded alerts: {summary['graded_count']}")
+    lines.append(f"Significant-move rate: {summary['significant_move_rate_pct']}%")
+    if summary["direction_continued_rate_pct"] is not None:
+        lines.append(
+            f"Direction-continued rate: {summary['direction_continued_rate_pct']}% "
+            f"(of {summary['directional_alerts_count']} directional alerts)"
+        )
+    lines.append(f"Avg absolute realized move: {summary['avg_abs_realized_move_pct']}%")
+
+    if by_type:
+        lines.append("")
+        lines.append("By alert type:")
+        for row in by_type[:10]:
+            rate = row["significant_move_rate_pct"]
+            lines.append(
+                f"- {row['alert_type']}: {row['graded_count']} graded, {rate}% significant"
+            )
+
+    return "\n".join(lines)
+
+
 def format_alert_rule_created(rule) -> str:
     return (
         f"*Alert rule #{rule.id} created*\n"
