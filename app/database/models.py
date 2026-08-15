@@ -620,6 +620,13 @@ class AgentPredictionLog(Base):
     confidence: Mapped[float | None] = mapped_column(nullable=True)
     reference_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     horizon_periods: Mapped[int] = mapped_column(default=1)
+    # The market regime active when this call was made (see
+    # app.database.models.MarketRegimeSnapshot), captured at log() time so
+    # AgentReliabilityEngine can later condition accuracy on regime.
+    # Nullable: rows logged before this column existed, or logged when no
+    # regime snapshot had ever been computed yet, are honestly unlabeled
+    # rather than backfilled with a guess.
+    regime_at_prediction: Mapped[str | None] = mapped_column(String(30), nullable=True)
     logged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 

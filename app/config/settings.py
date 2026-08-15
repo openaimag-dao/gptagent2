@@ -201,6 +201,16 @@ class Settings(BaseSettings):
     # average (a regime shift that broke a previously-good agent shows up
     # within roughly one half-life instead of being diluted forever).
     reliability_recency_half_life_days: float = 30.0
+    # POST-V9 Phase 5: AgentReliabilityEngine.evaluate_reliability_hierarchical
+    # falls back from a narrow (horizon, regime) slice to a broader one
+    # whenever the narrow slice's recency-weighted effective sample size is
+    # below this threshold -- e.g. 2 stale predictions in "bull" regime
+    # should not be treated as a reliable regime-specific accuracy estimate;
+    # it should fall back to the agent's horizon-level or global accuracy
+    # instead. Effective sample size is in decayed-observation units, not
+    # raw row counts, so a small number of very recent predictions can still
+    # clear this bar.
+    reliability_hierarchical_min_effective_sample: float = 5.0
 
     # ---- Alert performance analytics (V9 Increment 9) ----
     # How many days after an alert fires to look up its symbol's forward

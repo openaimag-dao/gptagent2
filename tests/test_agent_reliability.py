@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.services.agents.base import AgentOutput
 from app.services.reliability.engine import (
     AgentReliabilityEngine,
+    compute_hierarchical_reliability_pct,
     compute_shrunk_reliability_pct,
 )
 
@@ -20,12 +21,13 @@ def _row(timestamp, close):
     return SimpleNamespace(timestamp=timestamp, close=close)
 
 
-def _log(agent, direction, reference_timestamp, horizon_periods=1):
+def _log(agent, direction, reference_timestamp, horizon_periods=1, regime_at_prediction=None):
     return SimpleNamespace(
         agent=agent,
         direction=direction,
         reference_timestamp=reference_timestamp,
         horizon_periods=horizon_periods,
+        regime_at_prediction=regime_at_prediction,
     )
 
 
@@ -51,6 +53,44 @@ async def test_log_persists_only_agents_with_a_direction():
     assert len(persisted) == 1
     assert persisted[0].agent == "macro"
     assert persisted[0].reference_timestamp == t0
+
+
+async def test_log_captures_latest_regime_at_prediction():
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = [_row(t0, 100.0)]
+    outputs = {"macro": AgentOutput(agent="macro", summary="", direction="bullish")}
+
+    session = AsyncMock()
+    session.add_all = MagicMock()
+    session.scalar = AsyncMock(return_value=SimpleNamespace(value="risk_on"))
+    session_factory = MagicMock(return_value=session)
+    session.__aenter__.return_value = session
+
+    with patch("app.services.reliability.engine.get_series", AsyncMock(return_value=rows)):
+        engine = AgentReliabilityEngine(session_factory)
+        await engine.log(outputs)
+
+    (persisted,), _ = session.add_all.call_args
+    assert persisted[0].regime_at_prediction == "risk_on"
+
+
+async def test_log_regime_at_prediction_none_when_no_regime_snapshot_yet():
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = [_row(t0, 100.0)]
+    outputs = {"macro": AgentOutput(agent="macro", summary="", direction="bullish")}
+
+    session = AsyncMock()
+    session.add_all = MagicMock()
+    session.scalar = AsyncMock(return_value=None)
+    session_factory = MagicMock(return_value=session)
+    session.__aenter__.return_value = session
+
+    with patch("app.services.reliability.engine.get_series", AsyncMock(return_value=rows)):
+        engine = AgentReliabilityEngine(session_factory)
+        await engine.log(outputs)
+
+    (persisted,), _ = session.add_all.call_args
+    assert persisted[0].regime_at_prediction is None
 
 
 async def test_log_no_op_when_no_history_synced_yet():
@@ -176,6 +216,176 @@ def test_compute_shrunk_reliability_pct_recency_decay_favors_recent_calls():
     # The year-old miss is decayed to near-zero weight at a 7-day half-life,
     # so the score should track the recent correct call, not a flat 50/50.
     assert pct > 90.0
+
+
+# ---- POST-V9 Phase 5: compute_hierarchical_reliability_pct ----
+
+
+def test_compute_hierarchical_reliability_pct_uses_horizon_regime_when_sufficient():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    keyed = {
+        (None, 1, "risk_on"): [(True, now), (True, now), (False, now)],
+        (None, 1, None): [(True, now)] * 10,
+        (None, None, None): [(False, now)] * 10,
+    }
+    result = compute_hierarchical_reliability_pct(
+        keyed,
+        (None, 1, "risk_on"),
+        now,
+        half_life_days=1e9,
+        pseudo_count=0.0,
+        min_effective_sample=2.0,
+    )
+    assert result["level"] == "horizon_regime"
+    assert result["accuracy_pct"] == round(100 * 2 / 3, 1)
+    assert result["effective_sample_size"] == 3.0
+
+
+def test_compute_hierarchical_reliability_pct_falls_back_to_horizon_when_regime_sample_too_small():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    keyed = {
+        (None, 1, "risk_on"): [(True, now)],  # 1 sample, below the 2.0 threshold
+        (None, 1, None): [(True, now), (True, now), (False, now)],
+        (None, None, None): [(False, now)] * 10,
+    }
+    result = compute_hierarchical_reliability_pct(
+        keyed,
+        (None, 1, "risk_on"),
+        now,
+        half_life_days=1e9,
+        pseudo_count=0.0,
+        min_effective_sample=2.0,
+    )
+    assert result["level"] == "horizon"
+    assert result["accuracy_pct"] == round(100 * 2 / 3, 1)
+
+
+def test_compute_hierarchical_reliability_pct_falls_back_to_global_when_horizon_sample_too_small():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    keyed = {
+        (None, 1, "risk_on"): [(True, now)],
+        (None, 1, None): [(True, now)],
+        (None, None, None): [(True, now), (True, now), (False, now)],
+    }
+    result = compute_hierarchical_reliability_pct(
+        keyed,
+        (None, 1, "risk_on"),
+        now,
+        half_life_days=1e9,
+        pseudo_count=0.0,
+        min_effective_sample=2.0,
+    )
+    assert result["level"] == "global"
+    assert result["accuracy_pct"] == round(100 * 2 / 3, 1)
+
+
+def test_compute_hierarchical_reliability_pct_falls_back_to_prior_when_nothing_qualifies():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    result = compute_hierarchical_reliability_pct(
+        {},
+        (None, 1, "risk_on"),
+        now,
+        half_life_days=1e9,
+        pseudo_count=0.0,
+        min_effective_sample=2.0,
+    )
+    assert result == {"accuracy_pct": 50.0, "level": "prior", "effective_sample_size": 0.0}
+
+
+def test_compute_hierarchical_reliability_pct_uses_symbol_tier_when_present_and_sufficient():
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    keyed = {
+        ("BTC", 1, "risk_on"): [(True, now), (True, now), (True, now)],
+        (None, 1, "risk_on"): [(False, now)] * 10,
+        (None, 1, None): [(False, now)] * 10,
+        (None, None, None): [(False, now)] * 10,
+    }
+    result = compute_hierarchical_reliability_pct(
+        keyed,
+        ("BTC", 1, "risk_on"),
+        now,
+        half_life_days=1e9,
+        pseudo_count=0.0,
+        min_effective_sample=2.0,
+    )
+    assert result["level"] == "symbol_horizon_regime"
+    assert result["accuracy_pct"] == 100.0
+
+
+def test_compute_hierarchical_reliability_pct_no_symbol_tier_attempted_when_symbol_is_none():
+    # When key's symbol is None -- the live pipeline's actual state -- the
+    # symbol-specific level must never be reported, even though its key
+    # would collide with the horizon_regime level's key.
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    keyed = {(None, 1, "risk_on"): [(True, now), (True, now)]}
+    result = compute_hierarchical_reliability_pct(
+        keyed,
+        (None, 1, "risk_on"),
+        now,
+        half_life_days=1e9,
+        pseudo_count=0.0,
+        min_effective_sample=2.0,
+    )
+    assert result["level"] == "horizon_regime"
+
+
+# ---- POST-V9 Phase 5: AgentReliabilityEngine.evaluate_reliability_hierarchical ----
+
+
+async def test_evaluate_reliability_hierarchical_conditions_on_regime():
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    t1 = datetime(2026, 1, 2, tzinfo=UTC)
+    rows = [_row(t0, 100.0), _row(t1, 110.0)]  # +10% -> realized "up"
+    # 6 correct calls: with real config defaults (half_life=30d,
+    # min_effective_sample=5.0) this clears the regime-level sample floor;
+    # a single call would decay-shrink all the way to the 50% prior (see
+    # test_evaluate_reliability_hierarchical_falls_back_to_prior_below_min_sample).
+    logs = [_log("macro", "bullish", t0, regime_at_prediction="risk_on") for _ in range(6)]
+
+    session = AsyncMock()
+    session.scalars.return_value = logs
+    session_factory = MagicMock(return_value=session)
+    session.__aenter__.return_value = session
+
+    with patch("app.services.reliability.engine.get_series", AsyncMock(return_value=rows)):
+        engine = AgentReliabilityEngine(session_factory)
+        result = await engine.evaluate_reliability_hierarchical(regime="risk_on")
+
+    assert "macro" in result
+    assert result["macro"]["accuracy_pct"] > 50.0
+    assert result["macro"]["level"] == "horizon_regime"
+    assert result["macro"]["effective_sample_size"] >= 5.0
+
+
+async def test_evaluate_reliability_hierarchical_falls_back_to_prior_below_min_sample():
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    t1 = datetime(2026, 1, 2, tzinfo=UTC)
+    rows = [_row(t0, 100.0), _row(t1, 110.0)]
+    logs = [_log("macro", "bullish", t0, regime_at_prediction="risk_on")]  # lone call
+
+    session = AsyncMock()
+    session.scalars.return_value = logs
+    session_factory = MagicMock(return_value=session)
+    session.__aenter__.return_value = session
+
+    with patch("app.services.reliability.engine.get_series", AsyncMock(return_value=rows)):
+        engine = AgentReliabilityEngine(session_factory)
+        result = await engine.evaluate_reliability_hierarchical(regime="risk_on")
+
+    # A single decayed observation never clears the default 5.0
+    # min_effective_sample floor at any level -> honest 50% prior, not a
+    # falsely precise 100%.
+    assert result["macro"] == {"accuracy_pct": 50.0, "level": "prior", "effective_sample_size": 0.0}
+
+
+async def test_evaluate_reliability_hierarchical_empty_without_synced_history():
+    session_factory = AsyncMock()
+
+    with patch("app.services.reliability.engine.get_series", AsyncMock(return_value=[])):
+        engine = AgentReliabilityEngine(session_factory)
+        result = await engine.evaluate_reliability_hierarchical()
+
+    assert result == {}
 
 
 def test_compute_shrunk_reliability_pct_short_half_life_ignores_stale_calls_equally_when_both_old():
