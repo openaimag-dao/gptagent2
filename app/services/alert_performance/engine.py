@@ -24,6 +24,7 @@ from app.database.models import AlertLog, AlertPerformanceGrade
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
+from app.services.probability.engine import compute_forward_returns
 
 _UP_ALIASES = {"up", "bullish"}
 _DOWN_ALIASES = {"down", "bearish"}
@@ -98,6 +99,83 @@ def grade_alert_outcome(
         "significant_move": significant_move,
         "direction_continued": direction_continued,
     }
+
+
+def compute_excursions(
+    reference_price: float,
+    window_rows: list,
+    implied_direction: str | None,
+) -> dict:
+    """Pure function: reference price + the daily bars from the alert's
+    own reference candle through its evaluation point (inclusive of both
+    ends) -> the best/worst price excursion during that window, using each
+    bar's own high/low (not just closes) for a real intrabar extreme
+    rather than an underestimate from close-only sampling.
+
+    `max_favorable_excursion_pct`/`max_adverse_excursion_pct` are signed
+    relative to `implied_direction`: for a "down" alert, the favorable
+    excursion is itself negative (price fell, as implied) and the adverse
+    one is positive (price rose against the thesis). Both are None when
+    `implied_direction` is None -- there's no favorable side to measure --
+    but `peak_move_pct` (the single largest |move| regardless of
+    direction) is still reported. Empty window or a zero reference price
+    -> everything None, never guessed."""
+    if not window_rows or reference_price == 0:
+        return {
+            "max_favorable_excursion_pct": None,
+            "max_adverse_excursion_pct": None,
+            "peak_move_pct": None,
+            "time_to_peak_days": None,
+        }
+    highest = max(float(r.high) for r in window_rows)
+    lowest = min(float(r.low) for r in window_rows)
+    up_pct = round(100 * (highest - reference_price) / reference_price, 4)
+    down_pct = round(100 * (lowest - reference_price) / reference_price, 4)
+
+    if abs(up_pct) >= abs(down_pct):
+        peak_move_pct = up_pct
+        peak_row = next(r for r in window_rows if float(r.high) == highest)
+    else:
+        peak_move_pct = down_pct
+        peak_row = next(r for r in window_rows if float(r.low) == lowest)
+
+    max_favorable_excursion_pct = None
+    max_adverse_excursion_pct = None
+    if implied_direction == "up":
+        max_favorable_excursion_pct, max_adverse_excursion_pct = up_pct, down_pct
+    elif implied_direction == "down":
+        max_favorable_excursion_pct, max_adverse_excursion_pct = down_pct, up_pct
+
+    return {
+        "max_favorable_excursion_pct": max_favorable_excursion_pct,
+        "max_adverse_excursion_pct": max_adverse_excursion_pct,
+        "peak_move_pct": peak_move_pct,
+        "time_to_peak_days": (peak_row.timestamp - window_rows[0].timestamp).days,
+    }
+
+
+def compute_baseline_return_pct(
+    returns_series: list[float | None], reference_idx: int, horizon_days: int
+) -> float | None:
+    """Pure function: this symbol's own average horizon-day forward return
+    -- reuses compute_forward_returns, never reimplements it -- computed
+    ONLY from forward-return windows whose data is fully known AT OR
+    BEFORE the reference candle (never the alert's own evaluation window
+    or anything after the reference candle). A window ending exactly at
+    the reference candle uses that candle's own already-realized return,
+    which is data available at alert time, not future data. What a
+    "typical N-day move" for this symbol looked like using only
+    information that would have been available at alert time. None when
+    there isn't at least one such window."""
+    forward = compute_forward_returns(returns_series, horizon=horizon_days)
+    prior = [
+        forward[i]
+        for i in range(min(reference_idx, len(forward)))
+        if i + horizon_days <= reference_idx and forward[i] is not None
+    ]
+    if not prior:
+        return None
+    return round(100 * sum(prior) / len(prior), 4)
 
 
 def _index_at_or_before(rows: list, target: datetime) -> int | None:
@@ -178,6 +256,20 @@ async def grade_alert_performance(session_factory: async_sessionmaker[AsyncSessi
             outcome = grade_alert_outcome(
                 reference_price, evaluated_price, implied_direction, significant_move_pct
             )
+            excursions = compute_excursions(
+                reference_price, rows[reference_idx : evaluated_idx + 1], implied_direction
+            )
+            returns_series = [
+                float(r.return_pct) if r.return_pct is not None else None for r in rows
+            ]
+            baseline_return_pct = compute_baseline_return_pct(
+                returns_series, reference_idx, horizon_days
+            )
+            edge_vs_baseline_pct = (
+                round(outcome["realized_move_pct"] - baseline_return_pct, 4)
+                if baseline_return_pct is not None
+                else None
+            )
             session.add(
                 AlertPerformanceGrade(
                     alert_log_id=log.id,
@@ -191,6 +283,12 @@ async def grade_alert_performance(session_factory: async_sessionmaker[AsyncSessi
                     significant_move=outcome["significant_move"],
                     implied_direction=implied_direction,
                     direction_continued=outcome["direction_continued"],
+                    max_favorable_excursion_pct=excursions["max_favorable_excursion_pct"],
+                    max_adverse_excursion_pct=excursions["max_adverse_excursion_pct"],
+                    peak_move_pct=excursions["peak_move_pct"],
+                    time_to_peak_days=excursions["time_to_peak_days"],
+                    baseline_return_pct=baseline_return_pct,
+                    edge_vs_baseline_pct=edge_vs_baseline_pct,
                 )
             )
             graded += 1
@@ -203,7 +301,14 @@ def _summarize(graded: list[AlertPerformanceGrade]) -> dict:
     """Pure function: a list of AlertPerformanceGrade rows -> the same
     aggregate shape summarize_alert_performance/summarize_by_alert_type
     both return. None fields (not zero) when there's nothing to average --
-    "no data yet" is a real, displayable state, not a score."""
+    "no data yet" is a real, displayable state, not a score.
+
+    POST-V9 Phase 11: `avg_edge_vs_baseline_pct` is the headline "is this
+    alert type actually useful" number -- did alerts of this type see a
+    bigger move than this same symbol's own typical move over the same
+    horizon, on average, or is the alert indistinguishable from normal
+    market noise. Only averaged over rows that actually have a baseline
+    (enough prior history to compute one)."""
     total = len(graded)
     if total == 0:
         return {
@@ -212,11 +317,14 @@ def _summarize(graded: list[AlertPerformanceGrade]) -> dict:
             "directional_alerts_count": 0,
             "direction_continued_rate_pct": None,
             "avg_abs_realized_move_pct": None,
+            "avg_edge_vs_baseline_pct": None,
+            "edge_vs_baseline_sample_count": 0,
         }
     significant = sum(1 for g in graded if g.significant_move)
     directional = [g for g in graded if g.direction_continued is not None]
     direction_correct = sum(1 for g in directional if g.direction_continued)
     avg_move = sum(abs(float(g.realized_move_pct)) for g in graded) / total
+    with_edge = [g for g in graded if g.edge_vs_baseline_pct is not None]
     return {
         "graded_count": total,
         "significant_move_rate_pct": round(100 * significant / total, 1),
@@ -225,6 +333,12 @@ def _summarize(graded: list[AlertPerformanceGrade]) -> dict:
             round(100 * direction_correct / len(directional), 1) if directional else None
         ),
         "avg_abs_realized_move_pct": round(avg_move, 4),
+        "avg_edge_vs_baseline_pct": (
+            round(sum(float(g.edge_vs_baseline_pct) for g in with_edge) / len(with_edge), 4)
+            if with_edge
+            else None
+        ),
+        "edge_vs_baseline_sample_count": len(with_edge),
     }
 
 

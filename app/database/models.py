@@ -1232,7 +1232,24 @@ class AlertPerformanceGrade(Base):
     to grade right or wrong. `significant_move` is the one grade every
     gradable alert gets: did a real move of at least the configured
     threshold happen afterward, regardless of direction -- "was this alert
-    followed by something that actually mattered, or was it noise"."""
+    followed by something that actually mattered, or was it noise".
+
+    POST-V9 Phase 10/11 additions (same table, not a second one):
+    `max_favorable_excursion_pct`/`max_adverse_excursion_pct` are the best/
+    worst price excursion during the grading window, using each daily
+    bar's own high/low (not just closes) between the alert and its
+    evaluation point -- signed relative to `implied_direction` (for a
+    "down" alert, the favorable excursion is itself negative -- price
+    fell, as the alert implied). Both stay `None` when `implied_direction`
+    is `None` (there's no "favorable side" to measure), in which case
+    `peak_move_pct` (the single largest |move| regardless of direction)
+    is still reported. `baseline_return_pct` is this SAME symbol's own
+    average horizon-day forward return, computed only from history
+    strictly before `triggered_at` (no look-ahead) -- "what a typical
+    N-day move looked like using only information available at alert
+    time". `edge_vs_baseline_pct` is `realized_move_pct - baseline_return_pct`:
+    did this alert's actual outcome beat the symbol's own typical move,
+    not just "was direction_continued true"."""
 
     __tablename__ = "alert_performance_grades"
 
@@ -1248,4 +1265,10 @@ class AlertPerformanceGrade(Base):
     significant_move: Mapped[bool] = mapped_column()
     implied_direction: Mapped[str | None] = mapped_column(String(10), nullable=True)
     direction_continued: Mapped[bool | None] = mapped_column(nullable=True)
+    max_favorable_excursion_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    max_adverse_excursion_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    peak_move_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    time_to_peak_days: Mapped[int | None] = mapped_column(nullable=True)
+    baseline_return_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    edge_vs_baseline_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     graded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

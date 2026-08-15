@@ -1586,6 +1586,48 @@ def test_format_alert_performance_with_data():
     assert "scanner:price_event: 7 graded, 71.4% significant" in text
 
 
+def test_format_alert_performance_ranks_by_type_by_edge_vs_baseline():
+    summary = {
+        "graded_count": 10,
+        "significant_move_rate_pct": 60.0,
+        "directional_alerts_count": 6,
+        "direction_continued_rate_pct": 66.7,
+        "avg_abs_realized_move_pct": 4.2,
+        "avg_edge_vs_baseline_pct": 1.5,
+        "edge_vs_baseline_sample_count": 8,
+    }
+    by_type = [
+        {
+            "alert_type": "scanner:volume_spike",
+            "graded_count": 5,
+            "significant_move_rate_pct": 40.0,
+            "avg_edge_vs_baseline_pct": -0.5,
+        },
+        {
+            "alert_type": "scanner:price_event",
+            "graded_count": 7,
+            "significant_move_rate_pct": 71.4,
+            "avg_edge_vs_baseline_pct": 3.2,
+        },
+        {
+            "alert_type": "critical_shock:price_shock",
+            "graded_count": 3,
+            "significant_move_rate_pct": 33.3,
+            "avg_edge_vs_baseline_pct": None,
+        },
+    ]
+    text = format_alert_performance(summary, by_type)
+    assert "Avg edge vs. baseline: +1.50pp (of 8 alerts with a baseline)" in text
+    # The highest-edge type must be listed first, the type with no
+    # measured edge last -- never before a type that actually has one.
+    price_event_pos = text.index("scanner:price_event")
+    volume_spike_pos = text.index("scanner:volume_spike")
+    critical_shock_pos = text.index("critical_shock:price_shock")
+    assert price_event_pos < volume_spike_pos < critical_shock_pos
+    assert "edge +3.20pp" in text
+    assert "edge -0.50pp" in text
+
+
 def _scanner_detection():
     return {
         "category": "price_event",
