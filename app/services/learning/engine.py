@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import ProbabilitySnapshot
+from app.services.common.statistics import compute_wilson_interval
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
 
@@ -117,11 +118,15 @@ class LearningEngine:
         if not evaluated:
             return None
 
-        accuracy_pct = round(100 * sum(1 for e in evaluated if e["correct"]) / len(evaluated), 2)
+        correct = sum(1 for e in evaluated if e["correct"])
+        accuracy_pct = round(100 * correct / len(evaluated), 2)
         return {
             "symbol": symbol,
             "timeframe": timeframe.value,
             "evaluated_predictions": len(evaluated),
             "accuracy_pct": accuracy_pct,
+            # POST-V9 Phase 15: sample-size-aware uncertainty around
+            # accuracy_pct, so it's never read as a settled number.
+            "accuracy_ci": compute_wilson_interval(correct, len(evaluated)),
             "recent": evaluated[-10:],
         }

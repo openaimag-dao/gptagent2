@@ -304,6 +304,10 @@ def test_compute_trade_setup_expectancy_aggregates_wins_and_losses():
     assert result["stop_hit_count"] == 1
     assert result["avg_mae_pct"] == 3.0
     assert result["avg_mfe_pct"] == 5.5
+    # POST-V9 Phase 15: sample-size-aware uncertainty on the two headline numbers
+    assert result["win_rate_ci"]["point_estimate_pct"] == 50.0
+    assert result["win_rate_ci"]["sample_count"] == 2
+    assert result["expectancy_ci"]["sample_count"] == 2
     assert result["avg_days_to_target"] == 3.0
     assert result["avg_days_to_stop"] == 2.0
     assert result["sample_sufficiency"] == "reliable"

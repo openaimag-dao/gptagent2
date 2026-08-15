@@ -334,7 +334,9 @@ async def test_summarize_alert_performance_empty_returns_none_fields():
     assert summary["graded_count"] == 0
     assert summary["significant_move_rate_pct"] is None
     assert summary["direction_continued_rate_pct"] is None
+    assert summary["direction_continued_rate_ci"] is None
     assert summary["avg_edge_vs_baseline_pct"] is None
+    assert summary["avg_edge_vs_baseline_ci"] is None
     assert summary["edge_vs_baseline_sample_count"] == 0
 
 
@@ -360,6 +362,11 @@ async def test_summarize_alert_performance_computes_rates():
     # from both the average and its own sample count.
     assert summary["avg_edge_vs_baseline_pct"] == 3.0
     assert summary["edge_vs_baseline_sample_count"] == 2
+    # POST-V9 Phase 15: sample-size-aware uncertainty on the two headline rates
+    assert summary["direction_continued_rate_ci"]["point_estimate_pct"] == 50.0
+    assert summary["direction_continued_rate_ci"]["sample_count"] == 2
+    assert summary["avg_edge_vs_baseline_ci"]["point_estimate"] == 3.0
+    assert summary["avg_edge_vs_baseline_ci"]["sample_count"] == 2
 
 
 async def test_summarize_alert_performance_by_type_groups_and_sorts():

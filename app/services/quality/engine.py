@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
+from app.services.common.statistics import compute_wilson_interval
 from app.services.history.schemas import Timeframe
 from app.services.learning.engine import evaluate_predictions
 from app.services.probability.engine import (
@@ -51,6 +52,13 @@ class PredictionQualityEngine:
             "timeframe": timeframe.value,
             "evaluated_predictions": len(evaluated),
             "accuracy_pct": accuracy_pct,
+            # POST-V9 Phase 15: accuracy_pct alone can't be judged as an
+            # improvement or a regression without knowing how much sample
+            # noise it could plausibly be explained by -- a Wilson interval
+            # around the same correct/total count accuracy_pct is built from.
+            "accuracy_ci": compute_wilson_interval(
+                sum(1 for e in evaluated if e["correct"]), len(evaluated)
+            ),
             "brier_score": compute_brier_score(evaluated),
             "precision_recall": compute_precision_recall(evaluated),
             "average_error_pct": compute_average_error(evaluated),

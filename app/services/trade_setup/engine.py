@@ -46,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from app.services.backtest.metrics import compute_backtest_metrics
+from app.services.common.statistics import compute_bootstrap_ci, compute_wilson_interval
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
@@ -240,7 +241,10 @@ def compute_trade_setup_expectancy(
     time-to-stop, which that module doesn't cover. None when there's
     nothing to score. `sample_sufficiency` uses the same small-sample
     honesty classification calibration buckets already use, so a 5-trade
-    backtest is never read as a validated edge."""
+    backtest is never read as a validated edge. POST-V9 Phase 15:
+    `win_rate_ci` (Wilson interval) and `expectancy_ci` (percentile
+    bootstrap) attach sample-size-aware uncertainty to this backtest's two
+    headline numbers."""
     usable = [o for o in outcomes if o["realized_return_pct"] is not None]
     if not usable:
         return None
@@ -251,6 +255,7 @@ def compute_trade_setup_expectancy(
     stop_hits = [o for o in usable if o["outcome"] == "stop_hit"]
     mae_values = [o["mae_pct"] for o in usable if o["mae_pct"] is not None]
     mfe_values = [o["mfe_pct"] for o in usable if o["mfe_pct"] is not None]
+    wins = sum(1 for r in returns if r > 0)
 
     return {
         **metrics,
@@ -258,6 +263,12 @@ def compute_trade_setup_expectancy(
         "sample_sufficiency": classify_calibration_reliability(
             len(usable), min_sample_size, reliable_sample_size
         ),
+        "win_rate_ci": compute_wilson_interval(wins, len(usable)),
+        # bootstrap over the same pct-unit values expectancy_pct is
+        # averaged from, not the fraction-unit `returns` used above for
+        # compute_backtest_metrics -- keeps this CI's units matching the
+        # point estimate it's paired with.
+        "expectancy_ci": compute_bootstrap_ci([o["realized_return_pct"] for o in usable]),
         "target_hit_count": len(target_hits),
         "stop_hit_count": len(stop_hits),
         "open_count": sum(1 for o in usable if o["outcome"] == "open"),

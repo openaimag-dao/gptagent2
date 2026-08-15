@@ -46,6 +46,8 @@ async def test_evaluate_assembles_all_quality_measures():
     assert result["symbol"] == "BTC"
     assert result["evaluated_predictions"] == 2
     assert result["accuracy_pct"] == 100.0
+    assert result["accuracy_ci"]["point_estimate_pct"] == 100.0
+    assert result["accuracy_ci"]["sample_count"] == 2
     assert result["brier_score"] is not None
     assert result["precision_recall"]["macro_precision_pct"] == 100.0
     assert result["average_error_pct"] is not None

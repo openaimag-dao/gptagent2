@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.learning.engine import (
+    LearningEngine,
     evaluate_predictions,
     predicted_direction,
     realized_direction,
@@ -94,3 +95,34 @@ async def test_evaluate_predictions_quantile_fields_none_when_snapshot_has_none(
     entry = evaluated[0]
     assert entry["p10_pct"] is None
     assert entry["reference_regime"] is None
+
+
+# ---- POST-V9 Phase 15: LearningEngine.evaluate_accuracy accuracy_ci ----
+
+
+async def test_evaluate_accuracy_none_without_evaluated_predictions():
+    with patch("app.services.learning.engine.evaluate_predictions", AsyncMock(return_value=[])):
+        result = await LearningEngine(MagicMock()).evaluate_accuracy("BTC", object())
+    assert result is None
+
+
+async def test_evaluate_accuracy_includes_wilson_ci_around_accuracy_pct():
+    evaluated = [
+        {"correct": True, "reference_timestamp": None},
+        {"correct": True, "reference_timestamp": None},
+        {"correct": False, "reference_timestamp": None},
+    ]
+    with patch(
+        "app.services.learning.engine.evaluate_predictions",
+        AsyncMock(return_value=evaluated),
+    ):
+        result = await LearningEngine(MagicMock()).evaluate_accuracy("BTC", object())
+
+    assert result["accuracy_pct"] == round(100 * 2 / 3, 2)
+    assert result["accuracy_ci"]["point_estimate_pct"] == round(100 * 2 / 3, 2)
+    assert result["accuracy_ci"]["sample_count"] == 3
+    assert (
+        result["accuracy_ci"]["lower_pct"]
+        <= result["accuracy_pct"]
+        <= result["accuracy_ci"]["upper_pct"]
+    )

@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import get_settings
 from app.database.models import AlertLog, AlertPerformanceGrade
+from app.services.common.statistics import compute_bootstrap_ci, compute_wilson_interval
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
@@ -308,7 +309,12 @@ def _summarize(graded: list[AlertPerformanceGrade]) -> dict:
     bigger move than this same symbol's own typical move over the same
     horizon, on average, or is the alert indistinguishable from normal
     market noise. Only averaged over rows that actually have a baseline
-    (enough prior history to compute one)."""
+    (enough prior history to compute one).
+
+    POST-V9 Phase 15: `direction_continued_rate_ci` (Wilson interval) and
+    `avg_edge_vs_baseline_ci` (percentile bootstrap) attach sample-size-
+    aware uncertainty to those same two headline rates, so an alert type
+    with N=8 isn't read with the same confidence as one with N=800."""
     total = len(graded)
     if total == 0:
         return {
@@ -316,8 +322,10 @@ def _summarize(graded: list[AlertPerformanceGrade]) -> dict:
             "significant_move_rate_pct": None,
             "directional_alerts_count": 0,
             "direction_continued_rate_pct": None,
+            "direction_continued_rate_ci": None,
             "avg_abs_realized_move_pct": None,
             "avg_edge_vs_baseline_pct": None,
+            "avg_edge_vs_baseline_ci": None,
             "edge_vs_baseline_sample_count": 0,
         }
     significant = sum(1 for g in graded if g.significant_move)
@@ -325,6 +333,7 @@ def _summarize(graded: list[AlertPerformanceGrade]) -> dict:
     direction_correct = sum(1 for g in directional if g.direction_continued)
     avg_move = sum(abs(float(g.realized_move_pct)) for g in graded) / total
     with_edge = [g for g in graded if g.edge_vs_baseline_pct is not None]
+    edge_values = [float(g.edge_vs_baseline_pct) for g in with_edge]
     return {
         "graded_count": total,
         "significant_move_rate_pct": round(100 * significant / total, 1),
@@ -332,12 +341,14 @@ def _summarize(graded: list[AlertPerformanceGrade]) -> dict:
         "direction_continued_rate_pct": (
             round(100 * direction_correct / len(directional), 1) if directional else None
         ),
+        "direction_continued_rate_ci": (
+            compute_wilson_interval(direction_correct, len(directional)) if directional else None
+        ),
         "avg_abs_realized_move_pct": round(avg_move, 4),
         "avg_edge_vs_baseline_pct": (
-            round(sum(float(g.edge_vs_baseline_pct) for g in with_edge) / len(with_edge), 4)
-            if with_edge
-            else None
+            round(sum(edge_values) / len(edge_values), 4) if edge_values else None
         ),
+        "avg_edge_vs_baseline_ci": compute_bootstrap_ci(edge_values),
         "edge_vs_baseline_sample_count": len(with_edge),
     }
 
