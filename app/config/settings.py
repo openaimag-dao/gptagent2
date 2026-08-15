@@ -184,3 +184,20 @@ class Settings(BaseSettings):
     # rather than staying a flat absolute percentage for every symbol.
     volatility_ladder_min_multiplier: float = 0.5
     volatility_ladder_max_multiplier: float = 2.5
+
+    # ---- Agent reliability weighting (V9 Increment 8) ----
+    # AgentReliabilityEngine's per-agent accuracy is a Bayesian shrinkage
+    # estimate toward an uninformative 50% prior, weighted by this many
+    # pseudo-observations -- a brand-new agent with 1-2 evaluated calls sits
+    # close to 50% (its raw accuracy is too noisy to trust yet); an agent
+    # with a long track record is barely pulled off its raw accuracy at
+    # all. Higher = more conservative (needs more evaluated calls before
+    # its own accuracy is trusted).
+    reliability_shrinkage_pseudo_count: int = 10
+    # Half-life in days for recency-weighting each evaluated prediction
+    # before it's folded into an agent's accuracy -- a call from
+    # half_life_days ago counts for half as much as one made today, so
+    # reliability tracks an agent's CURRENT edge rather than its all-time
+    # average (a regime shift that broke a previously-good agent shows up
+    # within roughly one half-life instead of being diluted forever).
+    reliability_recency_half_life_days: float = 30.0
