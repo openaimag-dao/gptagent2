@@ -25,6 +25,28 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.services.history.registry import HistorySymbolConfig, build_registry
 from app.services.history.repository import get_series
 
+# POST-V9 Phase 12: past this many days stale, a symbol's freshness score
+# bottoms out at 0 -- a ceiling, not a per-table cadence guess (this
+# project's tables have very different natural update cadences, see the
+# module docstring; 30 days is a conservative outer bound that only
+# penalizes data that's stale by any table's standard).
+_STALENESS_CEILING_DAYS = 30
+
+
+def compute_data_quality_score(days_since_last_update: int | None, status: str) -> int:
+    """Pure function: `assess_symbol_quality`'s own output -> a 0-100
+    freshness score. 0 for "empty" (no rows at all) or a missing
+    `days_since_last_update`; 100 for same-day/next-day freshness; linear
+    decay to 0 at `_STALENESS_CEILING_DAYS`. Monotonically non-increasing
+    in staleness by construction -- never a guessed, non-monotonic curve."""
+    if status == "empty" or days_since_last_update is None:
+        return 0
+    if days_since_last_update <= 1:
+        return 100
+    if days_since_last_update >= _STALENESS_CEILING_DAYS:
+        return 0
+    return round(100 * (1 - days_since_last_update / _STALENESS_CEILING_DAYS))
+
 
 def assess_symbol_quality(rows: list, now: datetime) -> dict:
     """Pure and directly testable: no rows is the only hard "empty" status;

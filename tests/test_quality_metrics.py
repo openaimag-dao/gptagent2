@@ -1,4 +1,5 @@
 from app.services.quality.metrics import (
+    classify_calibration_reliability,
     compute_average_error,
     compute_brier_score,
     compute_calibration,
@@ -84,6 +85,52 @@ def test_compute_calibration_buckets_by_predicted_confidence():
 
 def test_compute_calibration_empty_when_no_predictions():
     assert compute_calibration([]) == []
+
+
+def test_classify_calibration_reliability_thresholds():
+    assert classify_calibration_reliability(5, min_sample_size=30, reliable_sample_size=100) == (
+        "insufficient"
+    )
+    assert classify_calibration_reliability(30, min_sample_size=30, reliable_sample_size=100) == (
+        "usable"
+    )
+    assert classify_calibration_reliability(99, min_sample_size=30, reliable_sample_size=100) == (
+        "usable"
+    )
+    assert classify_calibration_reliability(100, min_sample_size=30, reliable_sample_size=100) == (
+        "reliable"
+    )
+
+
+def test_compute_calibration_flags_small_buckets_as_insufficient():
+    # _EVALUATED's buckets have counts of 1 and 3 -- both well under the
+    # default 30-sample minimum, so both must be flagged, never presented
+    # as trustworthy statistical evidence.
+    buckets = {b["confidence_bucket"]: b for b in compute_calibration(_EVALUATED)}
+
+    assert buckets["40-60%"]["sample_sufficiency"] == "insufficient"
+    assert buckets["40-60%"]["calibration_warning"] is not None
+    assert "1 graded prediction" in buckets["40-60%"]["calibration_warning"]
+
+    assert buckets["60-80%"]["sample_sufficiency"] == "insufficient"
+
+
+def test_compute_calibration_marks_reliable_bucket_when_sample_is_large():
+    large_bucket = [_entry(70, 20, 10, "up", "up") for _ in range(150)]
+    buckets = {b["confidence_bucket"]: b for b in compute_calibration(large_bucket)}
+
+    assert buckets["60-80%"]["count"] == 150
+    assert buckets["60-80%"]["sample_sufficiency"] == "reliable"
+    assert buckets["60-80%"]["calibration_warning"] is None
+
+
+def test_compute_calibration_respects_custom_thresholds():
+    buckets = {
+        b["confidence_bucket"]: b
+        for b in compute_calibration(_EVALUATED, min_sample_size=1, reliable_sample_size=3)
+    }
+    assert buckets["40-60%"]["sample_sufficiency"] == "usable"  # count=1, >=1 but <3
+    assert buckets["60-80%"]["sample_sufficiency"] == "reliable"  # count=3, >=3
 
 
 def test_compute_time_horizon_accuracy_segments_by_horizon():

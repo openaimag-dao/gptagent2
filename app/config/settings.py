@@ -212,3 +212,12 @@ class Settings(BaseSettings):
     # alert type gets, independent of whether the alert made a directional
     # claim.
     alert_grading_significant_move_pct: float = 3.0
+
+    # ---- POST-V9 Phase 3: calibration statistical honesty ----
+    # A calibration bucket (app.services.quality.metrics.compute_calibration)
+    # below this many graded predictions is labeled "insufficient" --
+    # displayed, never hidden, but flagged so it isn't read as strong
+    # statistical evidence. At or above `calibration_reliable_sample_size`
+    # it's labeled "reliable"; between the two, "usable".
+    calibration_min_sample_size: int = 30
+    calibration_reliable_sample_size: int = 100

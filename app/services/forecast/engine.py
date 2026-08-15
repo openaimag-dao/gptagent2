@@ -45,6 +45,7 @@ from app.services.backtest.metrics import compute_max_drawdown_pct
 from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.common.scoring import center_scaled
 from app.services.conviction.engine import classify_conviction
+from app.services.data_quality.engine import assess_symbol_quality, compute_data_quality_score
 from app.services.explanation.engine import ExplanationEngine
 from app.services.forecast.invalidation import evaluate_invalidation
 from app.services.history.registry import find_symbol_config
@@ -787,11 +788,23 @@ class ForecastEngine:
             probability_snapshot.prob_down_pct,
             probability_snapshot.prob_flat_pct,
         )
+        # POST-V9 Phase 12: reuses the exact `rows` already fetched above --
+        # no second query -- to score how fresh this symbol's own synced
+        # history actually is, so a read built on stale data doesn't reach
+        # `effective_confidence_pct` at full strength. `assess_symbol_quality`
+        # is DataQualityEngine's own pure function; this is the only place
+        # in the codebase (besides its own /api/data-quality sweep) that
+        # reads it -- previously it fed no decision path at all.
+        data_quality = assess_symbol_quality(rows, datetime.now(UTC))
+        data_quality_score = compute_data_quality_score(
+            data_quality["days_since_last_update"], data_quality["status"]
+        )
         conviction = classify_conviction(
             confidence_pct,
             sample_size=probability_snapshot.sample_size,
             brier_score=quality["brier_score"] if quality else None,
             evaluated_predictions=quality["evaluated_predictions"] if quality else None,
+            data_quality_score=data_quality_score,
         )
 
         avg_forward_return_pct = float(probability_snapshot.avg_forward_return_pct)
@@ -951,6 +964,23 @@ class ForecastEngine:
             },
             "regime_conditioned": getattr(probability_snapshot, "regime_conditioned", False),
             "reference_regime": getattr(probability_snapshot, "reference_regime", None),
+            # POST-V9 Phase 8 (F-3): the same Prediction Quality Lab
+            # calibration buckets `quality_multiplier` above was already
+            # derived from, exposed in full so a consumer (NO_TRADE) can
+            # find the bucket matching THIS forecast's own confidence level
+            # and read its real calibration_gap_pct -- not a new
+            # computation, the exact same `quality["calibration"]` this
+            # engine already computed for the conviction discount.
+            "calibration": quality["calibration"] if quality else None,
+            # POST-V9 Phase 12: the same data_quality_score classify_conviction
+            # above already discounted effective_confidence_pct by, exposed
+            # so a consumer can see WHY confidence was reduced, not just that
+            # it was.
+            "data_quality": {
+                "status": data_quality["status"],
+                "days_since_last_update": data_quality["days_since_last_update"],
+                "data_quality_score": data_quality_score,
+            },
         }
 
         regime_at_forecast = regime.value if regime is not None else None

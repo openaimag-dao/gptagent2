@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 
 from app.services.conviction.engine import (
     ConvictionEngine,
+    _data_quality_multiplier,
     _quality_multiplier,
     classify_conviction,
 )
@@ -97,6 +98,67 @@ def test_classify_conviction_leaves_well_calibrated_confidence_untouched():
         result["effective_confidence_pct"]
         == classify_conviction(90, sample_size=50)["effective_confidence_pct"]
     )
+
+
+# ---- POST-V9 Phase 12: data quality -> confidence link ----
+
+
+def test_data_quality_multiplier_none_without_a_score():
+    assert _data_quality_multiplier(None) is None
+
+
+def test_data_quality_multiplier_full_strength_at_100():
+    assert _data_quality_multiplier(100) == 1.0
+
+
+def test_data_quality_multiplier_zero_at_0():
+    assert _data_quality_multiplier(0) == 0.0
+
+
+def test_data_quality_multiplier_scales_linearly():
+    assert _data_quality_multiplier(80) == 0.8
+    assert _data_quality_multiplier(60) == 0.6
+    assert _data_quality_multiplier(40) == 0.4
+    assert _data_quality_multiplier(20) == 0.2
+
+
+def test_classify_conviction_data_quality_score_is_monotonic():
+    # Same raw confidence, only data_quality_score varies -- effective
+    # confidence must be non-increasing as data quality degrades, and the
+    # multiplier itself must equal quality/100 at each step.
+    scores_desc = (100, 80, 60, 40, 20)
+    results = [classify_conviction(90, data_quality_score=score) for score in scores_desc]
+    effective = [r["effective_confidence_pct"] for r in results]
+    assert effective == sorted(effective, reverse=True)
+    assert effective[0] > effective[-1]  # strictly worse, not just non-increasing
+    for score, result in zip(scores_desc, results, strict=True):
+        assert result["data_quality_multiplier"] == round(score / 100, 3)
+
+
+def test_classify_conviction_no_data_quality_penalty_without_a_score():
+    with_score = classify_conviction(90, data_quality_score=100)
+    without_score = classify_conviction(90)
+    assert with_score["effective_confidence_pct"] == without_score["effective_confidence_pct"]
+    assert without_score["data_quality_multiplier"] is None
+
+
+def test_classify_conviction_empty_data_pulls_confidence_to_zero():
+    result = classify_conviction(90, data_quality_score=0)
+    assert result["data_quality_multiplier"] == 0.0
+    assert result["effective_confidence_pct"] == 0
+    assert result["tier"] == "Weak"
+
+
+def test_classify_conviction_composes_quality_and_data_quality_multipliers():
+    result = classify_conviction(
+        100,
+        brier_score=0.0,
+        evaluated_predictions=20,
+        data_quality_score=50,
+    )
+    assert result["quality_multiplier"] == 1.0
+    assert result["data_quality_multiplier"] == 0.5
+    assert result["effective_confidence_pct"] == 50
 
 
 async def test_evaluate_probability_folds_in_quality_engine_when_provided():

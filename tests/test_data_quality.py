@@ -2,7 +2,11 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.services.data_quality.engine import DataQualityEngine, assess_symbol_quality
+from app.services.data_quality.engine import (
+    DataQualityEngine,
+    assess_symbol_quality,
+    compute_data_quality_score,
+)
 from app.services.history.registry import HistorySymbolConfig
 from app.services.history.schemas import Timeframe
 
@@ -28,6 +32,35 @@ def test_assess_symbol_quality_has_data_reports_row_count_and_freshness():
     assert result["row_count"] == 2
     assert result["most_recent_timestamp"] == datetime(2026, 1, 5, tzinfo=UTC)
     assert result["days_since_last_update"] == 5
+
+
+# ---- POST-V9 Phase 12: compute_data_quality_score ----
+
+
+def test_compute_data_quality_score_zero_when_empty():
+    assert compute_data_quality_score(None, "empty") == 0
+    assert compute_data_quality_score(5, "empty") == 0
+
+
+def test_compute_data_quality_score_zero_when_days_missing():
+    assert compute_data_quality_score(None, "has_data") == 0
+
+
+def test_compute_data_quality_score_full_when_fresh():
+    assert compute_data_quality_score(0, "has_data") == 100
+    assert compute_data_quality_score(1, "has_data") == 100
+
+
+def test_compute_data_quality_score_zero_past_the_staleness_ceiling():
+    assert compute_data_quality_score(30, "has_data") == 0
+    assert compute_data_quality_score(365, "has_data") == 0
+
+
+def test_compute_data_quality_score_is_monotonically_non_increasing_in_staleness():
+    days = [0, 1, 5, 10, 15, 20, 25, 29, 30, 40]
+    scores = [compute_data_quality_score(d, "has_data") for d in days]
+    assert scores == sorted(scores, reverse=True)
+    assert scores[0] > scores[-1]
 
 
 def test_assess_symbol_quality_never_labels_any_nonzero_row_count_as_stale():

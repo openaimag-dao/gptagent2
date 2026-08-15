@@ -49,7 +49,11 @@ async def test_evaluate_assembles_all_quality_measures():
 
 async def test_evaluate_uses_configured_calibration_bin_width():
     evaluated = [_entry(72, 18, 10, "up", "up")]
-    settings = SimpleNamespace(calibration_bin_width_pct=25)
+    settings = SimpleNamespace(
+        calibration_bin_width_pct=25,
+        calibration_min_sample_size=30,
+        calibration_reliable_sample_size=100,
+    )
     with (
         patch(
             "app.services.quality.engine.evaluate_predictions",

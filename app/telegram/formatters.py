@@ -1873,6 +1873,12 @@ def format_no_trade_verdict(symbol: str, result: dict | None) -> str:
     probability = result.get("probability_pct")
     if direction is not None and probability is not None:
         lines.append(f"Forecast: {direction} ({probability}% probability)")
+    effective_probability = result.get("effective_probability_pct")
+    if effective_probability is not None and effective_probability != probability:
+        lines.append(f"Calibration/sample-adjusted probability: {effective_probability}%")
+    expected_edge = result.get("expected_edge_pct")
+    if expected_edge is not None:
+        lines.append(f"Expected edge: {expected_edge}")
     lines.append("")
 
     reasons = result.get("reasons") or []

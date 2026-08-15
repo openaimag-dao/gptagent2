@@ -35,7 +35,13 @@ class PredictionQualityEngine:
             return None
 
         accuracy_pct = round(100 * sum(1 for e in evaluated if e["correct"]) / len(evaluated), 2)
-        bin_width = get_settings().calibration_bin_width_pct
+        settings = get_settings()
+        calibration = compute_calibration(
+            evaluated,
+            bin_width=settings.calibration_bin_width_pct,
+            min_sample_size=settings.calibration_min_sample_size,
+            reliable_sample_size=settings.calibration_reliable_sample_size,
+        )
         return {
             "symbol": symbol,
             "timeframe": timeframe.value,
@@ -44,7 +50,7 @@ class PredictionQualityEngine:
             "brier_score": compute_brier_score(evaluated),
             "precision_recall": compute_precision_recall(evaluated),
             "average_error_pct": compute_average_error(evaluated),
-            "calibration": compute_calibration(evaluated, bin_width=bin_width),
+            "calibration": calibration,
             "time_horizon_accuracy": compute_time_horizon_accuracy(evaluated),
             "computed_at": datetime.now(UTC).isoformat(),
         }
