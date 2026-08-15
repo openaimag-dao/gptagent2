@@ -2946,6 +2946,27 @@ async function renderAccuracy() {
     );
   }
 
+  nodes.push(el("h2", {}, "Regime × Horizon Accuracy"));
+  if (!data.by_regime_horizon.length) {
+    nodes.push(el("p", { class: "sub" }, "No graded predictions yet with a recorded regime."));
+  } else {
+    nodes.push(
+      table(
+        ["Regime", "Horizon", "Count", "Direction Accuracy", "Avg Abs Error", "Beats Momentum Baseline"],
+        data.by_regime_horizon.map((c) => [
+          c.regime,
+          c.horizon,
+          c.evaluated_count,
+          c.direction_accuracy_pct != null ? `${c.direction_accuracy_pct}%` : "n/a",
+          c.avg_abs_error_pct != null ? `${c.avg_abs_error_pct}%` : "n/a",
+          c.beats_momentum_baseline == null
+            ? "n/a"
+            : el("span", { class: c.beats_momentum_baseline ? "up" : "down" }, c.beats_momentum_baseline ? "Yes" : "No"),
+        ])
+      )
+    );
+  }
+
   nodes.push(el("h2", {}, "Recent Graded Predictions"));
   if (!data.recent.length) {
     nodes.push(el("p", { class: "sub" }, "Nothing graded yet."));

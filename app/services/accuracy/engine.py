@@ -125,6 +125,27 @@ def summarize_by_asset(rows: list[PriceForecastSnapshot]) -> list[dict]:
     ]
 
 
+def summarize_by_regime_horizon(rows: list[PriceForecastSnapshot]) -> list[dict]:
+    """Pure function: POST-V9 Phase 16 -- real accuracy stats broken down
+    by the *combination* of regime and horizon, not just one dimension at
+    a time (existing bucket_accuracy/summarize_by_asset only ever group
+    on a single key). Reuses `regime_at_forecast` and `horizon`, both
+    already persisted on every row (see PriceForecastSnapshot), so this
+    is a pure regroup of data already fetched -- no new I/O, no new
+    columns. A row with no recorded regime (forecasts computed before
+    `regime_at_forecast` existed) is honestly excluded from the matrix
+    rather than dumped into a fake "unknown" cell."""
+    by_cell: dict[tuple[str, str], list[PriceForecastSnapshot]] = defaultdict(list)
+    for row in rows:
+        if row.evaluated_at is None or row.regime_at_forecast is None:
+            continue
+        by_cell[(row.regime_at_forecast, row.horizon)].append(row)
+    return [
+        {"regime": regime, "horizon": horizon, **_aggregate_stats(by_cell[(regime, horizon)])}
+        for regime, horizon in sorted(by_cell)
+    ]
+
+
 def overall_summary(rows: list[PriceForecastSnapshot]) -> dict:
     graded = [r for r in rows if r.evaluated_at is not None]
     return _aggregate_stats(graded)
@@ -155,6 +176,7 @@ class AccuracyEngine:
             "weekly": bucket_accuracy(rows, "weekly"),
             "monthly": bucket_accuracy(rows, "monthly"),
             "by_asset": summarize_by_asset(rows),
+            "by_regime_horizon": summarize_by_regime_horizon(rows),
             "recent": [
                 {
                     "symbol": r.symbol,
