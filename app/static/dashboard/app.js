@@ -2849,7 +2849,9 @@ async function renderQuality() {
           card("Evaluated predictions", r.evaluated_predictions),
           card("Accuracy", `${r.accuracy_pct}%`),
           card("Brier score", r.brier_score),
+          card("Log Loss", r.log_loss),
           card("Avg calibration error", `${r.average_error_pct}%`),
+          card("Expected Calibration Error (ECE)", r.expected_calibration_error),
         ])
       );
       results.appendChild(el("h2", {}, "Precision / Recall"));

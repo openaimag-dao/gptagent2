@@ -3,6 +3,8 @@ from app.services.quality.metrics import (
     compute_average_error,
     compute_brier_score,
     compute_calibration,
+    compute_expected_calibration_error,
+    compute_log_loss,
     compute_precision_recall,
     compute_time_horizon_accuracy,
 )
@@ -34,6 +36,50 @@ def test_compute_brier_score_matches_hand_calculation():
 
 def test_compute_brier_score_none_when_empty():
     assert compute_brier_score([]) is None
+
+
+# ---- Forecast Intelligence Upgrade: Log Loss + ECE --------------------------
+
+
+def test_compute_log_loss_matches_hand_calculation():
+    assert compute_log_loss(_EVALUATED) == 0.6456
+
+
+def test_compute_log_loss_none_when_empty():
+    assert compute_log_loss([]) is None
+
+
+def test_compute_log_loss_is_unbounded_unlike_brier_score():
+    # As confidence on the WRONG outcome approaches 100%, Log Loss grows
+    # without bound while Brier score stays capped near 2.0 -- genuinely
+    # different information from the same wrong call, which is the whole
+    # point of adding Log Loss alongside the existing Brier score.
+    very_confident_wrong = [_entry(99.9, 0.1, 0, "up", "down")]
+    log_loss = compute_log_loss(very_confident_wrong)
+    brier = compute_brier_score(very_confident_wrong)
+    assert log_loss > 6.0  # -ln(0.001) ~= 6.9
+    assert brier < 2.0
+
+
+def test_compute_expected_calibration_error_matches_weighted_hand_calculation():
+    buckets = [
+        {"count": 10, "calibration_gap_pct": 5.0},
+        {"count": 90, "calibration_gap_pct": 1.0},
+    ]
+    # (10*5.0 + 90*1.0) / 100 = 1.4
+    assert compute_expected_calibration_error(buckets) == 1.4
+
+
+def test_compute_expected_calibration_error_none_without_buckets():
+    assert compute_expected_calibration_error([]) is None
+
+
+def test_compute_expected_calibration_error_uses_absolute_gap():
+    # A negative calibration_gap_pct (underconfident) must count the same
+    # as an equal-magnitude positive one (overconfident) -- ECE measures
+    # miscalibration magnitude, not direction.
+    buckets = [{"count": 10, "calibration_gap_pct": -5.0}]
+    assert compute_expected_calibration_error(buckets) == 5.0
 
 
 def test_compute_precision_recall_matches_hand_calculation():

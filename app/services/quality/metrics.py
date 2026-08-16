@@ -2,13 +2,19 @@
 (app.services.learning.engine.evaluate_predictions()'s output: real
 ProbabilitySnapshot rows joined against what actually happened, never a
 guessed or simulated outcome). Computes the measures LearningEngine's
-plain accuracy_pct doesn't: Brier score, per-class precision/recall,
-a calibration curve, average calibration error, and accuracy segmented
-by prediction horizon.
+plain accuracy_pct doesn't: Brier score, Log Loss, per-class precision/
+recall, a calibration curve, a single Expected Calibration Error (ECE)
+scalar over that curve, average calibration error, and accuracy
+segmented by prediction horizon.
 """
+
+import math
 
 _DIRECTIONS: tuple[str, ...] = ("up", "down", "flat")
 _CALIBRATION_BIN_WIDTH = 20
+# Clamps a probability away from exactly 0/1 before taking its log, so one
+# confidently-wrong call doesn't blow Log Loss up to +inf.
+_LOG_LOSS_EPSILON = 1e-15
 
 # Below this many graded predictions in a bucket, its own
 # calibration_gap_pct is too noisy to trust -- POST-V9 Phase 3: a bucket
@@ -42,6 +48,43 @@ def compute_brier_score(evaluated: list[dict]) -> float | None:
             outcome = 1.0 if entry["realized"] == direction else 0.0
             total += (prob - outcome) ** 2
     return round(total / len(evaluated), 4)
+
+
+def compute_log_loss(evaluated: list[dict]) -> float | None:
+    """Forecast Intelligence Upgrade -- multiclass cross-entropy loss:
+    -mean(log(probability the model assigned to the class that actually
+    happened)), clipped away from exactly 0/1 (`_LOG_LOSS_EPSILON`) so a
+    single confidently-wrong call doesn't blow the average up to +inf.
+    Lower is better (0 = perfect). Unlike Brier score, this penalizes a
+    confident WRONG call far more heavily than an uncertain one --
+    genuinely different information from the squared-error measure
+    Brier score already gives. None when there's nothing to grade rather
+    than a fabricated 0."""
+    if not evaluated:
+        return None
+    total = 0.0
+    for entry in evaluated:
+        prob = entry[f"prob_{entry['realized']}_pct"] / 100.0
+        clipped = min(max(prob, _LOG_LOSS_EPSILON), 1 - _LOG_LOSS_EPSILON)
+        total += -math.log(clipped)
+    return round(total / len(evaluated), 4)
+
+
+def compute_expected_calibration_error(calibration_buckets: list[dict]) -> float | None:
+    """Forecast Intelligence Upgrade -- the standard Expected Calibration
+    Error: the sample-weighted mean absolute gap between each bucket's
+    average stated confidence and its observed accuracy, over the exact
+    buckets `compute_calibration()` already computed (no re-bucketing) --
+    the single-scalar summary of the whole calibration curve requested
+    alongside the per-bucket detail, not a second measurement. None when
+    there are no buckets to average (nothing graded yet)."""
+    total_count = sum(bucket["count"] for bucket in calibration_buckets)
+    if total_count == 0:
+        return None
+    weighted_gap = sum(
+        abs(bucket["calibration_gap_pct"]) * bucket["count"] for bucket in calibration_buckets
+    )
+    return round(weighted_gap / total_count, 4)
 
 
 def compute_precision_recall(evaluated: list[dict]) -> dict:
