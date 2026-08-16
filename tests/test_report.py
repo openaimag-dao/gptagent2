@@ -1,3 +1,5 @@
+from unittest.mock import AsyncMock
+
 from pydantic import ValidationError
 
 from app.database.models import (
@@ -12,6 +14,7 @@ from app.database.models import (
 )
 from app.services.analysis.regime import MarketRegime
 from app.services.analysis.report import (
+    ReportGenerator,
     _format_data_quality_note,
     _format_replay_comparison,
     _format_watchdog_citation,
@@ -23,6 +26,20 @@ from app.services.analysis.report import (
     watchdog_report_input,
 )
 from app.services.analysis.schemas import AIAnalysisContent
+from app.services.reliability.engine import AgentReliabilityEngine
+
+
+def _report_generator(reliability_engine=None):
+    return ReportGenerator(
+        session_factory=AsyncMock(),
+        market_repository=AsyncMock(),
+        news_repository=AsyncMock(),
+        correlation_engine=AsyncMock(),
+        regime_detector=AsyncMock(),
+        signal_engine=AsyncMock(),
+        agent_orchestrator=AsyncMock(),
+        reliability_engine=reliability_engine or AsyncMock(),
+    )
 
 
 def test_derive_risk_level_high_for_risk_off():
@@ -417,3 +434,56 @@ def test_build_institutional_report_is_honest_when_no_fields_were_recovered():
     ir = build_institutional_report(report, sector_breadth=None)
 
     assert ir["data_quality_note"] is None
+
+
+# ---- Forecast Intelligence Upgrade: Regime-Aware Weighting -----------------
+
+
+async def test_safe_reliability_uses_flat_method_without_a_live_regime():
+    reliability_engine = AsyncMock()
+    reliability_engine.evaluate_reliability.return_value = {"macro": 55.0}
+    generator = _report_generator(reliability_engine)
+
+    result = await generator._safe_reliability(None)
+
+    assert result == {"macro": 55.0}
+    reliability_engine.evaluate_reliability.assert_awaited_once()
+    reliability_engine.evaluate_reliability_hierarchical.assert_not_called()
+
+
+async def test_safe_reliability_uses_hierarchical_method_with_a_live_regime():
+    reliability_engine = AsyncMock()
+    reliability_engine.evaluate_reliability_hierarchical.return_value = {
+        "macro": {"accuracy_pct": 62.0, "level": "regime", "effective_sample_size": 30},
+        "crypto": {"accuracy_pct": None, "level": "insufficient_data", "effective_sample_size": 2},
+    }
+    generator = _report_generator(reliability_engine)
+
+    result = await generator._safe_reliability("risk_off")
+
+    assert result == {"macro": 62.0}
+    reliability_engine.evaluate_reliability_hierarchical.assert_awaited_once_with(regime="risk_off")
+
+
+async def test_safe_reliability_survives_reliability_engine_failure():
+    reliability_engine = AsyncMock()
+    reliability_engine.evaluate_reliability_hierarchical.side_effect = RuntimeError("db down")
+    generator = _report_generator(reliability_engine)
+
+    result = await generator._safe_reliability("bull")
+
+    assert result is None
+
+
+def test_report_generator_defaults_to_a_real_reliability_engine_when_none_is_injected():
+    generator = ReportGenerator(
+        session_factory=AsyncMock(),
+        market_repository=AsyncMock(),
+        news_repository=AsyncMock(),
+        correlation_engine=AsyncMock(),
+        regime_detector=AsyncMock(),
+        signal_engine=AsyncMock(),
+        agent_orchestrator=AsyncMock(),
+    )
+
+    assert isinstance(generator._reliability_engine, AgentReliabilityEngine)
