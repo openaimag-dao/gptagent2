@@ -60,11 +60,15 @@
   <button data-page="settings">Settings</button>
 </nav>
 <main>
-  <div id="topbar"><span id="last-updated" class="sub"></span></div>
+  <div id="topbar">
+    <span id="connection-indicator" class="connection-indicator">&#9679; CONNECTING</span>
+    <span id="last-updated" class="sub"></span>
+  </div>
   <div id="content">
     <p class="loading">Loading...</p>
   </div>
 </main>
+<script src="realtime.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

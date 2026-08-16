@@ -113,6 +113,107 @@ function table(headers, rows) {
   return t;
 }
 
+// ---- Live Dashboard Upgrade: realtime price components -------------------
+// All read from the single shared RealtimeStore (realtime.js) -- never a
+// per-component EventSource/WebSocket connection.
+
+function fmtAge(ageSeconds) {
+  if (ageSeconds == null) return "";
+  if (ageSeconds < 60) return `${Math.round(ageSeconds)}s`;
+  return `${Math.round(ageSeconds / 60)}m`;
+}
+
+function dataFreshnessBadge(freshness, ageSeconds) {
+  if (!freshness) return el("span", { class: "freshness-badge freshness-unknown" }, "...");
+  const label = freshness.toUpperCase();
+  const text = freshness === "offline" ? "OFFLINE" : `${label} · ${fmtAge(ageSeconds)}`;
+  return el("span", { class: `freshness-badge freshness-${freshness}` }, text);
+}
+
+function tickerItem(symbol, fallbackQuote) {
+  const entry = RealtimeStore.get(symbol);
+  const price = entry ? entry.price : fallbackQuote ? fallbackQuote.price : null;
+  const changePct = entry ? entry.changePercent24h : fallbackQuote ? fallbackQuote.change_pct_24h : null;
+  // /api/market already computes real freshness/age_seconds per quote
+  // (from the batch's actual collected_at) -- reuse it rather than
+  // guessing a label before the first realtime tick arrives.
+  const badge = entry
+    ? dataFreshnessBadge(entry.freshness, entry.ageSeconds)
+    : fallbackQuote
+      ? dataFreshnessBadge(fallbackQuote.freshness, fallbackQuote.age_seconds)
+      : dataFreshnessBadge(null, null);
+  return el("div", { class: "ticker-item", "data-symbol": symbol }, [
+    el("div", { class: "ticker-symbol" }, symbol),
+    el("div", { class: "ticker-price" }, price != null ? fmtNum(price) : "n/a"),
+    el("div", { class: `ticker-change ${changeClass(changePct)}` }, fmtPct(changePct)),
+    badge,
+  ]);
+}
+
+// `fallbackQuotes` is the already-fetched /api/market snapshot for this
+// cycle -- used only to paint an honest, real price before the first
+// realtime tick has arrived for a symbol, never a fabricated value.
+function liveTicker(symbols, fallbackQuotes) {
+  const bySymbol = new Map((fallbackQuotes || []).map((q) => [q.symbol, q]));
+  const wrap = el(
+    "div",
+    { class: "ticker", id: "live-ticker" },
+    symbols.map((s) => tickerItem(s, bySymbol.get(s)))
+  );
+  RealtimeStore.mount({
+    onTick: (dirtySymbols) => {
+      for (const symbol of dirtySymbols) updateTickerCell(symbol);
+    },
+    onStatus: updateConnectionIndicator,
+  });
+  return wrap;
+}
+
+// Patches only the one changed symbol's DOM node -- a BTC tick never
+// touches ETH's card or re-renders the rest of Overview.
+function updateTickerCell(symbol) {
+  const container = document.getElementById("live-ticker");
+  if (!container) return;
+  const node = container.querySelector(`[data-symbol="${symbol}"]`);
+  if (!node) return;
+  const entry = RealtimeStore.get(symbol);
+  if (!entry) return;
+
+  const priceEl = node.querySelector(".ticker-price");
+  const changeEl = node.querySelector(".ticker-change");
+  const badgeEl = node.querySelector(".freshness-badge");
+
+  const prevPrice = Number(priceEl.dataset.rawPrice || entry.previousPrice);
+  priceEl.textContent = fmtNum(entry.price);
+  priceEl.dataset.rawPrice = String(entry.price);
+  changeEl.textContent = fmtPct(entry.changePercent24h);
+  changeEl.className = `ticker-change ${changeClass(entry.changePercent24h)}`;
+  if (badgeEl) badgeEl.replaceWith(dataFreshnessBadge(entry.freshness, entry.ageSeconds));
+
+  if (Number.isFinite(prevPrice) && entry.price !== prevPrice) {
+    const flashClass = entry.price > prevPrice ? "flash-up" : "flash-down";
+    priceEl.classList.remove("flash-up", "flash-down");
+    void priceEl.offsetWidth; // restart the CSS animation on repeated ticks
+    priceEl.classList.add(flashClass);
+  }
+}
+
+const _CONNECTION_STATUS_LABELS = {
+  connected: "LIVE",
+  connecting: "CONNECTING",
+  reconnecting: "RECONNECTING",
+  offline: "OFFLINE",
+};
+
+function updateConnectionIndicator(status, latencyMs) {
+  const node = document.getElementById("connection-indicator");
+  if (!node) return;
+  const label = _CONNECTION_STATUS_LABELS[status] || status.toUpperCase();
+  const suffix = status === "connected" && latencyMs != null ? ` ${(latencyMs / 1000).toFixed(1)}s` : "";
+  node.textContent = `● ${label}${suffix}`;
+  node.className = `connection-indicator status-${status}`;
+}
+
 // v10.0 "Smart Navigation" -- one pointer per screen to the related
 // intelligence a trader would naturally check next. Mirrors
 // app/services/common/navigation.py's NAV_POINTERS wording; purely a link
@@ -1049,6 +1150,7 @@ async function renderOverview() {
     forecastCenter,
     execSummary,
     market,
+    realtimeStatus,
     regime,
     signals,
     score,
@@ -1062,6 +1164,7 @@ async function renderOverview() {
     renderForecastCenter(),
     renderExecutiveSummary(),
     safe("/api/market"),
+    safe("/api/realtime/status"),
     safe("/api/regime"),
     safe("/api/signals"),
     safe("/api/global-score"),
@@ -1073,7 +1176,11 @@ async function renderOverview() {
     safe("/api/alert-performance/by-type"),
   ]);
 
-  const nodes = [forecastCenter, execSummary, el("h2", {}, "Overview")];
+  const nodes = [];
+  if (realtimeStatus && realtimeStatus.watchlist && realtimeStatus.watchlist.length) {
+    nodes.push(liveTicker(realtimeStatus.watchlist, market ? market.quotes : null));
+  }
+  nodes.push(forecastCenter, execSummary, el("h2", {}, "Overview"));
   const top = el("div", { class: "grid" });
   if (regime) top.appendChild(card("Regime", regime.regime.replace(/_/g, " ")));
   if (signals) top.appendChild(card("Bull / Bear", `${signals.bull_score} / ${signals.bear_score}`, `net ${signals.net_score}, ${signals.confidence_pct}% confidence`));
@@ -3893,6 +4000,11 @@ const AUTO_REFRESH_MS = 60000;
 
 const lastUpdatedEl = document.getElementById("last-updated");
 let refreshTimer = null;
+
+// Header connection indicator persists across page navigation -- one
+// subscription for the life of the tab, independent of liveTicker()'s
+// per-page mount (which only exists while Overview is the visible page).
+RealtimeStore.subscribeStatus(updateConnectionIndicator);
 
 function parseHash() {
   const raw = location.hash.replace(/^#/, "");
