@@ -11,8 +11,11 @@ from app.services.forecast.engine import (
     _onchain_confidence,
     _whale_confidence,
     check_and_invalidate_forecasts,
+    check_target_reached,
     classify_direction_label,
     compute_expected_max_drawdown_pct,
+    compute_historical_mean_baseline_error_pct,
+    compute_horizon_consistency,
     compute_momentum_score,
     compute_prediction_range,
     compute_price_path,
@@ -23,6 +26,7 @@ from app.services.forecast.engine import (
     derive_risk_meter,
     grade_confidence,
     grade_direction,
+    grade_momentum_baseline,
     grade_price_forecasts,
     price_forecast_quality_multiplier,
     summarize_forecast_accuracy,
@@ -247,6 +251,111 @@ def _build_engine():
     return engine, deps, session
 
 
+# ---- Forecast Intelligence Upgrade: Multi-Horizon Consistency ---------------
+
+
+def test_compute_horizon_consistency_none_with_fewer_than_2_horizons():
+    assert compute_horizon_consistency({}) is None
+    assert compute_horizon_consistency({"24h": "Bullish"}) is None
+
+
+def test_compute_horizon_consistency_ignores_unknown_direction_labels():
+    # A horizon with a direction string outside _DIRECTION_SIGN (e.g. a
+    # snapshot from before a label taxonomy change) is honestly dropped,
+    # not guessed at -- if that leaves fewer than 2 usable horizons the
+    # whole result is None.
+    assert compute_horizon_consistency({"24h": "Bullish", "3d": "???"}) is None
+
+
+def test_compute_horizon_consistency_full_agreement():
+    directions = {"24h": "Bullish", "3d": "Bullish", "7d": "Strong Bullish", "30d": "Bullish"}
+    result = compute_horizon_consistency(directions)
+    assert result["short_term"] == "Bullish"
+    assert result["medium_term"] == "Bullish"
+    assert result["long_term"] == "Bullish"
+    assert result["consistency_pct"] == 100.0
+    assert result["agreeing_pairs"] == result["total_pairs"] == 6
+    assert result["horizons_available"] == ["24h", "30d", "3d", "7d"]
+
+
+def test_compute_horizon_consistency_short_vs_long_split():
+    # Matches the spec's own example: short-term bullish, long-term
+    # bearish -- must be reported as a real split, never smoothed away.
+    # 3d=Bullish and 7d=Bearish cancel out to a genuinely Neutral medium
+    # read (avg sign 0), not just "whichever direction happened first".
+    directions = {"24h": "Bullish", "3d": "Bullish", "7d": "Bearish", "30d": "Bearish"}
+    result = compute_horizon_consistency(directions)
+    assert result["short_term"] == "Bullish"
+    assert result["medium_term"] == "Neutral"
+    assert result["long_term"] == "Bearish"
+    assert 0 < result["consistency_pct"] < 100
+    assert "Short-term (24h): Bullish" in result["explanation"]
+    assert "Long-term (30d): Bearish" in result["explanation"]
+
+
+def test_compute_horizon_consistency_partial_horizons_still_computes():
+    # Only 2 of the 4 horizons have data yet (e.g. right after a fresh
+    # symbol's first forecast cycle) -- must still produce a real,
+    # non-fabricated result over just what exists.
+    result = compute_horizon_consistency({"24h": "Bearish", "30d": "Bearish"})
+    assert result["short_term"] == "Bearish"
+    assert result["medium_term"] is None
+    assert result["long_term"] == "Bearish"
+    assert result["consistency_pct"] == 100.0
+    assert result["horizons_available"] == ["24h", "30d"]
+
+
+def _snapshot(horizon, direction, probability_pct, computed_at):
+    return SimpleNamespace(
+        horizon=horizon,
+        direction=direction,
+        probability_pct=probability_pct,
+        computed_at=computed_at,
+    )
+
+
+async def test_get_latest_per_horizon_keeps_first_row_seen_per_horizon():
+    engine, _, session = _build_engine()
+    rows = [
+        _snapshot("24h", "Bullish", 68, datetime(2026, 8, 2, tzinfo=UTC)),
+        _snapshot("7d", "Neutral", 50, datetime(2026, 8, 1, tzinfo=UTC)),
+        # An older 24h row further down the (already-DESC-ordered) result
+        # must NOT overwrite the first (newest) one seen above.
+        _snapshot("24h", "Bearish", 40, datetime(2026, 7, 30, tzinfo=UTC)),
+    ]
+    session.scalars = AsyncMock(return_value=rows)
+    latest = await engine.get_latest_per_horizon("BTC")
+    assert set(latest) == {"24h", "7d"}
+    assert latest["24h"].direction == "Bullish"
+
+
+async def test_get_horizon_consistency_none_without_any_snapshots():
+    engine, _, session = _build_engine()
+    session.scalars = AsyncMock(return_value=[])
+    assert await engine.get_horizon_consistency("BTC") is None
+
+
+async def test_get_horizon_consistency_none_with_only_one_horizon():
+    engine, _, session = _build_engine()
+    rows = [_snapshot("24h", "Bullish", 68, datetime(2026, 8, 2, tzinfo=UTC))]
+    session.scalars = AsyncMock(return_value=rows)
+    assert await engine.get_horizon_consistency("BTC") is None
+
+
+async def test_get_horizon_consistency_includes_by_horizon_detail():
+    engine, _, session = _build_engine()
+    rows = [
+        _snapshot("24h", "Bullish", 68, datetime(2026, 8, 2, tzinfo=UTC)),
+        _snapshot("30d", "Bearish", 64, datetime(2026, 8, 1, tzinfo=UTC)),
+    ]
+    session.scalars = AsyncMock(return_value=rows)
+    result = await engine.get_horizon_consistency("BTC")
+    assert result["short_term"] == "Bullish"
+    assert result["long_term"] == "Bearish"
+    assert result["by_horizon"]["24h"]["probability_pct"] == 68
+    assert result["by_horizon"]["30d"]["direction"] == "Bearish"
+
+
 async def test_compute_returns_none_for_unknown_horizon():
     engine, _, _ = _build_engine()
     assert await engine.compute("BTC", "99h") is None
@@ -445,7 +554,7 @@ async def test_grade_price_forecasts_returns_zero_without_ungraded_rows():
 
 async def test_grade_price_forecasts_skips_a_horizon_that_hasnt_elapsed_yet():
     ts0 = datetime(2026, 8, 1, tzinfo=UTC)
-    rows = [SimpleNamespace(timestamp=ts0, close=100.0)]
+    rows = [SimpleNamespace(timestamp=ts0, close=100.0, return_pct=None)]
     ungraded = SimpleNamespace(id=1, reference_timestamp=ts0, horizon="24h", target_price=103.0)
     db_row = SimpleNamespace(realized_price=None, error_pct=None, evaluated_at=None)
     session_factory, session = _forecast_session([ungraded], db_row)
@@ -491,11 +600,102 @@ def test_grade_confidence_none_without_volatility_band():
     assert grade_confidence(1.0, 0) is None
 
 
+# ---- POST-V9 Phase 14: baseline challenge pure functions --------------------
+
+
+def test_grade_momentum_baseline_none_without_prior_return():
+    assert grade_momentum_baseline(None, 100.0, 105.0) is None
+
+
+def test_grade_momentum_baseline_none_when_prior_return_flat():
+    assert grade_momentum_baseline(0.0, 100.0, 105.0) is None
+
+
+def test_grade_momentum_baseline_correct_when_up_move_continues():
+    assert grade_momentum_baseline(0.02, 100.0, 105.0) is True
+
+
+def test_grade_momentum_baseline_incorrect_when_up_move_reverses():
+    assert grade_momentum_baseline(0.02, 100.0, 95.0) is False
+
+
+def test_grade_momentum_baseline_correct_when_down_move_continues():
+    assert grade_momentum_baseline(-0.02, 100.0, 95.0) is True
+
+
+def test_grade_momentum_baseline_incorrect_when_down_move_reverses():
+    assert grade_momentum_baseline(-0.02, 100.0, 105.0) is False
+
+
+def test_compute_historical_mean_baseline_error_pct_none_without_baseline():
+    assert compute_historical_mean_baseline_error_pct(None, 100.0, 105.0) is None
+
+
+def test_compute_historical_mean_baseline_error_pct_exact_match_is_zero():
+    # naive target = 100 * (1 + 5.0/100) = 105.0, exactly matches realized
+    assert compute_historical_mean_baseline_error_pct(5.0, 100.0, 105.0) == 0.0
+
+
+def test_compute_historical_mean_baseline_error_pct_computes_signed_error():
+    # naive target = 100 * (1 + 2.0/100) = 102.0, realized = 105.0
+    # error = 100 * (105.0 - 102.0) / 102.0
+    assert compute_historical_mean_baseline_error_pct(2.0, 100.0, 105.0) == round(
+        100 * (105.0 - 102.0) / 102.0, 4
+    )
+
+
+# ---- Forecast Intelligence Upgrade: target_reached (intrabar touch) --------
+
+
+def test_check_target_reached_none_for_neutral_call():
+    window = [SimpleNamespace(high=110.0, low=95.0)]
+    assert check_target_reached("Neutral", 100.0, 103.0, window) is None
+
+
+def test_check_target_reached_none_when_target_equals_current_price():
+    window = [SimpleNamespace(high=110.0, low=95.0)]
+    assert check_target_reached("Bullish", 100.0, 100.0, window) is None
+
+
+def test_check_target_reached_true_when_high_touches_a_bullish_target():
+    window = [SimpleNamespace(high=101.0, low=99.0), SimpleNamespace(high=104.0, low=100.0)]
+    assert check_target_reached("Bullish", 100.0, 103.0, window) is True
+
+
+def test_check_target_reached_false_when_high_never_reaches_a_bullish_target():
+    window = [SimpleNamespace(high=101.0, low=99.0), SimpleNamespace(high=102.0, low=98.0)]
+    assert check_target_reached("Bullish", 100.0, 103.0, window) is False
+
+
+def test_check_target_reached_true_when_low_touches_a_bearish_target():
+    window = [SimpleNamespace(high=100.0, low=98.0), SimpleNamespace(high=99.0, low=96.0)]
+    assert check_target_reached("Bearish", 100.0, 97.0, window) is True
+
+
+def test_check_target_reached_false_when_low_never_reaches_a_bearish_target():
+    window = [SimpleNamespace(high=100.0, low=98.0)]
+    assert check_target_reached("Bearish", 100.0, 97.0, window) is False
+
+
+def test_check_target_reached_false_over_an_empty_window():
+    # Horizon just elapsed with no intervening bars -- honestly False
+    # (never touched), not None, since the direction/target claim is
+    # real and gradable, there just happened to be nothing between.
+    assert check_target_reached("Bullish", 100.0, 103.0, []) is False
+
+
 async def test_grade_price_forecasts_grades_an_elapsed_row():
     ts0 = datetime(2026, 8, 1, tzinfo=UTC)
     rows = [
-        SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0),
-        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0, atr=2.0),
+        SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0, return_pct=None),
+        SimpleNamespace(
+            timestamp=ts0 + timedelta(days=1),
+            close=105.0,
+            high=105.0,
+            low=105.0,
+            atr=2.0,
+            return_pct=0.05,
+        ),
     ]
     ungraded = SimpleNamespace(
         id=1,
@@ -511,6 +711,7 @@ async def test_grade_price_forecasts_grades_an_elapsed_row():
         direction_correct=None,
         confidence_correct=None,
         evaluated_at=None,
+        forecast_status="ACTIVE",
     )
     session_factory, session = _forecast_session([ungraded], db_row)
 
@@ -523,11 +724,110 @@ async def test_grade_price_forecasts_grades_an_elapsed_row():
     assert db_row.direction_correct is True  # predicted Bullish, realized 105 > 100 current_price
     assert db_row.confidence_correct is not None
     assert db_row.evaluated_at is not None
+    # POST-V9 Phase 17: a still-ACTIVE forecast transitions to GRADED once graded.
+    assert db_row.forecast_status == "GRADED"
+    # POST-V9 Phase 14: the very first row in history has no prior period
+    # and no prior baseline sample -- honestly None, not fabricated.
+    assert db_row.momentum_baseline_correct is None
+    assert db_row.historical_mean_baseline_error_pct is None
+    # Forecast Intelligence Upgrade: price actually touched the target
+    # (high 105.0 >= target 103.0) during the window, not just ended up
+    # past it at horizon-elapse.
+    assert db_row.target_reached is True
     session.commit.assert_awaited()
 
 
+async def test_grade_price_forecasts_computes_baseline_comparisons():
+    ts0 = datetime(2026, 8, 1, tzinfo=UTC)
+    rows = [
+        SimpleNamespace(timestamp=ts0 - timedelta(days=2), close=95.0, atr=2.0, return_pct=0.02),
+        SimpleNamespace(timestamp=ts0 - timedelta(days=1), close=100.0, atr=2.0, return_pct=0.05),
+        SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0, return_pct=None),
+        SimpleNamespace(
+            timestamp=ts0 + timedelta(days=1),
+            close=105.0,
+            high=105.0,
+            low=105.0,
+            atr=2.0,
+            return_pct=0.05,
+        ),
+    ]
+    ungraded = SimpleNamespace(
+        id=1,
+        reference_timestamp=ts0,
+        horizon="24h",
+        target_price=103.0,
+        current_price=100.0,
+        direction="Bullish",
+    )
+    db_row = SimpleNamespace(
+        realized_price=None,
+        error_pct=None,
+        direction_correct=None,
+        confidence_correct=None,
+        evaluated_at=None,
+        forecast_status="ACTIVE",
+    )
+    session_factory, session = _forecast_session([ungraded], db_row)
+
+    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+        graded = await grade_price_forecasts(session_factory, "BTC", object())
+
+    assert graded == 1
+    # prior period (idx=1) had +5% -> naive momentum predicts "up";
+    # realized_price 105 > current_price 100 -> up actually happened -> correct
+    assert db_row.momentum_baseline_correct is True
+    # the one prior forward-return window knowable at reference time (idx=0
+    # -> idx=1, +5%) gives a 5.0% historical-mean baseline -> naive target
+    # 100*(1.05)=105.0, exactly matching the real realized_price of 105.0
+    assert db_row.historical_mean_baseline_error_pct == 0.0
+
+
+async def test_grade_price_forecasts_preserves_invalidated_status():
+    ts0 = datetime(2026, 8, 1, tzinfo=UTC)
+    rows = [
+        SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0, return_pct=None),
+        SimpleNamespace(
+            timestamp=ts0 + timedelta(days=1),
+            close=105.0,
+            high=105.0,
+            low=105.0,
+            atr=2.0,
+            return_pct=0.05,
+        ),
+    ]
+    ungraded = SimpleNamespace(
+        id=1,
+        reference_timestamp=ts0,
+        horizon="24h",
+        target_price=103.0,
+        current_price=100.0,
+        direction="Bullish",
+    )
+    db_row = SimpleNamespace(
+        realized_price=None,
+        error_pct=None,
+        direction_correct=None,
+        confidence_correct=None,
+        evaluated_at=None,
+        forecast_status="INVALIDATED",
+    )
+    session_factory, session = _forecast_session([ungraded], db_row)
+
+    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+        graded = await grade_price_forecasts(session_factory, "BTC", object())
+
+    assert graded == 1
+    # grading fills in the outcome fields but never erases an existing
+    # INVALIDATED marker by resetting it to a generic graded status
+    assert db_row.forecast_status == "INVALIDATED"
+    assert db_row.evaluated_at is not None
+
+
 async def test_grade_price_forecasts_skips_an_unmatched_reference_timestamp():
-    rows = [SimpleNamespace(timestamp=datetime(2026, 8, 1, tzinfo=UTC), close=100.0)]
+    rows = [
+        SimpleNamespace(timestamp=datetime(2026, 8, 1, tzinfo=UTC), close=100.0, return_pct=None)
+    ]
     ungraded = SimpleNamespace(
         id=1,
         reference_timestamp=datetime(2020, 1, 1, tzinfo=UTC),
@@ -686,3 +986,33 @@ async def test_persist_starts_at_version_one_when_no_prior_forecast():
     )
 
     assert version == 1
+
+
+async def test_persist_supersedes_prior_active_forecasts_for_same_symbol_horizon():
+    # POST-V9 Phase 17: at most one ACTIVE forecast per (symbol, horizon)
+    # at a time -- a prior ACTIVE row must be marked SUPERSEDED, not left
+    # ACTIVE alongside the new one.
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(return_value=2)
+    prior_active_row = SimpleNamespace(forecast_status="ACTIVE")
+    session.scalars = AsyncMock(return_value=[prior_active_row])
+
+    payload = {
+        "symbol": "BTC",
+        "horizon": "24h",
+        "current_price": 100.0,
+        "target_price": 103.0,
+        "expected_change_pct": 3.0,
+        "direction": "Bullish",
+        "probability_pct": 70,
+        "price_path": [],
+        "probability_distribution": [],
+        "key_levels": {},
+    }
+    version = await engine._persist(
+        payload, datetime(2026, 8, 2, tzinfo=UTC), "high", regime_at_forecast="bull"
+    )
+
+    assert version == 3
+    assert prior_active_row.forecast_status == "SUPERSEDED"
+    session.add.assert_called_once()  # the new row -- the old one is UPDATEd, not re-inserted

@@ -47,7 +47,7 @@ def _build_engine() -> TerminalEngine:
     feature_engine = FeatureEngine(session_factory, market_repository)
     breakout_engine = BreakoutEngine(session_factory, regime_detector, feature_engine)
     committee_engine = CommitteeEngine(
-        build_agent_orchestrator(), AgentReliabilityEngine(session_factory)
+        build_agent_orchestrator(), AgentReliabilityEngine(session_factory), regime_detector
     )
     replay_engine = MarketReplayEngine(
         session_factory,

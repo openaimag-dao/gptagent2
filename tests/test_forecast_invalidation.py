@@ -1,7 +1,10 @@
 from app.services.forecast.invalidation import (
+    ForecastStatus,
     evaluate_invalidation,
     evaluate_price_invalidation,
     evaluate_regime_invalidation,
+    status_after_grading,
+    status_after_superseded,
 )
 
 
@@ -100,3 +103,54 @@ def test_evaluate_invalidation_active_when_no_rule_is_checkable():
     )
     assert result["status"] == "ACTIVE"
     assert result["checked_rules"] == []
+
+
+# ---- POST-V9 Phase 17: forecast lifecycle state machine ----
+
+
+def test_forecast_status_enum_values_match_the_strings_already_in_live_use():
+    # ACTIVE/INVALIDATED were already stored as bare strings before this
+    # enum existed -- it must not silently change what's persisted.
+    assert ForecastStatus.ACTIVE.value == "ACTIVE"
+    assert ForecastStatus.INVALIDATED.value == "INVALIDATED"
+    assert ForecastStatus.SUPERSEDED.value == "SUPERSEDED"
+    assert ForecastStatus.GRADED.value == "GRADED"
+
+
+def test_status_after_superseded_active_becomes_superseded():
+    assert status_after_superseded("ACTIVE") == "SUPERSEDED"
+
+
+def test_status_after_superseded_leaves_invalidated_untouched():
+    # a forecast that was already invalidated before a newer version was
+    # computed keeps its own terminal status -- it was already not "the
+    # active one".
+    assert status_after_superseded("INVALIDATED") == "INVALIDATED"
+
+
+def test_status_after_superseded_leaves_graded_untouched():
+    assert status_after_superseded("GRADED") == "GRADED"
+
+
+def test_status_after_grading_active_becomes_graded():
+    assert status_after_grading("ACTIVE") == "GRADED"
+
+
+def test_status_after_grading_never_erases_invalidated_marker():
+    # grading must never silently reset an INVALIDATED forecast to a
+    # generic graded status -- the fact it was invalidated before its
+    # horizon even elapsed must stay visible.
+    assert status_after_grading("INVALIDATED") == "INVALIDATED"
+
+
+def test_status_after_grading_never_erases_superseded_marker():
+    assert status_after_grading("SUPERSEDED") == "SUPERSEDED"
+
+
+def test_forecast_status_transitions_never_move_backward_to_active():
+    # Neither transition can ever produce ACTIVE -- once a forecast leaves
+    # the ACTIVE state (superseded, invalidated, or graded), nothing in
+    # this module can put it back.
+    for status in ("ACTIVE", "INVALIDATED", "SUPERSEDED", "GRADED"):
+        assert status_after_superseded(status) != "ACTIVE"
+        assert status_after_grading(status) != "ACTIVE"

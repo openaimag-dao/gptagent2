@@ -320,6 +320,75 @@ def test_build_watchdog_snapshot_insight_composes_from_a_real_snapshot():
     assert insight["historical_similarity"] is None
 
 
+# ---- Forecast Intelligence Upgrade: Regime-Aware Weighting -----------------
+
+
+async def test_safe_reliability_uses_flat_method_without_a_live_regime():
+    engine, deps = _engine()
+    deps["reliability_engine"].evaluate_reliability.return_value = {"macro": 55.0}
+
+    result = await engine._safe_reliability(None)
+
+    assert result == {"macro": 55.0}
+    deps["reliability_engine"].evaluate_reliability.assert_awaited_once()
+    deps["reliability_engine"].evaluate_reliability_hierarchical.assert_not_called()
+
+
+async def test_safe_reliability_uses_hierarchical_method_with_a_live_regime():
+    engine, deps = _engine()
+    deps["reliability_engine"].evaluate_reliability_hierarchical.return_value = {
+        "macro": {"accuracy_pct": 62.0, "level": "horizon_regime", "effective_sample_size": 40},
+        "technical": {"accuracy_pct": None, "level": "global", "effective_sample_size": 0},
+    }
+
+    result = await engine._safe_reliability("risk_on")
+
+    # Adapted to the flat {agent: accuracy_pct} shape compute_consensus
+    # expects -- an agent with no real accuracy_pct yet (None) is dropped,
+    # never defaulted to a fabricated number.
+    assert result == {"macro": 62.0}
+    deps["reliability_engine"].evaluate_reliability_hierarchical.assert_awaited_once_with(
+        regime="risk_on"
+    )
+    deps["reliability_engine"].evaluate_reliability.assert_not_called()
+
+
+async def test_safe_reliability_none_on_exception():
+    engine, deps = _engine()
+    deps["reliability_engine"].evaluate_reliability_hierarchical.side_effect = RuntimeError(
+        "db down"
+    )
+
+    assert await engine._safe_reliability("risk_on") is None
+
+
+async def test_run_cycle_passes_live_regime_into_hierarchical_reliability():
+    session_factory, session = _session_factory()
+    engine, deps = _engine(session_factory, session)
+    engine.get_latest_snapshot = AsyncMock(return_value=None)
+
+    deps["regime_detector"].get_latest.return_value = SimpleNamespace(
+        regime=SimpleNamespace(value="accumulation")
+    )
+    deps["global_score_engine"].get_latest.return_value = SimpleNamespace(
+        global_score=70,
+        trend_strength_score=60,
+        risk_score=30,
+        confidence_score=75,
+        liquidity_score=55,
+    )
+    deps["scenario_engine"].get_latest.return_value = None
+    deps["technical_engine"].get_latest.return_value = SimpleNamespace(volatility=24.0)
+    deps["agent_orchestrator"].run_all.return_value = {}
+    deps["reliability_engine"].evaluate_reliability_hierarchical.return_value = {}
+
+    await engine.run_cycle()
+
+    deps["reliability_engine"].evaluate_reliability_hierarchical.assert_awaited_once_with(
+        regime="accumulation"
+    )
+
+
 async def test_run_cycle_persists_snapshot_and_detects_no_changes_on_first_cycle():
     session_factory, session = _session_factory()
     engine, deps = _engine(session_factory, session)
@@ -357,7 +426,7 @@ async def test_run_cycle_persists_snapshot_and_detects_no_changes_on_first_cycle
     deps["agent_orchestrator"].run_all.return_value = {
         "macro": SimpleNamespace(direction="bullish", confidence=70.0, summary="s"),
     }
-    deps["reliability_engine"].evaluate_reliability.return_value = None
+    deps["reliability_engine"].evaluate_reliability_hierarchical.return_value = {}
 
     row = await engine.run_cycle()
 
@@ -395,7 +464,7 @@ async def test_run_cycle_notifies_telegram_for_eligible_change_only():
     deps["scenario_engine"].get_latest.return_value = None
     deps["technical_engine"].get_latest.return_value = SimpleNamespace(volatility=20.0)
     deps["agent_orchestrator"].run_all.return_value = {}
-    deps["reliability_engine"].evaluate_reliability.return_value = None
+    deps["reliability_engine"].evaluate_reliability_hierarchical.return_value = {}
 
     with patch("app.telegram.broadcast.broadcast_text", AsyncMock()) as broadcast_mock:
         await engine.run_cycle()

@@ -38,6 +38,7 @@ from app.database.models import (
     WatchdogSnapshot,
 )
 from app.services.agents.pattern_agent import _recency_weighted_direction
+from app.services.alert_performance.engine import compute_baseline_return_pct
 from app.services.analysis.correlation import CorrelationEngine
 from app.services.analysis.regime import MarketRegime, RegimeDetector, build_regime_index
 from app.services.analysis.report import derive_risk_level
@@ -45,8 +46,14 @@ from app.services.backtest.metrics import compute_max_drawdown_pct
 from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.common.scoring import center_scaled
 from app.services.conviction.engine import classify_conviction
+from app.services.data_quality.engine import assess_symbol_quality, compute_data_quality_score
 from app.services.explanation.engine import ExplanationEngine
-from app.services.forecast.invalidation import evaluate_invalidation
+from app.services.forecast.invalidation import (
+    ForecastStatus,
+    evaluate_invalidation,
+    status_after_grading,
+    status_after_superseded,
+)
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
@@ -439,6 +446,125 @@ _DIRECTION_SIGN: dict[str, int] = {
     "Strong Bearish": -1,
 }
 
+# Forecast Intelligence Upgrade: which of the 4 existing HORIZONS group
+# into each read -- this project has no 1H/4H forecast data (ForecastEngine
+# only computes on the DAILY timeframe today), so "short/medium/long" here
+# means 24h / 3d+7d / 30d, not the intraday granularity a generic spec
+# might assume. Documented as a known limitation rather than silently
+# reinterpreted.
+_HORIZON_GROUPS: dict[str, tuple[str, ...]] = {
+    "short_term": ("24h",),
+    "medium_term": ("3d", "7d"),
+    "long_term": ("30d",),
+}
+
+
+def _group_direction_label(directions: dict[str, str], horizons: tuple[str, ...]) -> str | None:
+    signs = [_DIRECTION_SIGN[directions[h]] for h in horizons if h in directions]
+    if not signs:
+        return None
+    avg = sum(signs) / len(signs)
+    if avg > 0.25:
+        return "Bullish"
+    if avg < -0.25:
+        return "Bearish"
+    return "Neutral"
+
+
+def compute_horizon_consistency(directions: dict[str, str]) -> dict | None:
+    """Pure function: Forecast Intelligence Upgrade -- Multi-Horizon
+    Consistency. `directions` maps horizon label ("24h"/"3d"/"7d"/"30d")
+    to this project's own direction label (Strong Bullish..Strong
+    Bearish), read straight from each horizon's own already-computed
+    PriceForecastSnapshot.direction -- no new classification, just a
+    cross-horizon comparison of labels that already exist.
+
+    Horizons are never forced to agree: a genuine short-term-bullish /
+    long-term-bearish split is reported as such, not smoothed into a
+    single number. `consistency_pct` is the fraction of all horizon PAIRS
+    whose direction sign agrees (Bullish/Strong Bullish vs Bearish/Strong
+    Bearish are opposite signs; Neutral is its own sign) -- a real,
+    checkable measurement of how much the horizons actually agree, not an
+    opinion.
+
+    None when there are fewer than 2 known horizons to compare --
+    "consistency" is meaningless for a single data point."""
+    known = {h: d for h, d in directions.items() if d in _DIRECTION_SIGN}
+    if len(known) < 2:
+        return None
+
+    short_term = _group_direction_label(known, _HORIZON_GROUPS["short_term"])
+    medium_term = _group_direction_label(known, _HORIZON_GROUPS["medium_term"])
+    long_term = _group_direction_label(known, _HORIZON_GROUPS["long_term"])
+
+    items = list(known.items())
+    agreeing_pairs = 0
+    total_pairs = 0
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            total_pairs += 1
+            if _DIRECTION_SIGN[items[i][1]] == _DIRECTION_SIGN[items[j][1]]:
+                agreeing_pairs += 1
+    consistency_pct = round(100 * agreeing_pairs / total_pairs, 1) if total_pairs else None
+
+    parts = []
+    if short_term is not None:
+        parts.append(f"Short-term (24h): {short_term}")
+    if medium_term is not None:
+        parts.append(f"Medium-term (3d-7d): {medium_term}")
+    if long_term is not None:
+        parts.append(f"Long-term (30d): {long_term}")
+    if total_pairs:
+        parts.append(
+            f"{agreeing_pairs}/{total_pairs} horizon pairs agree ({consistency_pct}% consistency)"
+        )
+    explanation = ". ".join(parts) + "." if parts else ""
+
+    return {
+        "short_term": short_term,
+        "medium_term": medium_term,
+        "long_term": long_term,
+        "consistency_pct": consistency_pct,
+        "agreeing_pairs": agreeing_pairs,
+        "total_pairs": total_pairs,
+        "horizons_available": sorted(known),
+        "explanation": explanation,
+    }
+
+
+def check_target_reached(
+    direction: str, current_price: float, target_price: float, window_rows: list
+) -> bool | None:
+    """Pure function: Forecast Intelligence Upgrade -- did price actually
+    TOUCH target_price at any point during the window between the
+    forecast and its grading, not just where it happened to end up at
+    horizon-elapse (which is all error_pct/direction_correct check)?
+    Walks `window_rows`' (ascending, the bars strictly after the
+    forecast's own reference bar through the elapsed bar) real intrabar
+    high/low -- the same real-range read `simulate_trade_outcome`
+    (app.services.trade_setup.engine) uses for trade setups, but this
+    checks a single level, not two: a directional forecast's target has
+    no accompanying stop to race against, so there's nothing to resolve
+    an ambiguous same-bar touch against.
+
+    None for a Neutral call or when target_price doesn't actually differ
+    from current_price -- there's no directional touch to check."""
+    if _DIRECTION_SIGN.get(direction, 0) == 0:
+        return None
+    if target_price == current_price:
+        return None
+    if target_price > current_price:
+        return any(float(row.high) >= target_price for row in window_rows)
+    return any(float(row.low) <= target_price for row in window_rows)
+
+
+def _realized_sign(current_price: float, realized_price: float) -> int:
+    if realized_price > current_price:
+        return 1
+    if realized_price < current_price:
+        return -1
+    return 0
+
 
 def grade_direction(direction: str, current_price: float, realized_price: float) -> bool | None:
     """Pure function: did this forecast's own directional call match the
@@ -449,13 +575,45 @@ def grade_direction(direction: str, current_price: float, realized_price: float)
     predicted_sign = _DIRECTION_SIGN.get(direction)
     if not predicted_sign:
         return None
-    if realized_price > current_price:
-        realized_sign = 1
-    elif realized_price < current_price:
-        realized_sign = -1
-    else:
-        realized_sign = 0
-    return predicted_sign == realized_sign
+    return predicted_sign == _realized_sign(current_price, realized_price)
+
+
+def grade_momentum_baseline(
+    prior_return_pct: float | None, current_price: float, realized_price: float
+) -> bool | None:
+    """Pure function: POST-V9 Phase 14 -- would the naive "yesterday's
+    move continues" baseline have called this forecast's own realized
+    outcome correctly? Uses the exact same realized-sign criterion
+    grade_direction applies to the real forecast, so the two accuracy
+    rates are directly comparable in aggregate (see
+    app.services.accuracy.engine._aggregate_stats). None when there's no
+    prior period to read a direction from, or when the prior period was
+    itself exactly flat -- like a Neutral forecast call, a flat baseline
+    makes no directional claim to grade."""
+    if not prior_return_pct:
+        return None
+    predicted_sign = 1 if prior_return_pct > 0 else -1
+    return predicted_sign == _realized_sign(current_price, realized_price)
+
+
+def compute_historical_mean_baseline_error_pct(
+    historical_mean_baseline_return_pct: float | None,
+    current_price: float,
+    realized_price: float,
+) -> float | None:
+    """Pure function: POST-V9 Phase 14 -- the price-target error a naive
+    "assume the future equals this symbol's own historical average
+    forward return" baseline would have made, computed the exact same way
+    `error_pct` is computed for the real forecast (both are
+    100*(realized-target)/target), so the two are directly comparable
+    magnitude-for-magnitude. None when there's no historical baseline
+    return to build a naive target from."""
+    if historical_mean_baseline_return_pct is None:
+        return None
+    naive_target_price = current_price * (1 + historical_mean_baseline_return_pct / 100)
+    if naive_target_price == 0:
+        return None
+    return round(100 * (realized_price - naive_target_price) / naive_target_price, 4)
 
 
 def grade_confidence(error_pct: float, expected_volatility_pct: float | None) -> bool | None:
@@ -478,8 +636,17 @@ async def grade_price_forecasts(
     stored history -- mirrors
     app.services.learning.engine.evaluate_predictions()'s index-by-
     timestamp join exactly (same reasoning: a forecast only becomes
-    gradable once real history reaches that far, never guessed). Returns
-    how many rows were graded this call."""
+    gradable once real history reaches that far, never guessed). POST-V9
+    Phase 17: also transitions `forecast_status` via status_after_grading
+    -- a still-ACTIVE row becomes GRADED, while one that was already
+    INVALIDATED/SUPERSEDED before its horizon elapsed keeps that status
+    (grading never erases an existing lifecycle marker). POST-V9 Phase 14:
+    also fills in `momentum_baseline_correct`/
+    `historical_mean_baseline_error_pct` -- two naive-baseline comparisons
+    computed entirely from the same `rows` already fetched for grading, no
+    extra I/O -- so app.services.accuracy.engine can report whether the
+    forecast actually beats doing nothing clever. Returns how many rows
+    were graded this call."""
     async with session_factory() as session:
         ungraded = list(
             await session.scalars(
@@ -495,6 +662,7 @@ async def grade_price_forecasts(
 
     rows = await get_series(session_factory, model, symbol, Timeframe.DAILY)
     index_by_timestamp = {r.timestamp: i for i, r in enumerate(rows)}
+    returns_series = [float(r.return_pct) if r.return_pct is not None else None for r in rows]
 
     graded = 0
     async with session_factory() as session:
@@ -523,6 +691,11 @@ async def grade_price_forecasts(
                 else None
             )
 
+            prior_return_pct = returns_series[idx - 1] if idx > 0 else None
+            historical_mean_baseline_return_pct = compute_baseline_return_pct(
+                returns_series, idx, horizon_periods
+            )
+
             db_row = await session.get(PriceForecastSnapshot, snapshot.id)
             db_row.realized_price = realized_price
             db_row.error_pct = round(error_pct, 4)
@@ -530,7 +703,17 @@ async def grade_price_forecasts(
                 snapshot.direction, current_price, realized_price
             )
             db_row.confidence_correct = grade_confidence(error_pct, expected_volatility_pct)
+            db_row.target_reached = check_target_reached(
+                snapshot.direction, current_price, target_price, rows[idx + 1 : target_idx + 1]
+            )
+            db_row.momentum_baseline_correct = grade_momentum_baseline(
+                prior_return_pct, current_price, realized_price
+            )
+            db_row.historical_mean_baseline_error_pct = compute_historical_mean_baseline_error_pct(
+                historical_mean_baseline_return_pct, current_price, realized_price
+            )
             db_row.evaluated_at = datetime.now(UTC)
+            db_row.forecast_status = status_after_grading(db_row.forecast_status)
             graded += 1
         await session.commit()
     return graded
@@ -552,7 +735,7 @@ async def check_and_invalidate_forecasts(
             await session.scalars(
                 select(PriceForecastSnapshot).where(
                     PriceForecastSnapshot.symbol == symbol,
-                    PriceForecastSnapshot.forecast_status == "ACTIVE",
+                    PriceForecastSnapshot.forecast_status == ForecastStatus.ACTIVE.value,
                     PriceForecastSnapshot.evaluated_at.is_(None),
                 )
             )
@@ -585,7 +768,7 @@ async def check_and_invalidate_forecasts(
             if result["status"] != "INVALIDATED":
                 continue
             db_row = await session.get(PriceForecastSnapshot, snapshot.id)
-            db_row.forecast_status = "INVALIDATED"
+            db_row.forecast_status = ForecastStatus.INVALIDATED.value
             db_row.invalidation_reason = result["invalidation_reason"]
             db_row.invalidated_at = datetime.now(UTC)
             invalidated += 1
@@ -787,11 +970,23 @@ class ForecastEngine:
             probability_snapshot.prob_down_pct,
             probability_snapshot.prob_flat_pct,
         )
+        # POST-V9 Phase 12: reuses the exact `rows` already fetched above --
+        # no second query -- to score how fresh this symbol's own synced
+        # history actually is, so a read built on stale data doesn't reach
+        # `effective_confidence_pct` at full strength. `assess_symbol_quality`
+        # is DataQualityEngine's own pure function; this is the only place
+        # in the codebase (besides its own /api/data-quality sweep) that
+        # reads it -- previously it fed no decision path at all.
+        data_quality = assess_symbol_quality(rows, datetime.now(UTC))
+        data_quality_score = compute_data_quality_score(
+            data_quality["days_since_last_update"], data_quality["status"]
+        )
         conviction = classify_conviction(
             confidence_pct,
             sample_size=probability_snapshot.sample_size,
             brier_score=quality["brier_score"] if quality else None,
             evaluated_predictions=quality["evaluated_predictions"] if quality else None,
+            data_quality_score=data_quality_score,
         )
 
         avg_forward_return_pct = float(probability_snapshot.avg_forward_return_pct)
@@ -951,6 +1146,23 @@ class ForecastEngine:
             },
             "regime_conditioned": getattr(probability_snapshot, "regime_conditioned", False),
             "reference_regime": getattr(probability_snapshot, "reference_regime", None),
+            # POST-V9 Phase 8 (F-3): the same Prediction Quality Lab
+            # calibration buckets `quality_multiplier` above was already
+            # derived from, exposed in full so a consumer (NO_TRADE) can
+            # find the bucket matching THIS forecast's own confidence level
+            # and read its real calibration_gap_pct -- not a new
+            # computation, the exact same `quality["calibration"]` this
+            # engine already computed for the conviction discount.
+            "calibration": quality["calibration"] if quality else None,
+            # POST-V9 Phase 12: the same data_quality_score classify_conviction
+            # above already discounted effective_confidence_pct by, exposed
+            # so a consumer can see WHY confidence was reduced, not just that
+            # it was.
+            "data_quality": {
+                "status": data_quality["status"],
+                "days_since_last_update": data_quality["days_since_last_update"],
+                "data_quality_score": data_quality_score,
+            },
         }
 
         regime_at_forecast = regime.value if regime is not None else None
@@ -958,7 +1170,7 @@ class ForecastEngine:
             payload, latest.timestamp, conviction["tier"], regime_at_forecast
         )
         payload["forecast_version"] = forecast_version
-        payload["forecast_status"] = "ACTIVE"
+        payload["forecast_status"] = ForecastStatus.ACTIVE.value
         return payload
 
     async def _persist(
@@ -972,7 +1184,11 @@ class ForecastEngine:
         an existing forecast is never overwritten). `forecast_version` is
         the Nth forecast computed for this exact (symbol, horizon) pair,
         making that lineage explicit rather than implicit in insertion
-        order. Returns the version number assigned."""
+        order. POST-V9 Phase 17: also supersedes any prior row for this
+        same (symbol, horizon) that's still ACTIVE (status_after_superseded
+        -- their own predicted values are untouched, only the lifecycle
+        marker changes), so at most one ACTIVE forecast ever exists per
+        (symbol, horizon) at a time. Returns the version number assigned."""
         async with self._session_factory() as session:
             prior_version = await session.scalar(
                 select(func.max(PriceForecastSnapshot.forecast_version)).where(
@@ -981,6 +1197,19 @@ class ForecastEngine:
                 )
             )
             next_version = (prior_version or 0) + 1
+
+            prior_active = list(
+                await session.scalars(
+                    select(PriceForecastSnapshot).where(
+                        PriceForecastSnapshot.symbol == payload["symbol"],
+                        PriceForecastSnapshot.horizon == payload["horizon"],
+                        PriceForecastSnapshot.forecast_status == ForecastStatus.ACTIVE.value,
+                    )
+                )
+            )
+            for row in prior_active:
+                row.forecast_status = status_after_superseded(row.forecast_status)
+
             session.add(
                 PriceForecastSnapshot(
                     symbol=payload["symbol"],
@@ -1011,6 +1240,51 @@ class ForecastEngine:
                 .limit(limit)
             )
             return list(result)
+
+    async def get_latest_per_horizon(self, symbol: str) -> dict[str, PriceForecastSnapshot]:
+        """Forecast Intelligence Upgrade: one row per horizon, the most
+        recently computed. `.limit(200)` is a generous safety bound, not a
+        tuning knob -- with only 4 horizons the first occurrence of each is
+        always found within the first few rows of this already-indexed,
+        already-descending scan (same query shape `get_latest_history`
+        already uses), so this adds no new query pattern."""
+        async with self._session_factory() as session:
+            result = await session.scalars(
+                select(PriceForecastSnapshot)
+                .where(PriceForecastSnapshot.symbol == symbol.upper())
+                .order_by(PriceForecastSnapshot.computed_at.desc())
+                .limit(200)
+            )
+            latest_by_horizon: dict[str, PriceForecastSnapshot] = {}
+            for row in result:
+                if row.horizon not in latest_by_horizon:
+                    latest_by_horizon[row.horizon] = row
+                if len(latest_by_horizon) == len(HORIZONS):
+                    break
+            return latest_by_horizon
+
+    async def get_horizon_consistency(self, symbol: str) -> dict | None:
+        """Forecast Intelligence Upgrade -- Multi-Horizon Consistency.
+        Reads each horizon's own latest already-computed snapshot (zero new
+        forecast computation, zero extra I/O beyond the one query above)
+        and reports whether they agree. See `compute_horizon_consistency`
+        for what "agree" means and why horizons are never forced to."""
+        latest_by_horizon = await self.get_latest_per_horizon(symbol)
+        if not latest_by_horizon:
+            return None
+        directions = {h: row.direction for h, row in latest_by_horizon.items()}
+        consistency = compute_horizon_consistency(directions)
+        if consistency is None:
+            return None
+        consistency["by_horizon"] = {
+            h: {
+                "direction": row.direction,
+                "probability_pct": row.probability_pct,
+                "computed_at": row.computed_at.isoformat(),
+            }
+            for h, row in latest_by_horizon.items()
+        }
+        return consistency
 
     async def summarize_accuracy(self, symbol: str, horizon: str) -> dict | None:
         return await summarize_forecast_accuracy(self._session_factory, symbol.upper(), horizon)

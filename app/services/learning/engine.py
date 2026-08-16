@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import ProbabilitySnapshot
+from app.services.common.statistics import compute_wilson_interval
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
 
@@ -91,6 +92,16 @@ async def evaluate_predictions(
                 "realized": realized,
                 "correct": predicted == realized,
                 "realized_return_pct": round(realized_return_pct, 2),
+                # POST-V9 Phase 4: the same quantile band/regime already
+                # stored on this snapshot at prediction time, carried
+                # through so compute_quantile_coverage() can check it
+                # against realized_return_pct above without a second join.
+                "p10_pct": float(snapshot.p10_pct) if snapshot.p10_pct is not None else None,
+                "p25_pct": float(snapshot.p25_pct) if snapshot.p25_pct is not None else None,
+                "p50_pct": float(snapshot.p50_pct) if snapshot.p50_pct is not None else None,
+                "p75_pct": float(snapshot.p75_pct) if snapshot.p75_pct is not None else None,
+                "p90_pct": float(snapshot.p90_pct) if snapshot.p90_pct is not None else None,
+                "reference_regime": snapshot.reference_regime,
             }
         )
     return evaluated
@@ -107,11 +118,15 @@ class LearningEngine:
         if not evaluated:
             return None
 
-        accuracy_pct = round(100 * sum(1 for e in evaluated if e["correct"]) / len(evaluated), 2)
+        correct = sum(1 for e in evaluated if e["correct"])
+        accuracy_pct = round(100 * correct / len(evaluated), 2)
         return {
             "symbol": symbol,
             "timeframe": timeframe.value,
             "evaluated_predictions": len(evaluated),
             "accuracy_pct": accuracy_pct,
+            # POST-V9 Phase 15: sample-size-aware uncertainty around
+            # accuracy_pct, so it's never read as a settled number.
+            "accuracy_ci": compute_wilson_interval(correct, len(evaluated)),
             "recent": evaluated[-10:],
         }

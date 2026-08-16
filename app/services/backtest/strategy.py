@@ -49,13 +49,24 @@ def monte_carlo_simulation(
     n_simulations: int = 1000,
     trades_per_sim: int | None = None,
     seed: int | None = None,
+    ruin_drawdown_pct: float = 50.0,
 ) -> dict | None:
     """Bootstrap-resamples the REAL historical trade returns (with
     replacement) to build a distribution of possible equity-curve outcomes
     -- never invents a return that didn't actually occur, only resamples
     the order/combination in which the real ones could have landed.
     Returns 5th/50th/95th percentile total return and max drawdown, or None
-    with fewer than 2 historical trades (nothing meaningful to resample)."""
+    with fewer than 2 historical trades (nothing meaningful to resample).
+
+    Forecast Intelligence Upgrade: also derives probability_of_profit_pct/
+    probability_of_loss_pct/probability_of_ruin_pct directly from the SAME
+    simulated outcomes above -- not a second simulation, just counting how
+    many of the already-generated paths land on each side of 0 (profit/
+    loss) or breach `ruin_drawdown_pct` (ruin). `ruin_drawdown_pct`
+    defaults to a conventional 50% drawdown, not a validated per-strategy
+    threshold -- exposed as a parameter precisely so a caller with a real
+    risk-of-ruin definition for their own account size can override it
+    rather than trust an unproven default."""
     if len(trade_returns) < 2:
         return None
     trades_per_sim = trades_per_sim or len(trade_returns)
@@ -76,6 +87,15 @@ def monte_carlo_simulation(
         total_returns.append(equity - 1.0)
         max_drawdowns.append(max_dd)
 
+    ruin_threshold = ruin_drawdown_pct / 100
+    probability_of_profit_pct = round(
+        100 * sum(1 for r in total_returns if r > 0) / n_simulations, 2
+    )
+    probability_of_loss_pct = round(100 * sum(1 for r in total_returns if r < 0) / n_simulations, 2)
+    probability_of_ruin_pct = round(
+        100 * sum(1 for dd in max_drawdowns if dd >= ruin_threshold) / n_simulations, 2
+    )
+
     total_returns.sort()
     max_drawdowns.sort()
     return {
@@ -86,4 +106,8 @@ def monte_carlo_simulation(
         "total_return_p95_pct": round(100 * _percentile(total_returns, 95), 2),
         "max_drawdown_p50_pct": round(100 * _percentile(max_drawdowns, 50), 2),
         "max_drawdown_p95_pct": round(100 * _percentile(max_drawdowns, 95), 2),
+        "probability_of_profit_pct": probability_of_profit_pct,
+        "probability_of_loss_pct": probability_of_loss_pct,
+        "ruin_drawdown_pct": ruin_drawdown_pct,
+        "probability_of_ruin_pct": probability_of_ruin_pct,
     }

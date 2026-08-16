@@ -61,6 +61,7 @@ EXPECTED_PREFIXES = {
     "/api/watchdog",
     "/api/scanner",
     "/api/accuracy",
+    "/api/realtime",
 }
 
 

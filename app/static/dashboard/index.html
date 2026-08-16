@@ -14,6 +14,7 @@
     <input id="symbol-search" type="text" placeholder="Jump to symbol (e.g. AAPL)">
   </div>
   <button data-page="overview" class="active">Overview</button>
+  <button data-page="watchlist">Watchlist</button>
   <button data-page="consensus">Consensus</button>
   <button data-page="committee">Committee</button>
   <button data-page="terminal">Terminal</button>
@@ -42,6 +43,7 @@
   <button data-page="brain">AI Brain</button>
   <button data-page="research">Research Lab</button>
   <button data-page="strategies">Strategies</button>
+  <button data-page="backtest">Backtest</button>
   <button data-page="probability">Probability</button>
   <button data-page="learning">Learning</button>
   <button data-page="quality">Quality Lab</button>
@@ -60,11 +62,15 @@
   <button data-page="settings">Settings</button>
 </nav>
 <main>
-  <div id="topbar"><span id="last-updated" class="sub"></span></div>
+  <div id="topbar">
+    <span id="connection-indicator" class="connection-indicator">&#9679; CONNECTING</span>
+    <span id="last-updated" class="sub"></span>
+  </div>
   <div id="content">
     <p class="loading">Loading...</p>
   </div>
 </main>
+<script src="realtime.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

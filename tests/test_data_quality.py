@@ -2,7 +2,12 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from app.services.data_quality.engine import DataQualityEngine, assess_symbol_quality
+from app.services.data_quality.engine import (
+    DataQualityEngine,
+    assess_symbol_quality,
+    compute_data_quality_score,
+    explain_data_quality,
+)
 from app.services.history.registry import HistorySymbolConfig
 from app.services.history.schemas import Timeframe
 
@@ -30,6 +35,35 @@ def test_assess_symbol_quality_has_data_reports_row_count_and_freshness():
     assert result["days_since_last_update"] == 5
 
 
+# ---- POST-V9 Phase 12: compute_data_quality_score ----
+
+
+def test_compute_data_quality_score_zero_when_empty():
+    assert compute_data_quality_score(None, "empty") == 0
+    assert compute_data_quality_score(5, "empty") == 0
+
+
+def test_compute_data_quality_score_zero_when_days_missing():
+    assert compute_data_quality_score(None, "has_data") == 0
+
+
+def test_compute_data_quality_score_full_when_fresh():
+    assert compute_data_quality_score(0, "has_data") == 100
+    assert compute_data_quality_score(1, "has_data") == 100
+
+
+def test_compute_data_quality_score_zero_past_the_staleness_ceiling():
+    assert compute_data_quality_score(30, "has_data") == 0
+    assert compute_data_quality_score(365, "has_data") == 0
+
+
+def test_compute_data_quality_score_is_monotonically_non_increasing_in_staleness():
+    days = [0, 1, 5, 10, 15, 20, 25, 29, 30, 40]
+    scores = [compute_data_quality_score(d, "has_data") for d in days]
+    assert scores == sorted(scores, reverse=True)
+    assert scores[0] > scores[-1]
+
+
 def test_assess_symbol_quality_never_labels_any_nonzero_row_count_as_stale():
     """No fabricated staleness threshold -- a symbol with data is always
     "has_data", however old, since different tables have very different
@@ -40,16 +74,62 @@ def test_assess_symbol_quality_never_labels_any_nonzero_row_count_as_stale():
     assert result["days_since_last_update"] > 2000
 
 
+# Forecast Intelligence Upgrade: DataQualityEngine now reads
+# config.model.__tablename__ for its by-source breakdown, so the fixture
+# needs a stand-in with that attribute rather than the plain `object`
+# builtin used before.
+def _fake_model(tablename: str):
+    return type("FakeModel", (), {"__tablename__": tablename})
+
+
 def _config(
-    symbol: str, timeframes: tuple[Timeframe, ...] = (Timeframe.DAILY,)
+    symbol: str,
+    timeframes: tuple[Timeframe, ...] = (Timeframe.DAILY,),
+    tablename: str = "crypto_history",
+    market: str = "crypto",
 ) -> HistorySymbolConfig:
     return HistorySymbolConfig(
-        symbol=symbol, model=object, provider=AsyncMock(), timeframes=timeframes, market="crypto"
+        symbol=symbol,
+        model=_fake_model(tablename),
+        provider=AsyncMock(),
+        timeframes=timeframes,
+        market=market,
     )
 
 
+# ---- Forecast Intelligence Upgrade: explain_data_quality --------------------
+
+
+def test_explain_data_quality_empty():
+    assert (
+        explain_data_quality("empty", None)
+        == "No historical data synced yet for this symbol/timeframe."
+    )
+
+
+def test_explain_data_quality_fresh():
+    assert explain_data_quality("has_data", 0) == "Up to date -- synced within the last day."
+    assert explain_data_quality("has_data", 1) == "Up to date -- synced within the last day."
+
+
+def test_explain_data_quality_stale_reports_real_day_count():
+    assert explain_data_quality("has_data", 12) == "Synced 12 days ago."
+
+
+def test_explain_data_quality_never_claims_a_cadence_violation():
+    # Deliberately does not say "too old" or "should update daily" --
+    # different tables have different natural cadences (see module
+    # docstring); only the honest day count is reported.
+    reason = explain_data_quality("has_data", 400)
+    assert "too" not in reason.lower()
+    assert "should" not in reason.lower()
+
+
 async def test_assess_all_sweeps_full_registry_and_summarizes():
-    registry = [_config("BTC"), _config("AAPL")]
+    registry = [
+        _config("BTC", tablename="crypto_history"),
+        _config("AAPL", tablename="stock_history"),
+    ]
     with (
         patch("app.services.data_quality.engine.build_registry", return_value=registry),
         patch(
@@ -67,7 +147,22 @@ async def test_assess_all_sweeps_full_registry_and_summarizes():
     btc_result = next(r for r in report["results"] if r["symbol"] == "BTC")
     aapl_result = next(r for r in report["results"] if r["symbol"] == "AAPL")
     assert btc_result["status"] == "has_data"
+    assert btc_result["source"] == "crypto_history"
+    # Not asserting an exact day count here (that fixture's timestamp is
+    # fixed while `assess_all()`'s `now` is real wall-clock time) -- just
+    # that a real, non-fabricated reason was produced for real data.
+    assert "days ago" in btc_result["reason"] or "Up to date" in btc_result["reason"]
     assert aapl_result["status"] == "empty"
+    assert aapl_result["reason"] == "No historical data synced yet for this symbol/timeframe."
+
+    by_source = {row["source"]: row for row in report["by_source"]}
+    assert by_source["crypto_history"] == {
+        "source": "crypto_history",
+        "total": 1,
+        "has_data": 1,
+        "complete_pct": 100.0,
+    }
+    assert by_source["stock_history"]["complete_pct"] == 0.0
 
 
 async def test_assess_all_covers_every_timeframe_a_symbol_declares():
@@ -94,3 +189,4 @@ async def test_assess_all_empty_registry_reports_zero_totals():
         "has_data": 0,
         "empty_symbols": [],
     }
+    assert report["by_source"] == []

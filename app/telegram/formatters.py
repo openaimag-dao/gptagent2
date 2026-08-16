@@ -294,6 +294,24 @@ def format_quality(result: dict | None, symbol: str, timeframe: str) -> str:
             lines.append(
                 f"- {row['horizon_periods']} period(s) (n={row['count']}): {row['accuracy_pct']}%"
             )
+    coverage = result.get("quantile_coverage")
+    if coverage:
+        lines.append("")
+        lines.append("*Quantile Coverage*")
+        for name, stats in coverage.items():
+            if stats["realized_coverage_pct"] is None:
+                lines.append(f"- {name}: not enough graded predictions yet")
+                continue
+            flag = (
+                ""
+                if stats["sample_sufficiency"] == "reliable"
+                else f" ({stats['sample_sufficiency']})"
+            )
+            lines.append(
+                f"- {name} (n={stats['sample_count']}): "
+                f"expected {stats['expected_coverage_pct']}%, "
+                f"realized {stats['realized_coverage_pct']}%{flag}"
+            )
     return "\n".join(lines)
 
 
@@ -1873,6 +1891,12 @@ def format_no_trade_verdict(symbol: str, result: dict | None) -> str:
     probability = result.get("probability_pct")
     if direction is not None and probability is not None:
         lines.append(f"Forecast: {direction} ({probability}% probability)")
+    effective_probability = result.get("effective_probability_pct")
+    if effective_probability is not None and effective_probability != probability:
+        lines.append(f"Calibration/sample-adjusted probability: {effective_probability}%")
+    expected_edge = result.get("expected_edge_pct")
+    if expected_edge is not None:
+        lines.append(f"Expected edge: {expected_edge}")
     lines.append("")
 
     reasons = result.get("reasons") or []
@@ -1940,6 +1964,23 @@ def format_trade_setup(symbol: str, result: dict | None) -> str:
     elif recommendation != "TRADE_OK":
         lines.append("No gating conditions triggered.")
 
+    economics = result.get("trade_economics")
+    if economics is not None:
+        lines.append("")
+        lines.append("*Trade Economics* (historical backtest of this setup's shape)")
+        lines.append(
+            f"n={economics['sample_count']} ({economics['sample_sufficiency']}): "
+            f"win rate {economics['win_rate_pct']}%, "
+            f"expectancy {economics['expectancy_pct']}%/trade"
+        )
+        if economics.get("profit_factor") is not None:
+            lines.append(f"Profit factor: {economics['profit_factor']}")
+        if economics.get("avg_mfe_pct") is not None or economics.get("avg_mae_pct") is not None:
+            lines.append(
+                f"Avg favorable excursion: {economics.get('avg_mfe_pct')}% | "
+                f"Avg adverse excursion: {economics.get('avg_mae_pct')}%"
+            )
+
     return "\n".join(lines)
 
 
@@ -1962,14 +2003,29 @@ def format_alert_performance(summary: dict, by_type: list[dict]) -> str:
             f"(of {summary['directional_alerts_count']} directional alerts)"
         )
     lines.append(f"Avg absolute realized move: {summary['avg_abs_realized_move_pct']}%")
+    if summary.get("avg_edge_vs_baseline_pct") is not None:
+        lines.append(
+            f"Avg edge vs. baseline: {summary['avg_edge_vs_baseline_pct']:+.2f}pp "
+            f"(of {summary['edge_vs_baseline_sample_count']} alerts with a baseline)"
+        )
 
     if by_type:
         lines.append("")
-        lines.append("By alert type:")
-        for row in by_type[:10]:
+        lines.append("By alert type (sorted by measured edge vs. baseline):")
+        ranked = sorted(
+            by_type[:20],
+            key=lambda r: (
+                r.get("avg_edge_vs_baseline_pct") is None,
+                -(r.get("avg_edge_vs_baseline_pct") or 0),
+            ),
+        )
+        for row in ranked[:10]:
             rate = row["significant_move_rate_pct"]
+            edge = row.get("avg_edge_vs_baseline_pct")
+            edge_note = f", edge {edge:+.2f}pp" if edge is not None else ""
             lines.append(
-                f"- {row['alert_type']}: {row['graded_count']} graded, {rate}% significant"
+                f"- {row['alert_type']}: {row['graded_count']} graded, "
+                f"{rate}% significant{edge_note}"
             )
 
     return "\n".join(lines)

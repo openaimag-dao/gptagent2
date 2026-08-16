@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import logging
 import re
 from collections.abc import AsyncGenerator
@@ -45,6 +47,7 @@ from app.api.portfolio import router as portfolio_router
 from app.api.probability import router as probability_router
 from app.api.quality import router as quality_router
 from app.api.ranking import router as ranking_router
+from app.api.realtime import router as realtime_router
 from app.api.regime import router as regime_router
 from app.api.replay import router as replay_router
 from app.api.reports import router as reports_router
@@ -66,6 +69,7 @@ from app.api.whales import router as whales_router
 from app.api.whatif import router as whatif_router
 from app.config import get_settings
 from app.scheduler.jobs import shutdown_scheduler, start_scheduler
+from app.services.realtime.collector import build_realtime_collector
 from app.utils.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -84,8 +88,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Resolved DATABASE_URL: %s", _redact_url(settings.database_url))
     logger.info("Resolved REDIS_URL: %s", _redact_url(settings.redis_url))
     start_scheduler()
+    realtime_task = (
+        asyncio.create_task(build_realtime_collector().run()) if settings.realtime_enabled else None
+    )
     yield
     shutdown_scheduler()
+    if realtime_task is not None:
+        realtime_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await realtime_task
 
 
 app = FastAPI(
@@ -151,6 +162,7 @@ app.include_router(scanner_router)
 app.include_router(executive_summary_router)
 app.include_router(accuracy_router)
 app.include_router(trade_setup_router)
+app.include_router(realtime_router)
 
 _DASHBOARD_DIR = Path(__file__).parent / "static" / "dashboard"
 app.mount("/dashboard", StaticFiles(directory=_DASHBOARD_DIR, html=True), name="dashboard")

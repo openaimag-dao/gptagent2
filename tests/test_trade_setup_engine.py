@@ -1,10 +1,16 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.services.trade_setup.engine import (
+    TradeSetup,
+    backtest_trade_setup_for_symbol,
+    backtest_trade_setup_rule,
     build_trade_setup,
+    compute_trade_setup_expectancy,
     direction_to_side,
     evaluate_trade_setup_for_symbol,
+    simulate_trade_outcome,
 )
 
 _BULLISH_PAYLOAD = {
@@ -167,3 +173,250 @@ async def test_evaluate_trade_setup_for_symbol_computes_forecast_only_once():
     assert result["recommendation"] == "TRADE_OK"
     assert result["side"] == "BUY"
     assert result["stop_loss_price"] == 90.0
+    # no stored history for this mocked session -- honestly None, not a
+    # fabricated backtest, but the key must always be present.
+    assert "trade_economics" in result
+
+
+def _bar(high, low, close):
+    return SimpleNamespace(high=high, low=low, close=close)
+
+
+# ---- POST-V9 Phase 9: simulate_trade_outcome ----
+
+
+def test_simulate_trade_outcome_buy_target_hit_first():
+    window = [_bar(105, 99, 104), _bar(115, 110, 112)]  # day 2 high=115 >= target 110
+    result = simulate_trade_outcome(100.0, 90.0, 110.0, "BUY", window)
+    assert result["outcome"] == "target_hit"
+    assert result["days_to_target"] == 2
+    assert result["days_to_stop"] is None
+    assert result["realized_return_pct"] == 10.0
+
+
+def test_simulate_trade_outcome_buy_stop_hit_first():
+    window = [_bar(102, 89, 90)]  # low=89 <= stop 90
+    result = simulate_trade_outcome(100.0, 90.0, 110.0, "BUY", window)
+    assert result["outcome"] == "stop_hit"
+    assert result["days_to_stop"] == 1
+    assert result["realized_return_pct"] == -10.0
+
+
+def test_simulate_trade_outcome_sell_target_hit_first():
+    # SELL: target below entry, stop above entry
+    window = [_bar(102, 88, 90)]  # low=88 <= target 90
+    result = simulate_trade_outcome(100.0, 110.0, 90.0, "SELL", window)
+    assert result["outcome"] == "target_hit"
+    assert result["realized_return_pct"] == 10.0  # short profits when price falls
+
+
+def test_simulate_trade_outcome_sell_stop_hit_first():
+    window = [_bar(111, 95, 108)]  # high=111 >= stop 110
+    result = simulate_trade_outcome(100.0, 110.0, 90.0, "SELL", window)
+    assert result["outcome"] == "stop_hit"
+    assert result["realized_return_pct"] == -10.0
+
+
+def test_simulate_trade_outcome_same_bar_ambiguity_resolves_to_stop():
+    # one bar's range spans both stop (90) and target (110) -- can't tell
+    # which happened first from daily OHLC, must never claim the win.
+    window = [_bar(115, 85, 100)]
+    result = simulate_trade_outcome(100.0, 90.0, 110.0, "BUY", window)
+    assert result["outcome"] == "stop_hit"
+
+
+def test_simulate_trade_outcome_open_when_neither_hit():
+    window = [_bar(105, 95, 102), _bar(107, 96, 103)]
+    result = simulate_trade_outcome(100.0, 90.0, 120.0, "BUY", window)
+    assert result["outcome"] == "open"
+    assert result["days_to_target"] is None
+    assert result["days_to_stop"] is None
+    # mark-to-last-close
+    assert result["realized_return_pct"] == 3.0
+
+
+def test_simulate_trade_outcome_empty_window_is_open_with_no_data():
+    result = simulate_trade_outcome(100.0, 90.0, 110.0, "BUY", [])
+    assert result == {
+        "outcome": "open",
+        "realized_return_pct": None,
+        "mae_pct": None,
+        "mfe_pct": None,
+        "days_to_target": None,
+        "days_to_stop": None,
+    }
+
+
+def test_simulate_trade_outcome_mae_mfe_track_worst_and_best_excursion():
+    window = [_bar(103, 92, 95), _bar(108, 94, 107)]
+    result = simulate_trade_outcome(100.0, 85.0, 120.0, "BUY", window)
+    assert result["outcome"] == "open"
+    # worst low across both bars is 92 -> adverse = 8 -> 8%
+    assert result["mae_pct"] == 8.0
+    # best high across both bars is 108 -> favorable = 8 -> 8%
+    assert result["mfe_pct"] == 8.0
+
+
+# ---- POST-V9 Phase 9: backtest_trade_setup_rule ----
+
+
+def test_backtest_trade_setup_rule_replays_every_entry_with_forward_data():
+    rows = [_bar(101, 99, 100), _bar(106, 99, 105), _bar(107, 100, 106)]
+    outcomes = backtest_trade_setup_rule("BUY", 5.0, 5.0, rows, max_holding_days=2)
+    # last row has no forward window -> skipped; first two entries produce outcomes
+    assert len(outcomes) == 2
+
+
+def test_backtest_trade_setup_rule_empty_history_is_empty():
+    assert backtest_trade_setup_rule("BUY", 5.0, 5.0, [], max_holding_days=5) == []
+
+
+# ---- POST-V9 Phase 9: compute_trade_setup_expectancy ----
+
+
+def test_compute_trade_setup_expectancy_none_when_no_outcomes():
+    assert compute_trade_setup_expectancy([]) is None
+
+
+def test_compute_trade_setup_expectancy_aggregates_wins_and_losses():
+    outcomes = [
+        {
+            "outcome": "target_hit",
+            "realized_return_pct": 10.0,
+            "mae_pct": 1.0,
+            "mfe_pct": 10.0,
+            "days_to_target": 3,
+            "days_to_stop": None,
+        },
+        {
+            "outcome": "stop_hit",
+            "realized_return_pct": -5.0,
+            "mae_pct": 5.0,
+            "mfe_pct": 1.0,
+            "days_to_target": None,
+            "days_to_stop": 2,
+        },
+    ]
+    result = compute_trade_setup_expectancy(outcomes, min_sample_size=1, reliable_sample_size=2)
+    assert result["sample_count"] == 2
+    assert result["win_rate_pct"] == 50.0
+    assert result["target_hit_count"] == 1
+    assert result["stop_hit_count"] == 1
+    assert result["avg_mae_pct"] == 3.0
+    assert result["avg_mfe_pct"] == 5.5
+    # POST-V9 Phase 15: sample-size-aware uncertainty on the two headline numbers
+    assert result["win_rate_ci"]["point_estimate_pct"] == 50.0
+    assert result["win_rate_ci"]["sample_count"] == 2
+    assert result["expectancy_ci"]["sample_count"] == 2
+    assert result["avg_days_to_target"] == 3.0
+    assert result["avg_days_to_stop"] == 2.0
+    assert result["sample_sufficiency"] == "reliable"
+
+
+def test_compute_trade_setup_expectancy_excludes_open_returns_from_hit_counts_only():
+    outcomes = [
+        {
+            "outcome": "open",
+            "realized_return_pct": 1.0,
+            "mae_pct": 0.5,
+            "mfe_pct": 1.5,
+            "days_to_target": None,
+            "days_to_stop": None,
+        }
+    ]
+    result = compute_trade_setup_expectancy(outcomes)
+    # "open" still counts toward the sample (it has a realized_return_pct
+    # as of window exhaustion) but contributes to neither hit count.
+    assert result["sample_count"] == 1
+    assert result["target_hit_count"] == 0
+    assert result["stop_hit_count"] == 0
+    assert result["open_count"] == 1
+    assert result["avg_days_to_target"] is None
+    assert result["avg_days_to_stop"] is None
+
+
+def test_compute_trade_setup_expectancy_reports_insufficient_below_min_sample():
+    outcomes = [
+        {
+            "outcome": "target_hit",
+            "realized_return_pct": 1.0,
+            "mae_pct": 0.1,
+            "mfe_pct": 1.0,
+            "days_to_target": 1,
+            "days_to_stop": None,
+        }
+    ]
+    result = compute_trade_setup_expectancy(outcomes, min_sample_size=30, reliable_sample_size=100)
+    assert result["sample_sufficiency"] == "insufficient"
+
+
+# ---- POST-V9 Phase 9: backtest_trade_setup_for_symbol ----
+
+
+def _setup(side="BUY", entry=100.0, stop=90.0, target=120.0):
+    return TradeSetup(
+        symbol="BTC",
+        horizon="24h",
+        recommendation="TRADE_OK",
+        direction="Bullish",
+        side=side,
+        entry_price=entry,
+        stop_loss_price=stop,
+        take_profit_price=target,
+        risk_reward_ratio=2.0,
+        invalidation_level=None,
+        breakout_level=None,
+        probability_pct=70,
+        conviction_tier="high",
+        reasons=[],
+    )
+
+
+async def test_backtest_trade_setup_for_symbol_none_when_no_side():
+    setup = _setup(side=None)
+    result = await backtest_trade_setup_for_symbol(MagicMock(), "BTC", setup)
+    assert result is None
+
+
+async def test_backtest_trade_setup_for_symbol_none_when_symbol_unknown():
+    setup = _setup()
+    with patch(
+        "app.services.trade_setup.engine.find_symbol_config",
+        return_value=None,
+    ):
+        result = await backtest_trade_setup_for_symbol(MagicMock(), "NOPE", setup)
+    assert result is None
+
+
+async def test_backtest_trade_setup_for_symbol_none_without_enough_history():
+    setup = _setup()
+    with (
+        patch(
+            "app.services.trade_setup.engine.find_symbol_config",
+            return_value=SimpleNamespace(model=object(), symbol="BTC"),
+        ),
+        patch(
+            "app.services.trade_setup.engine.get_series",
+            AsyncMock(return_value=[_bar(101, 99, 100)]),
+        ),
+    ):
+        result = await backtest_trade_setup_for_symbol(MagicMock(), "BTC", setup)
+    assert result is None
+
+
+async def test_backtest_trade_setup_for_symbol_computes_expectancy_from_history():
+    setup = _setup(side="BUY", entry=100.0, stop=90.0, target=120.0)
+    rows = [_bar(101, 99, 100), _bar(125, 100, 110), _bar(106, 100, 101)]
+    with (
+        patch(
+            "app.services.trade_setup.engine.find_symbol_config",
+            return_value=SimpleNamespace(model=object(), symbol="BTC"),
+        ),
+        patch(
+            "app.services.trade_setup.engine.get_series",
+            AsyncMock(return_value=rows),
+        ),
+    ):
+        result = await backtest_trade_setup_for_symbol(MagicMock(), "BTC", setup)
+    assert result is not None
+    assert result["sample_count"] >= 1

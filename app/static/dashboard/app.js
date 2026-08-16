@@ -113,6 +113,107 @@ function table(headers, rows) {
   return t;
 }
 
+// ---- Live Dashboard Upgrade: realtime price components -------------------
+// All read from the single shared RealtimeStore (realtime.js) -- never a
+// per-component EventSource/WebSocket connection.
+
+function fmtAge(ageSeconds) {
+  if (ageSeconds == null) return "";
+  if (ageSeconds < 60) return `${Math.round(ageSeconds)}s`;
+  return `${Math.round(ageSeconds / 60)}m`;
+}
+
+function dataFreshnessBadge(freshness, ageSeconds) {
+  if (!freshness) return el("span", { class: "freshness-badge freshness-unknown" }, "...");
+  const label = freshness.toUpperCase();
+  const text = freshness === "offline" ? "OFFLINE" : `${label} · ${fmtAge(ageSeconds)}`;
+  return el("span", { class: `freshness-badge freshness-${freshness}` }, text);
+}
+
+function tickerItem(symbol, fallbackQuote) {
+  const entry = RealtimeStore.get(symbol);
+  const price = entry ? entry.price : fallbackQuote ? fallbackQuote.price : null;
+  const changePct = entry ? entry.changePercent24h : fallbackQuote ? fallbackQuote.change_pct_24h : null;
+  // /api/market already computes real freshness/age_seconds per quote
+  // (from the batch's actual collected_at) -- reuse it rather than
+  // guessing a label before the first realtime tick arrives.
+  const badge = entry
+    ? dataFreshnessBadge(entry.freshness, entry.ageSeconds)
+    : fallbackQuote
+      ? dataFreshnessBadge(fallbackQuote.freshness, fallbackQuote.age_seconds)
+      : dataFreshnessBadge(null, null);
+  return el("div", { class: "ticker-item", "data-symbol": symbol }, [
+    el("div", { class: "ticker-symbol" }, symbol),
+    el("div", { class: "ticker-price" }, price != null ? fmtNum(price) : "n/a"),
+    el("div", { class: `ticker-change ${changeClass(changePct)}` }, fmtPct(changePct)),
+    badge,
+  ]);
+}
+
+// `fallbackQuotes` is the already-fetched /api/market snapshot for this
+// cycle -- used only to paint an honest, real price before the first
+// realtime tick has arrived for a symbol, never a fabricated value.
+function liveTicker(symbols, fallbackQuotes) {
+  const bySymbol = new Map((fallbackQuotes || []).map((q) => [q.symbol, q]));
+  const wrap = el(
+    "div",
+    { class: "ticker", id: "live-ticker" },
+    symbols.map((s) => tickerItem(s, bySymbol.get(s)))
+  );
+  RealtimeStore.mount({
+    onTick: (dirtySymbols) => {
+      for (const symbol of dirtySymbols) updateTickerCell(symbol);
+    },
+    onStatus: updateConnectionIndicator,
+  });
+  return wrap;
+}
+
+// Patches only the one changed symbol's DOM node -- a BTC tick never
+// touches ETH's card or re-renders the rest of Overview.
+function updateTickerCell(symbol) {
+  const container = document.getElementById("live-ticker");
+  if (!container) return;
+  const node = container.querySelector(`[data-symbol="${symbol}"]`);
+  if (!node) return;
+  const entry = RealtimeStore.get(symbol);
+  if (!entry) return;
+
+  const priceEl = node.querySelector(".ticker-price");
+  const changeEl = node.querySelector(".ticker-change");
+  const badgeEl = node.querySelector(".freshness-badge");
+
+  const prevPrice = Number(priceEl.dataset.rawPrice || entry.previousPrice);
+  priceEl.textContent = fmtNum(entry.price);
+  priceEl.dataset.rawPrice = String(entry.price);
+  changeEl.textContent = fmtPct(entry.changePercent24h);
+  changeEl.className = `ticker-change ${changeClass(entry.changePercent24h)}`;
+  if (badgeEl) badgeEl.replaceWith(dataFreshnessBadge(entry.freshness, entry.ageSeconds));
+
+  if (Number.isFinite(prevPrice) && entry.price !== prevPrice) {
+    const flashClass = entry.price > prevPrice ? "flash-up" : "flash-down";
+    priceEl.classList.remove("flash-up", "flash-down");
+    void priceEl.offsetWidth; // restart the CSS animation on repeated ticks
+    priceEl.classList.add(flashClass);
+  }
+}
+
+const _CONNECTION_STATUS_LABELS = {
+  connected: "LIVE",
+  connecting: "CONNECTING",
+  reconnecting: "RECONNECTING",
+  offline: "OFFLINE",
+};
+
+function updateConnectionIndicator(status, latencyMs) {
+  const node = document.getElementById("connection-indicator");
+  if (!node) return;
+  const label = _CONNECTION_STATUS_LABELS[status] || status.toUpperCase();
+  const suffix = status === "connected" && latencyMs != null ? ` ${(latencyMs / 1000).toFixed(1)}s` : "";
+  node.textContent = `● ${label}${suffix}`;
+  node.className = `connection-indicator status-${status}`;
+}
+
 // v10.0 "Smart Navigation" -- one pointer per screen to the related
 // intelligence a trader would naturally check next. Mirrors
 // app/services/common/navigation.py's NAV_POINTERS wording; purely a link
@@ -415,6 +516,14 @@ function forecastConsensusSection(consensus) {
       el("strong", {}, "Final Consensus: "),
       `${dominantLabel} (${consensus.agreement_score}% agreement)`,
     ]),
+    consensus.raw_agreement_score != null && consensus.raw_agreement_score !== consensus.agreement_score
+      ? el(
+          "p",
+          { class: "sub" },
+          `Before correlation adjustment: ${consensus.raw_agreement_score}% agreement -- ` +
+            `redundant/correlated agents discounted this to ${consensus.agreement_score}%.`
+        )
+      : null,
   ]);
 }
 
@@ -535,6 +644,26 @@ function forecastKeyLevels(levels) {
     card("Resistance 2", fmtNum(levels.resistance_2)),
     card("Invalidation Level", fmtNum(levels.invalidation_level)),
     card("Breakout Level", fmtNum(levels.breakout_level)),
+  ]);
+}
+
+function forecastHorizonConsistency(consistency) {
+  if (!consistency) {
+    return el("p", { class: "sub" }, "Multi-horizon consistency: not enough horizons computed yet.");
+  }
+  const groupCards = ["short_term", "medium_term", "long_term"]
+    .filter((key) => consistency[key] != null)
+    .map((key) => {
+      const style = FORECAST_DIRECTION_STYLE[consistency[key]] || FORECAST_DIRECTION_STYLE.Neutral;
+      const label = { short_term: "Short-term (24h)", medium_term: "Medium-term (3d-7d)", long_term: "Long-term (30d)" }[key];
+      return el("div", { class: "card" }, [
+        el("div", { class: "label" }, label),
+        el("div", { class: `value ${style.cls}` }, `${style.emoji} ${consistency[key]}`),
+      ]);
+    });
+  return el("div", {}, [
+    el("div", { class: "grid" }, groupCards),
+    el("p", {}, consistency.explanation),
   ]);
 }
 
@@ -737,6 +866,8 @@ function buildForecastCard(payload, onHorizonChange, historyNodes, history) {
   root.appendChild(el("h3", {}, "Key Levels"));
   const keyLevels = forecastKeyLevels(payload.key_levels);
   if (keyLevels) root.appendChild(keyLevels);
+  root.appendChild(el("h3", {}, "Multi-Horizon Consistency"));
+  root.appendChild(forecastHorizonConsistency(payload.horizon_consistency));
   root.appendChild(el("h3", {}, "What Can Change The Forecast"));
   root.appendChild(whatCanChange);
   for (const node of historyNodes || []) root.appendChild(node);
@@ -1019,6 +1150,7 @@ async function renderOverview() {
     forecastCenter,
     execSummary,
     market,
+    realtimeStatus,
     regime,
     signals,
     score,
@@ -1032,6 +1164,7 @@ async function renderOverview() {
     renderForecastCenter(),
     renderExecutiveSummary(),
     safe("/api/market"),
+    safe("/api/realtime/status"),
     safe("/api/regime"),
     safe("/api/signals"),
     safe("/api/global-score"),
@@ -1043,7 +1176,11 @@ async function renderOverview() {
     safe("/api/alert-performance/by-type"),
   ]);
 
-  const nodes = [forecastCenter, execSummary, el("h2", {}, "Overview")];
+  const nodes = [];
+  if (realtimeStatus && realtimeStatus.watchlist && realtimeStatus.watchlist.length) {
+    nodes.push(liveTicker(realtimeStatus.watchlist, market ? market.quotes : null));
+  }
+  nodes.push(forecastCenter, execSummary, el("h2", {}, "Overview"));
   const top = el("div", { class: "grid" });
   if (regime) top.appendChild(card("Regime", regime.regime.replace(/_/g, " ")));
   if (signals) top.appendChild(card("Bull / Bear", `${signals.bull_score} / ${signals.bear_score}`, `net ${signals.net_score}, ${signals.confidence_pct}% confidence`));
@@ -1077,6 +1214,194 @@ async function renderOverview() {
   nodes.push(...renderWhalePositioning(whales));
   nodes.push(...renderTopOpportunities(opportunities));
   nodes.push(...renderAlertPerformance(alertPerformance, alertPerformanceByType));
+
+  return nodes;
+}
+
+// ---- Watchlist -------------------------------------------------------
+// User-managed list, persisted client-side (no backend watchlist concept
+// exists -- same localStorage pattern already used for the admin key).
+// Prices reuse the same RealtimeStore/fallback-quote pattern as Overview's
+// live ticker so this page updates without polling.
+
+const _WATCHLIST_STORAGE_KEY = "dashboard_watchlist_symbols";
+
+function _loadWatchlistSymbols(defaults) {
+  try {
+    const raw = localStorage.getItem(_WATCHLIST_STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {
+    // Corrupted localStorage value -- fall through to defaults.
+  }
+  return [...defaults];
+}
+
+function _saveWatchlistSymbols(symbols) {
+  localStorage.setItem(_WATCHLIST_STORAGE_KEY, JSON.stringify(symbols));
+}
+
+function _watchlistCurrentQuote(symbol, marketBySymbol) {
+  const entry = RealtimeStore.get(symbol);
+  const fallback = marketBySymbol.get(symbol);
+  return {
+    price: entry ? entry.price : fallback ? fallback.price : null,
+    changePct: entry ? entry.changePercent24h : fallback ? fallback.change_pct_24h : null,
+    volume: entry ? entry.volume24h : fallback ? fallback.volume_24h : null,
+    freshness: entry ? entry.freshness : fallback ? fallback.freshness : null,
+    ageSeconds: entry ? entry.ageSeconds : fallback ? fallback.age_seconds : null,
+  };
+}
+
+function _watchlistForecastCell(forecast) {
+  if (!forecast || !forecast.direction) return "n/a";
+  const d = forecast.direction.toLowerCase();
+  const arrow = d.includes("bullish") ? "↑" : d.includes("bearish") ? "↓" : "→";
+  const cls = d.includes("bullish") ? "up" : d.includes("bearish") ? "down" : "neutral";
+  return el("span", { class: cls }, `${arrow} ${forecast.probability_pct}%`);
+}
+
+async function renderWatchlist() {
+  const nodes = [
+    el("h2", {}, "Watchlist"),
+    el(
+      "p",
+      { class: "sub" },
+      "Prices update in realtime for symbols on the live feed (see the header indicator); " +
+        "others fall back to the last collected snapshot with an honest freshness label."
+    ),
+  ];
+
+  const [market, realtimeStatus] = await Promise.all([
+    safe("/api/market"),
+    safe("/api/realtime/status"),
+  ]);
+  const marketBySymbol = new Map((market ? market.quotes : []).map((q) => [q.symbol, q]));
+  const defaultWatchlist =
+    realtimeStatus && realtimeStatus.watchlist ? realtimeStatus.watchlist : ["BTC", "ETH", "SOL"];
+  let symbols = _loadWatchlistSymbols(defaultWatchlist);
+
+  const tableWrap = el("div");
+  nodes.push(tableWrap);
+
+  let sortKey = null;
+  let sortDir = 1;
+
+  function sortValue(symbol) {
+    const q = _watchlistCurrentQuote(symbol, marketBySymbol);
+    if (sortKey === "price") return q.price ?? -Infinity;
+    if (sortKey === "change") return q.changePct ?? -Infinity;
+    if (sortKey === "volume") return q.volume ?? -Infinity;
+    return symbol;
+  }
+
+  function sortHeader(label, key) {
+    const th = el(
+      "th",
+      { style: "cursor:pointer" },
+      label + (sortKey === key ? (sortDir === 1 ? " ▲" : " ▼") : "")
+    );
+    th.addEventListener("click", () => {
+      sortDir = sortKey === key ? -sortDir : 1;
+      sortKey = key;
+      draw();
+    });
+    return th;
+  }
+
+  async function draw() {
+    tableWrap.innerHTML = "";
+    if (!symbols.length) {
+      tableWrap.appendChild(el("p", { class: "sub" }, "Watchlist is empty -- add a symbol below."));
+      return;
+    }
+
+    const forecasts = await Promise.all(symbols.map((s) => safe(`/api/forecast/${s}?horizon=24h`)));
+    const forecastBySymbol = new Map(symbols.map((s, i) => [s, forecasts[i]]));
+
+    const ordered = [...symbols];
+    if (sortKey) {
+      ordered.sort((a, b) => {
+        const av = sortValue(a);
+        const bv = sortValue(b);
+        if (av < bv) return -1 * sortDir;
+        if (av > bv) return 1 * sortDir;
+        return 0;
+      });
+    }
+
+    const t = el("table");
+    t.appendChild(
+      el("tr", {}, [
+        el("th", {}, "Symbol"),
+        sortHeader("Price", "price"),
+        sortHeader("24H", "change"),
+        sortHeader("Volume", "volume"),
+        el("th", {}, "Freshness"),
+        el("th", {}, "Forecast (24h)"),
+        el("th", {}, ""),
+      ])
+    );
+    for (const symbol of ordered) {
+      const q = _watchlistCurrentQuote(symbol, marketBySymbol);
+      const removeBtn = el("button", {}, "Remove");
+      removeBtn.addEventListener("click", () => {
+        symbols = symbols.filter((s) => s !== symbol);
+        _saveWatchlistSymbols(symbols);
+        draw();
+      });
+      t.appendChild(
+        el("tr", { "data-symbol": symbol }, [
+          el("td", {}, symbol),
+          el("td", { class: "wl-price" }, q.price != null ? fmtNum(q.price) : "n/a"),
+          el("td", { class: `wl-change ${changeClass(q.changePct)}` }, fmtPct(q.changePct)),
+          el("td", { class: "wl-volume" }, q.volume != null ? fmtNum(q.volume, 0) : "n/a"),
+          el("td", { class: "wl-freshness" }, dataFreshnessBadge(q.freshness, q.ageSeconds)),
+          el("td", {}, _watchlistForecastCell(forecastBySymbol.get(symbol))),
+          el("td", {}, removeBtn),
+        ])
+      );
+    }
+    tableWrap.appendChild(t);
+
+    // Patches only the changed symbol's price/change/freshness cells --
+    // the same pattern as Overview's liveTicker, just table rows instead
+    // of cards. Re-mounted on every draw() (sort/add/remove) so it always
+    // targets the DOM nodes actually on screen.
+    RealtimeStore.mount({
+      onTick: (dirtySymbols) => {
+        for (const symbol of dirtySymbols) {
+          const row = tableWrap.querySelector(`tr[data-symbol="${symbol}"]`);
+          if (!row) continue;
+          const q = _watchlistCurrentQuote(symbol, marketBySymbol);
+          row.querySelector(".wl-price").textContent = q.price != null ? fmtNum(q.price) : "n/a";
+          const changeEl = row.querySelector(".wl-change");
+          changeEl.textContent = fmtPct(q.changePct);
+          changeEl.className = `wl-change ${changeClass(q.changePct)}`;
+          row.querySelector(".wl-volume").textContent = q.volume != null ? fmtNum(q.volume, 0) : "n/a";
+          row.querySelector(".wl-freshness").replaceWith(dataFreshnessBadge(q.freshness, q.ageSeconds));
+        }
+      },
+    });
+  }
+  await draw();
+
+  const addInput = el("input", { type: "text", placeholder: "Add symbol (e.g. AAPL)" });
+  const addBtn = el("button", {}, "Add to watchlist");
+  const addError = el("span", { class: "error" }, "");
+  addBtn.addEventListener("click", () => {
+    const symbol = addInput.value.trim().toUpperCase();
+    addError.textContent = "";
+    if (!symbol) return;
+    if (symbols.includes(symbol)) {
+      addError.textContent = "Already in watchlist.";
+      return;
+    }
+    symbols = [...symbols, symbol];
+    _saveWatchlistSymbols(symbols);
+    addInput.value = "";
+    draw();
+  });
+  nodes.push(el("div", { class: "controls" }, [addInput, addBtn, addError]));
 
   return nodes;
 }
@@ -2623,6 +2948,128 @@ async function renderResearch() {
   return nodes;
 }
 
+// A fixed, small DSL over app.services.backtest.conditions.Condition --
+// see that module's own docstring ("deliberately not a free-text/NLP
+// parser"). Listed here once rather than free-text parsing (unlike the
+// older Strategies page's SYMBOL:field:op:value input) since the backend
+// only ever accepts exactly these fields/operators.
+const _BACKTEST_FIELDS = [
+  "close", "return_pct", "volatility", "atr", "rsi", "macd", "macd_signal",
+  "macd_histogram", "sma_20", "sma_50", "sma_200", "volume_change_pct",
+];
+const _BACKTEST_OPERATORS = ["gt", "lt", "gte", "lte"];
+
+function _backtestConditionRow(defaults = {}) {
+  const symbol = el("input", { type: "text", value: defaults.symbol || "BTC", placeholder: "Symbol" });
+  const field = el("select", {}, _BACKTEST_FIELDS.map((f) => el("option", { value: f }, f)));
+  field.value = defaults.field || "rsi";
+  const operator = el("select", {}, _BACKTEST_OPERATORS.map((o) => el("option", { value: o }, o)));
+  operator.value = defaults.operator || "lt";
+  const value = el("input", { type: "text", value: defaults.value ?? "30", placeholder: "Value" });
+  const removeBtn = el("button", {}, "Remove");
+  const row = el("div", { class: "controls" }, [symbol, field, operator, value, removeBtn]);
+  removeBtn.addEventListener("click", () => row.remove());
+  row._read = () => ({
+    symbol: symbol.value.trim().toUpperCase(),
+    field: field.value,
+    operator: operator.value,
+    value: parseFloat(value.value),
+  });
+  return row;
+}
+
+async function renderBacktest() {
+  const nodes = [
+    el("h2", {}, "Backtest"),
+    el(
+      "p",
+      { class: "sub" },
+      "Tests a structured rule (AND of conditions) against a symbol's full stored history -- " +
+        "every historical date the rule fired, the target's forward return becomes one trade. " +
+        "Includes a 1-bar fill lag and round-trip fee/slippage costs, so results aren't an " +
+        "unrealistic same-bar zero-cost fill."
+    ),
+  ];
+
+  const targetInput = el("input", { type: "text", value: "BTC", placeholder: "Target symbol" });
+  const timeframeSelect = el("select", {}, ["1d", "4h", "1h"].map((t) => el("option", { value: t }, t)));
+  const horizonInput = el("input", { type: "text", value: "5", placeholder: "Horizon (periods)" });
+  nodes.push(el("div", { class: "controls" }, [targetInput, timeframeSelect, horizonInput]));
+
+  const conditionsWrap = el("div");
+  nodes.push(conditionsWrap);
+  conditionsWrap.appendChild(_backtestConditionRow());
+  const addConditionBtn = el("button", {}, "+ Add condition");
+  addConditionBtn.addEventListener("click", () => conditionsWrap.appendChild(_backtestConditionRow()));
+
+  const runBtn = el("button", {}, "Run backtest");
+  nodes.push(el("div", { class: "controls" }, [addConditionBtn, runBtn]));
+
+  const results = el("div");
+  nodes.push(results);
+
+  runBtn.addEventListener("click", async () => {
+    results.innerHTML = "";
+    const conditions = [...conditionsWrap.children].map((row) => row._read());
+    if (conditions.some((c) => !c.symbol || Number.isNaN(c.value))) {
+      results.appendChild(el("p", { class: "error" }, "Every condition needs a symbol and a numeric value."));
+      return;
+    }
+    results.appendChild(el("p", { class: "loading" }, "Running..."));
+    try {
+      const r = await fetchJSON("/api/backtest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_symbol: targetInput.value.trim().toUpperCase(),
+          conditions,
+          timeframe: timeframeSelect.value,
+          horizon: parseInt(horizonInput.value, 10) || 1,
+        }),
+      });
+      results.innerHTML = "";
+      results.appendChild(
+        el("div", { class: "grid" }, [
+          card("Occurrences", r.occurrences),
+          card("Win rate", `${r.win_rate_pct}%`, null, changeClass(r.win_rate_pct - 50)),
+          card("Avg return", fmtPct(r.avg_return_pct), null, changeClass(r.avg_return_pct)),
+          card("Expectancy", fmtPct(r.expectancy_pct), null, changeClass(r.expectancy_pct)),
+          card("Max drawdown", `${r.max_drawdown_pct}%`, null, "down"),
+          card("Profit factor", r.profit_factor ?? "n/a"),
+          card("Sharpe ratio", r.sharpe_ratio ?? "n/a"),
+          card("Sortino ratio", r.sortino_ratio ?? "n/a"),
+          card("Calmar ratio", r.calmar_ratio ?? "n/a"),
+          card("CAGR", fmtPct(r.cagr_pct)),
+          card("Avg win", fmtPct(r.avg_win_pct), null, "up"),
+          // avg_loss_pct/var_95_pct/cvar_95_pct are all magnitudes (always
+          // >= 0 by backend contract, see compute_backtest_metrics) -- not
+          // signed returns, so fmtPct()'s "+" gain framing would misread
+          // as a profit next to the "down" styling.
+          card("Avg loss", `${r.avg_loss_pct}%`, null, "down"),
+          card("VaR 95%", `${r.var_95_pct}%`, null, "down"),
+          card("CVaR 95%", `${r.cvar_95_pct}%`, null, "down"),
+        ])
+      );
+      results.appendChild(
+        el(
+          "p",
+          { class: "sub" },
+          `${r.target_symbol} · ${r.timeframe} · horizon ${r.horizon_periods} · fill lag ${r.fill_lag_periods} bar(s) · ` +
+            `fee ${r.fee_pct}% + slippage ${r.slippage_pct}% per round trip`
+        )
+      );
+      if (r.universe_caveat) {
+        results.appendChild(el("p", { class: "error" }, r.universe_caveat));
+      }
+    } catch (err) {
+      results.innerHTML = "";
+      results.appendChild(errorBox(err));
+    }
+  });
+
+  return nodes;
+}
+
 async function renderStrategies() {
   const nodes = [el("h2", {}, "Strategies")];
   const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Target symbol" });
@@ -2702,6 +3149,9 @@ async function renderStrategies() {
             card("Total return p95", fmtPct(r.total_return_p95_pct)),
             card("Max drawdown p50", `${r.max_drawdown_p50_pct}%`),
             card("Max drawdown p95", `${r.max_drawdown_p95_pct}%`),
+            card("Probability of Profit", `${r.probability_of_profit_pct}%`),
+            card("Probability of Loss", `${r.probability_of_loss_pct}%`),
+            card(`Probability of Ruin (>${r.ruin_drawdown_pct}% DD)`, `${r.probability_of_ruin_pct}%`),
           ])
         );
       } else {
@@ -2819,7 +3269,9 @@ async function renderQuality() {
           card("Evaluated predictions", r.evaluated_predictions),
           card("Accuracy", `${r.accuracy_pct}%`),
           card("Brier score", r.brier_score),
+          card("Log Loss", r.log_loss),
           card("Avg calibration error", `${r.average_error_pct}%`),
+          card("Expected Calibration Error (ECE)", r.expected_calibration_error),
         ])
       );
       results.appendChild(el("h2", {}, "Precision / Recall"));
@@ -2861,6 +3313,20 @@ async function renderQuality() {
           )
         );
       }
+      if (r.calibration_by_regime_horizon && r.calibration_by_regime_horizon.length) {
+        results.appendChild(el("h2", {}, "Calibration by Regime × Horizon"));
+        results.appendChild(
+          table(
+            ["Regime", "Horizon (periods)", "Count", "ECE"],
+            r.calibration_by_regime_horizon.map((row) => [
+              row.regime || "n/a",
+              row.horizon_periods ?? "n/a",
+              row.count,
+              row.expected_calibration_error != null ? row.expected_calibration_error : "n/a",
+            ])
+          )
+        );
+      }
     } catch (err) {
       results.appendChild(errorBox(err));
     }
@@ -2880,6 +3346,7 @@ function accuracyStatCards(stats) {
     card("Direction Accuracy", stats.direction_accuracy_pct != null ? `${stats.direction_accuracy_pct}%` : "n/a"),
     card("Avg Abs Error", stats.avg_abs_error_pct != null ? `${stats.avg_abs_error_pct}%` : "n/a"),
     card("Confidence Accuracy", stats.confidence_accuracy_pct != null ? `${stats.confidence_accuracy_pct}%` : "n/a"),
+    card("Target Hit Rate", stats.target_hit_rate_pct != null ? `${stats.target_hit_rate_pct}%` : "n/a"),
   ]);
 }
 
@@ -2946,13 +3413,34 @@ async function renderAccuracy() {
     );
   }
 
+  nodes.push(el("h2", {}, "Regime × Horizon Accuracy"));
+  if (!data.by_regime_horizon.length) {
+    nodes.push(el("p", { class: "sub" }, "No graded predictions yet with a recorded regime."));
+  } else {
+    nodes.push(
+      table(
+        ["Regime", "Horizon", "Count", "Direction Accuracy", "Avg Abs Error", "Beats Momentum Baseline"],
+        data.by_regime_horizon.map((c) => [
+          c.regime,
+          c.horizon,
+          c.evaluated_count,
+          c.direction_accuracy_pct != null ? `${c.direction_accuracy_pct}%` : "n/a",
+          c.avg_abs_error_pct != null ? `${c.avg_abs_error_pct}%` : "n/a",
+          c.beats_momentum_baseline == null
+            ? "n/a"
+            : el("span", { class: c.beats_momentum_baseline ? "up" : "down" }, c.beats_momentum_baseline ? "Yes" : "No"),
+        ])
+      )
+    );
+  }
+
   nodes.push(el("h2", {}, "Recent Graded Predictions"));
   if (!data.recent.length) {
     nodes.push(el("p", { class: "sub" }, "Nothing graded yet."));
   } else {
     nodes.push(
       table(
-        ["Symbol", "Horizon", "Evaluated At", "Predicted", "Actual", "Error %", "Direction", "Confidence", "Tier"],
+        ["Symbol", "Horizon", "Evaluated At", "Predicted", "Actual", "Error %", "Direction", "Target Touched", "Confidence", "Tier"],
         data.recent.map((r) => [
           r.symbol,
           r.horizon,
@@ -2963,6 +3451,9 @@ async function renderAccuracy() {
           r.direction_correct == null
             ? "n/a"
             : el("span", { class: r.direction_correct ? "up" : "down" }, r.direction_correct ? "Correct" : "Wrong"),
+          r.target_reached == null
+            ? "n/a"
+            : el("span", { class: r.target_reached ? "up" : "down" }, r.target_reached ? "Yes" : "No"),
           r.confidence_correct == null
             ? "n/a"
             : el("span", { class: r.confidence_correct ? "up" : "down" }, r.confidence_correct ? "Correct" : "Wrong"),
@@ -3785,12 +4276,12 @@ async function renderSettings() {
 }
 
 const PAGES = {
-  overview: renderOverview, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
+  overview: renderOverview, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
   patterns: renderPatterns, breakout: renderBreakout, features: renderFeatures, liquidity: renderLiquidity, sentiment: renderSentiment,
   calendar: renderCalendar, similarity: renderSimilarity, brain: renderBrain,
-  research: renderResearch, strategies: renderStrategies,
+  research: renderResearch, strategies: renderStrategies, backtest: renderBacktest,
   probability: renderProbability, learning: renderLearning, quality: renderQuality, accuracy: renderAccuracy,
   scenarios: renderScenarios,
   whatif: renderWhatif,
@@ -3819,6 +4310,11 @@ const AUTO_REFRESH_MS = 60000;
 
 const lastUpdatedEl = document.getElementById("last-updated");
 let refreshTimer = null;
+
+// Header connection indicator persists across page navigation -- one
+// subscription for the life of the tab, independent of liveTicker()'s
+// per-page mount (which only exists while Overview is the visible page).
+RealtimeStore.subscribeStatus(updateConnectionIndicator);
 
 function parseHash() {
   const raw = location.hash.replace(/^#/, "");

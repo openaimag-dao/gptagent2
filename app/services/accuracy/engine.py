@@ -33,21 +33,75 @@ def _period_key(day: date, granularity: str) -> str:
 def _aggregate_stats(rows: list[PriceForecastSnapshot]) -> dict:
     """Pure function: real aggregate stats over a set of already-graded
     rows -- every field is None (not zero) when nothing graded backs it,
-    never a fabricated average."""
+    never a fabricated average.
+
+    POST-V9 Phase 14: also reports the same two accuracy numbers for the
+    naive baselines grade_price_forecasts() already computed alongside
+    the real grading (momentum_baseline_correct/
+    historical_mean_baseline_error_pct), plus explicit `beats_*` booleans
+    -- a forecast is only "predictive edge" if it actually outperforms
+    doing nothing clever, not merely non-random. `beats_random_walk`
+    needs no baseline column at all: a random-walk direction call is 50%
+    correct by construction, so it's a plain comparison against that
+    constant."""
     errors = [abs(float(r.error_pct)) for r in rows if r.error_pct is not None]
     direction_graded = [r.direction_correct for r in rows if r.direction_correct is not None]
     confidence_graded = [r.confidence_correct for r in rows if r.confidence_correct is not None]
+    momentum_graded = [
+        r.momentum_baseline_correct for r in rows if r.momentum_baseline_correct is not None
+    ]
+    historical_mean_errors = [
+        abs(float(r.historical_mean_baseline_error_pct))
+        for r in rows
+        if r.historical_mean_baseline_error_pct is not None
+    ]
+    target_reached_graded = [r.target_reached for r in rows if r.target_reached is not None]
+
+    avg_abs_error_pct = round(sum(errors) / len(errors), 4) if errors else None
+    direction_accuracy_pct = (
+        round(100 * sum(direction_graded) / len(direction_graded), 2) if direction_graded else None
+    )
+    momentum_baseline_accuracy_pct = (
+        round(100 * sum(momentum_graded) / len(momentum_graded), 2) if momentum_graded else None
+    )
+    historical_mean_baseline_avg_abs_error_pct = (
+        round(sum(historical_mean_errors) / len(historical_mean_errors), 4)
+        if historical_mean_errors
+        else None
+    )
+
     return {
         "evaluated_count": len(rows),
-        "avg_abs_error_pct": round(sum(errors) / len(errors), 4) if errors else None,
-        "direction_accuracy_pct": (
-            round(100 * sum(direction_graded) / len(direction_graded), 2)
-            if direction_graded
-            else None
-        ),
+        "avg_abs_error_pct": avg_abs_error_pct,
+        "direction_accuracy_pct": direction_accuracy_pct,
         "confidence_accuracy_pct": (
             round(100 * sum(confidence_graded) / len(confidence_graded), 2)
             if confidence_graded
+            else None
+        ),
+        "beats_random_walk": (
+            direction_accuracy_pct > 50.0 if direction_accuracy_pct is not None else None
+        ),
+        "momentum_baseline_accuracy_pct": momentum_baseline_accuracy_pct,
+        "beats_momentum_baseline": (
+            direction_accuracy_pct > momentum_baseline_accuracy_pct
+            if direction_accuracy_pct is not None and momentum_baseline_accuracy_pct is not None
+            else None
+        ),
+        "historical_mean_baseline_avg_abs_error_pct": historical_mean_baseline_avg_abs_error_pct,
+        "beats_historical_mean_baseline": (
+            avg_abs_error_pct < historical_mean_baseline_avg_abs_error_pct
+            if avg_abs_error_pct is not None
+            and historical_mean_baseline_avg_abs_error_pct is not None
+            else None
+        ),
+        # Forecast Intelligence Upgrade: did price actually TOUCH the
+        # stated target at any point during the window, not just end up
+        # past it at horizon-elapse -- a materially different (and
+        # usually higher) rate than direction_accuracy_pct.
+        "target_hit_rate_pct": (
+            round(100 * sum(target_reached_graded) / len(target_reached_graded), 2)
+            if target_reached_graded
             else None
         ),
     }
@@ -81,6 +135,27 @@ def summarize_by_asset(rows: list[PriceForecastSnapshot]) -> list[dict]:
     ]
 
 
+def summarize_by_regime_horizon(rows: list[PriceForecastSnapshot]) -> list[dict]:
+    """Pure function: POST-V9 Phase 16 -- real accuracy stats broken down
+    by the *combination* of regime and horizon, not just one dimension at
+    a time (existing bucket_accuracy/summarize_by_asset only ever group
+    on a single key). Reuses `regime_at_forecast` and `horizon`, both
+    already persisted on every row (see PriceForecastSnapshot), so this
+    is a pure regroup of data already fetched -- no new I/O, no new
+    columns. A row with no recorded regime (forecasts computed before
+    `regime_at_forecast` existed) is honestly excluded from the matrix
+    rather than dumped into a fake "unknown" cell."""
+    by_cell: dict[tuple[str, str], list[PriceForecastSnapshot]] = defaultdict(list)
+    for row in rows:
+        if row.evaluated_at is None or row.regime_at_forecast is None:
+            continue
+        by_cell[(row.regime_at_forecast, row.horizon)].append(row)
+    return [
+        {"regime": regime, "horizon": horizon, **_aggregate_stats(by_cell[(regime, horizon)])}
+        for regime, horizon in sorted(by_cell)
+    ]
+
+
 def overall_summary(rows: list[PriceForecastSnapshot]) -> dict:
     graded = [r for r in rows if r.evaluated_at is not None]
     return _aggregate_stats(graded)
@@ -111,6 +186,7 @@ class AccuracyEngine:
             "weekly": bucket_accuracy(rows, "weekly"),
             "monthly": bucket_accuracy(rows, "monthly"),
             "by_asset": summarize_by_asset(rows),
+            "by_regime_horizon": summarize_by_regime_horizon(rows),
             "recent": [
                 {
                     "symbol": r.symbol,
@@ -124,6 +200,7 @@ class AccuracyEngine:
                     "error_pct": float(r.error_pct) if r.error_pct is not None else None,
                     "direction_correct": r.direction_correct,
                     "confidence_correct": r.confidence_correct,
+                    "target_reached": r.target_reached,
                     "confidence_tier": r.confidence_tier,
                 }
                 for r in rows[:recent_limit]

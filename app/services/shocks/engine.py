@@ -99,9 +99,20 @@ class CriticalAlertEngine:
         self._similar_market_engine = similar_market_engine
         self._explanation_engine = explanation_engine
 
-    async def _safe_reliability(self) -> dict[str, float] | None:
+    async def _safe_reliability(self, regime: str | None = None) -> dict[str, float] | None:
+        """Forecast Intelligence Upgrade -- Regime-Aware Weighting: same
+        pattern as WatchdogEngine._safe_reliability()."""
         try:
-            return await self._reliability_engine.evaluate_reliability()
+            if regime is None:
+                return await self._reliability_engine.evaluate_reliability()
+            hierarchical = await self._reliability_engine.evaluate_reliability_hierarchical(
+                regime=regime
+            )
+            return {
+                agent: result["accuracy_pct"]
+                for agent, result in hierarchical.items()
+                if result.get("accuracy_pct") is not None
+            }
         except Exception:
             return None
 
@@ -111,14 +122,15 @@ class CriticalAlertEngine:
             self._global_score_engine.get_latest(),
             self._scenario_engine.get_latest(),
         )
+        live_regime = regime_snapshot.regime.value if regime_snapshot is not None else None
         agent_outputs, reliability = await asyncio.gather(
             self._agent_orchestrator.run_all(),
-            self._safe_reliability(),
+            self._safe_reliability(live_regime),
         )
         consensus: ConsensusResult | None = compute_consensus(agent_outputs, reliability)
         committee = convene_committee(agent_outputs, consensus) if consensus is not None else None
         return {
-            "regime": regime_snapshot.regime.value if regime_snapshot is not None else None,
+            "regime": live_regime,
             "trend_strength_score": (
                 global_score.trend_strength_score if global_score is not None else None
             ),

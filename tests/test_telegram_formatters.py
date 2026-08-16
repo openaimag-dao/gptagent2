@@ -838,6 +838,47 @@ def test_format_quality_present():
     assert "Macro precision: 75.0% | Macro recall: 72.0%" in text
     assert "60-80%" in text
     assert "1 period(s)" in text
+    # no quantile_coverage key in this fixture -- must not crash or print a
+    # section header for data that was never provided
+    assert "Quantile Coverage" not in text
+
+
+def test_format_quality_renders_quantile_coverage_section():
+    result = {
+        "symbol": "BTC",
+        "timeframe": "1d",
+        "evaluated_predictions": 10,
+        "accuracy_pct": 70.0,
+        "brier_score": 0.25,
+        "average_error_pct": 20.0,
+        "precision_recall": {
+            "macro_precision_pct": 75.0,
+            "macro_recall_pct": 72.0,
+            "per_class": {},
+        },
+        "calibration": [],
+        "time_horizon_accuracy": [],
+        "quantile_coverage": {
+            "p10_p90": {
+                "expected_coverage_pct": 80.0,
+                "realized_coverage_pct": 62.0,
+                "sample_count": 12,
+                "sample_sufficiency": "usable",
+                "coverage_gap_pct": -18.0,
+            },
+            "p25_p75": {
+                "expected_coverage_pct": 50.0,
+                "realized_coverage_pct": None,
+                "sample_count": 0,
+                "sample_sufficiency": "insufficient",
+                "coverage_gap_pct": None,
+            },
+        },
+    }
+    text = format_quality(result, "BTC", "1d")
+    assert "Quantile Coverage" in text
+    assert "p10_p90 (n=12): expected 80.0%, realized 62.0% (usable)" in text
+    assert "p25_p75: not enough graded predictions yet" in text
 
 
 def test_format_report_none():
@@ -1529,6 +1570,55 @@ def test_format_trade_setup_trade_ok_shows_levels():
     assert "Invalidation level: 95.0" in text
 
 
+def test_format_trade_setup_renders_trade_economics_when_present():
+    result = {
+        "recommendation": "TRADE_OK",
+        "reasons": [],
+        "direction": "Bullish",
+        "probability_pct": 72,
+        "conviction_tier": "high",
+        "side": "BUY",
+        "entry_price": 100.0,
+        "stop_loss_price": 90.0,
+        "take_profit_price": 120.0,
+        "risk_reward_ratio": 2.0,
+        "invalidation_level": 95.0,
+        "trade_economics": {
+            "sample_count": 42,
+            "sample_sufficiency": "usable",
+            "win_rate_pct": 55.0,
+            "expectancy_pct": 1.2,
+            "profit_factor": 1.8,
+            "avg_mfe_pct": 6.0,
+            "avg_mae_pct": 2.5,
+        },
+    }
+    text = format_trade_setup("BTC", result)
+    assert "Trade Economics" in text
+    assert "n=42 (usable): win rate 55.0%, expectancy 1.2%/trade" in text
+    assert "Profit factor: 1.8" in text
+    assert "Avg favorable excursion: 6.0% | Avg adverse excursion: 2.5%" in text
+
+
+def test_format_trade_setup_omits_economics_section_when_none():
+    result = {
+        "recommendation": "TRADE_OK",
+        "reasons": [],
+        "direction": "Bullish",
+        "probability_pct": 72,
+        "conviction_tier": "high",
+        "side": "BUY",
+        "entry_price": 100.0,
+        "stop_loss_price": 90.0,
+        "take_profit_price": 120.0,
+        "risk_reward_ratio": 2.0,
+        "invalidation_level": 95.0,
+        "trade_economics": None,
+    }
+    text = format_trade_setup("BTC", result)
+    assert "Trade Economics" not in text
+
+
 def test_format_trade_setup_no_trade_lists_reasons():
     result = {
         "recommendation": "NO_TRADE",
@@ -1584,6 +1674,48 @@ def test_format_alert_performance_with_data():
     assert "Significant-move rate: 60.0%" in text
     assert "Direction-continued rate: 66.7%" in text
     assert "scanner:price_event: 7 graded, 71.4% significant" in text
+
+
+def test_format_alert_performance_ranks_by_type_by_edge_vs_baseline():
+    summary = {
+        "graded_count": 10,
+        "significant_move_rate_pct": 60.0,
+        "directional_alerts_count": 6,
+        "direction_continued_rate_pct": 66.7,
+        "avg_abs_realized_move_pct": 4.2,
+        "avg_edge_vs_baseline_pct": 1.5,
+        "edge_vs_baseline_sample_count": 8,
+    }
+    by_type = [
+        {
+            "alert_type": "scanner:volume_spike",
+            "graded_count": 5,
+            "significant_move_rate_pct": 40.0,
+            "avg_edge_vs_baseline_pct": -0.5,
+        },
+        {
+            "alert_type": "scanner:price_event",
+            "graded_count": 7,
+            "significant_move_rate_pct": 71.4,
+            "avg_edge_vs_baseline_pct": 3.2,
+        },
+        {
+            "alert_type": "critical_shock:price_shock",
+            "graded_count": 3,
+            "significant_move_rate_pct": 33.3,
+            "avg_edge_vs_baseline_pct": None,
+        },
+    ]
+    text = format_alert_performance(summary, by_type)
+    assert "Avg edge vs. baseline: +1.50pp (of 8 alerts with a baseline)" in text
+    # The highest-edge type must be listed first, the type with no
+    # measured edge last -- never before a type that actually has one.
+    price_event_pos = text.index("scanner:price_event")
+    volume_spike_pos = text.index("scanner:volume_spike")
+    critical_shock_pos = text.index("critical_shock:price_shock")
+    assert price_event_pos < volume_spike_pos < critical_shock_pos
+    assert "edge +3.20pp" in text
+    assert "edge -0.50pp" in text
 
 
 def _scanner_detection():

@@ -62,6 +62,17 @@ def _quality_multiplier(
     return round(max(0.0, min(1.0, 1 - brier_score / _UNINFORMATIVE_BRIER_SCORE)), 3)
 
 
+def _data_quality_multiplier(data_quality_score: int | None) -> float | None:
+    """POST-V9 Phase 12: a 0-100 freshness score (see
+    app.services.data_quality.engine.compute_data_quality_score) -> a
+    0.0-1.0 discount, monotonically non-decreasing in the score. None
+    (no discount applied) when no score was supplied -- a caller that
+    doesn't have data-quality context doesn't get penalized for it."""
+    if data_quality_score is None:
+        return None
+    return round(max(0.0, min(1.0, data_quality_score / 100)), 3)
+
+
 def classify_conviction(
     confidence_pct: int,
     sample_size: int | None = None,
@@ -69,13 +80,18 @@ def classify_conviction(
     brier_score: float | None = None,
     evaluated_predictions: int | None = None,
     min_quality_sample_size: int = _MIN_QUALITY_SAMPLE_SIZE,
+    data_quality_score: int | None = None,
 ) -> dict:
     """Pure function: raw confidence (+ optional sample size, + optional
-    Prediction Quality Lab read) -> a conviction tier. When a sample size
-    is given, the confidence used for tiering is first scaled down for
-    small samples via the same formula Knowledge Rules already use; when a
-    Brier score with enough graded predictions is given, it's then scaled
-    again by how much better than an uninformative baseline that score is."""
+    Prediction Quality Lab read, + optional POST-V9 Phase 12 data-freshness
+    score) -> a conviction tier. When a sample size is given, the
+    confidence used for tiering is first scaled down for small samples via
+    the same formula Knowledge Rules already use; when a Brier score with
+    enough graded predictions is given, it's then scaled again by how much
+    better than an uninformative baseline that score is; when a
+    data_quality_score is given, it's scaled a third time by how fresh the
+    underlying market data actually is (0-100 -> 0.0-1.0), so a read built
+    on stale/missing data is never presented at full confidence."""
     effective_confidence = confidence_pct
     if sample_size is not None:
         effective_confidence = compute_confidence_pct(confidence_pct, sample_size, min_sample_size)
@@ -85,6 +101,10 @@ def classify_conviction(
     )
     if quality_multiplier is not None:
         effective_confidence *= quality_multiplier
+
+    data_quality_multiplier = _data_quality_multiplier(data_quality_score)
+    if data_quality_multiplier is not None:
+        effective_confidence *= data_quality_multiplier
 
     for threshold, label in _TIERS:
         if effective_confidence >= threshold:
@@ -97,6 +117,7 @@ def classify_conviction(
                 "sample_size": sample_size,
                 "alert_eligible": label in ("Strong", "Very Strong", "Institutional"),
                 "quality_multiplier": quality_multiplier,
+                "data_quality_multiplier": data_quality_multiplier,
             }
     raise AssertionError("unreachable: _TIERS always matches at threshold 0")
 

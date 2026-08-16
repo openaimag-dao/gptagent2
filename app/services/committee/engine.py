@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 
 from app.services.agents.base import AgentOutput
 from app.services.agents.orchestrator import AgentOrchestrator
+from app.services.analysis.regime import RegimeDetector
 from app.services.common.formatting import agent_evidence_excerpt
 from app.services.consensus.engine import ConsensusResult, compute_consensus
 from app.services.reliability.engine import AgentReliabilityEngine
@@ -191,25 +192,45 @@ class CommitteeEngine:
         self,
         agent_orchestrator: AgentOrchestrator,
         reliability_engine: AgentReliabilityEngine | None = None,
+        regime_detector: RegimeDetector | None = None,
     ) -> None:
         self._agent_orchestrator = agent_orchestrator
         self._reliability_engine = reliability_engine
+        # Forecast Intelligence Upgrade -- Regime-Aware Weighting: optional
+        # so any existing caller that doesn't pass one keeps today's flat,
+        # regime-blind reliability. Same pattern already wired into
+        # WatchdogEngine.run_cycle().
+        self._regime_detector = regime_detector
 
-    async def _safe_reliability(self) -> dict[str, float] | None:
+    async def _safe_reliability(self, regime: str | None = None) -> dict[str, float] | None:
         if self._reliability_engine is None:
             return None
         try:
-            return await self._reliability_engine.evaluate_reliability()
+            if regime is None:
+                return await self._reliability_engine.evaluate_reliability()
+            hierarchical = await self._reliability_engine.evaluate_reliability_hierarchical(
+                regime=regime
+            )
+            return {
+                agent: result["accuracy_pct"]
+                for agent, result in hierarchical.items()
+                if result.get("accuracy_pct") is not None
+            }
         except Exception:
             return None
 
     async def convene(self) -> CommitteeVerdict | None:
-        # run_all() and evaluate_reliability() read different tables and
-        # neither depends on the other's result -- gathered rather than
-        # sequential.
+        # run_all(), evaluate_reliability(), and get_latest() read different
+        # tables and none depends on another's result -- gathered rather
+        # than sequential.
+        regime_snapshot = None
+        if self._regime_detector is not None:
+            regime_snapshot = await self._regime_detector.get_latest()
+        live_regime = regime_snapshot.regime.value if regime_snapshot is not None else None
+
         agent_outputs, reliability = await asyncio.gather(
             self._agent_orchestrator.run_all(),
-            self._safe_reliability(),
+            self._safe_reliability(live_regime),
         )
 
         consensus = compute_consensus(agent_outputs, reliability)

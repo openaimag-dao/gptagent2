@@ -620,6 +620,13 @@ class AgentPredictionLog(Base):
     confidence: Mapped[float | None] = mapped_column(nullable=True)
     reference_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     horizon_periods: Mapped[int] = mapped_column(default=1)
+    # The market regime active when this call was made (see
+    # app.database.models.MarketRegimeSnapshot), captured at log() time so
+    # AgentReliabilityEngine can later condition accuracy on regime.
+    # Nullable: rows logged before this column existed, or logged when no
+    # regime snapshot had ever been computed yet, are honestly unlabeled
+    # rather than backfilled with a guess.
+    regime_at_prediction: Mapped[str | None] = mapped_column(String(30), nullable=True)
     logged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
@@ -1206,6 +1213,30 @@ class PriceForecastSnapshot(Base):
     forecast_status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
     invalidation_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # POST-V9 Phase 14: filled in alongside the grading fields above, by
+    # the same grade_price_forecasts() call, using data it already fetched
+    # (no extra I/O). momentum_baseline_correct grades the naive "the last
+    # period's move continues" call against the same realized outcome
+    # direction_correct is graded against, so the two are directly
+    # comparable. historical_mean_baseline_error_pct is the price-target
+    # error a naive "assume the future equals this symbol's own historical
+    # average forward return" baseline would have made, computed the exact
+    # same way error_pct is -- directly comparable magnitude-for-magnitude.
+    # Both nullable: a baseline with nothing to compare against (e.g. no
+    # prior period, no historical sample) is honestly absent, never guessed.
+    momentum_baseline_correct: Mapped[bool | None] = mapped_column(nullable=True)
+    historical_mean_baseline_error_pct: Mapped[float | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
+    # Forecast Intelligence Upgrade: filled in alongside the grading fields
+    # above, by the same grade_price_forecasts() call, walking the real
+    # intrabar high/low of every bar between the forecast and its grading
+    # (already-fetched `rows`, no extra I/O) -- did price actually TOUCH
+    # target_price at any point, not just where it ended up at
+    # horizon-elapse (error_pct/direction_correct only look at the final
+    # close). Nullable: honestly absent for a Neutral call or a target
+    # that never differed from the forecast's own current_price.
+    target_reached: Mapped[bool | None] = mapped_column(nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
@@ -1232,7 +1263,24 @@ class AlertPerformanceGrade(Base):
     to grade right or wrong. `significant_move` is the one grade every
     gradable alert gets: did a real move of at least the configured
     threshold happen afterward, regardless of direction -- "was this alert
-    followed by something that actually mattered, or was it noise"."""
+    followed by something that actually mattered, or was it noise".
+
+    POST-V9 Phase 10/11 additions (same table, not a second one):
+    `max_favorable_excursion_pct`/`max_adverse_excursion_pct` are the best/
+    worst price excursion during the grading window, using each daily
+    bar's own high/low (not just closes) between the alert and its
+    evaluation point -- signed relative to `implied_direction` (for a
+    "down" alert, the favorable excursion is itself negative -- price
+    fell, as the alert implied). Both stay `None` when `implied_direction`
+    is `None` (there's no "favorable side" to measure), in which case
+    `peak_move_pct` (the single largest |move| regardless of direction)
+    is still reported. `baseline_return_pct` is this SAME symbol's own
+    average horizon-day forward return, computed only from history
+    strictly before `triggered_at` (no look-ahead) -- "what a typical
+    N-day move looked like using only information available at alert
+    time". `edge_vs_baseline_pct` is `realized_move_pct - baseline_return_pct`:
+    did this alert's actual outcome beat the symbol's own typical move,
+    not just "was direction_continued true"."""
 
     __tablename__ = "alert_performance_grades"
 
@@ -1248,4 +1296,10 @@ class AlertPerformanceGrade(Base):
     significant_move: Mapped[bool] = mapped_column()
     implied_direction: Mapped[str | None] = mapped_column(String(10), nullable=True)
     direction_continued: Mapped[bool | None] = mapped_column(nullable=True)
+    max_favorable_excursion_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    max_adverse_excursion_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    peak_move_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    time_to_peak_days: Mapped[int | None] = mapped_column(nullable=True)
+    baseline_return_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    edge_vs_baseline_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     graded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)

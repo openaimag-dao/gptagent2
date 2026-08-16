@@ -41,6 +41,12 @@ async def get_forecast(symbol: str, horizon: str = Query("24h")) -> dict:
         "engine_breakdown": explainability["engine_breakdown"],
         "final_prediction": explainability["final_prediction"],
     }
+
+    # Forecast Intelligence Upgrade: does this horizon's own call agree
+    # with the other horizons already computed for this symbol? Reads
+    # already-stored snapshots (see get_horizon_consistency), no extra
+    # forecast computation.
+    payload["horizon_consistency"] = await engine.get_horizon_consistency(symbol.upper())
     return payload
 
 

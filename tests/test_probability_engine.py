@@ -3,8 +3,22 @@ import pytest
 from app.services.probability.engine import (
     compute_forward_return_quantiles,
     compute_forward_returns,
+    compute_quantile_coverage,
+    compute_quantile_coverage_by_group,
     compute_rsi_probability,
 )
+
+
+def _graded(realized_return_pct, p10=-5.0, p90=5.0, p25=-2.0, p75=2.0, **extra):
+    return {
+        "realized_return_pct": realized_return_pct,
+        "p10_pct": p10,
+        "p25_pct": p25,
+        "p50_pct": 0.0,
+        "p75_pct": p75,
+        "p90_pct": p90,
+        **extra,
+    }
 
 
 def test_compute_forward_returns_shifts_back_by_horizon():
@@ -169,3 +183,108 @@ def test_compute_rsi_probability_falls_back_when_regime_sample_too_small():
     assert result["regime_conditioned"] is False
     assert result["reference_regime"] is None
     assert result["sample_size"] == 10
+
+
+# ---- POST-V9 Phase 4: compute_quantile_coverage ----
+
+
+def test_compute_quantile_coverage_perfect_p10_p90_hit_rate():
+    evaluated = [_graded(3.0), _graded(-4.0), _graded(0.0), _graded(4.9)]  # all inside [-5, 5]
+
+    coverage = compute_quantile_coverage(evaluated)
+
+    assert coverage["p10_p90"]["expected_coverage_pct"] == 80.0
+    assert coverage["p10_p90"]["realized_coverage_pct"] == 100.0
+    assert coverage["p10_p90"]["sample_count"] == 4
+    assert coverage["p10_p90"]["coverage_gap_pct"] == 20.0
+
+
+def test_compute_quantile_coverage_counts_misses_outside_the_band():
+    evaluated = [_graded(3.0), _graded(10.0), _graded(-10.0), _graded(0.0)]  # 2 of 4 outside
+
+    coverage = compute_quantile_coverage(evaluated)
+
+    assert coverage["p10_p90"]["realized_coverage_pct"] == 50.0
+    assert coverage["p10_p90"]["coverage_gap_pct"] == -30.0
+
+
+def test_compute_quantile_coverage_excludes_rows_missing_bounds_never_counts_as_miss():
+    evaluated = [
+        _graded(3.0),
+        {
+            "realized_return_pct": 100.0,
+            "p10_pct": None,
+            "p90_pct": None,
+            "p25_pct": None,
+            "p75_pct": None,
+        },
+    ]
+
+    coverage = compute_quantile_coverage(evaluated)
+
+    assert coverage["p10_p90"]["sample_count"] == 1
+    assert coverage["p10_p90"]["realized_coverage_pct"] == 100.0
+
+
+def test_compute_quantile_coverage_empty_is_none_not_zero():
+    coverage = compute_quantile_coverage([])
+    assert coverage["p10_p90"]["realized_coverage_pct"] is None
+    assert coverage["p10_p90"]["sample_count"] == 0
+    assert coverage["p10_p90"]["sample_sufficiency"] == "insufficient"
+
+
+def test_compute_quantile_coverage_reports_sample_sufficiency():
+    evaluated = [_graded(1.0) for _ in range(3)]
+
+    coverage = compute_quantile_coverage(evaluated, min_sample_size=5, reliable_sample_size=10)
+
+    assert coverage["p10_p90"]["sample_sufficiency"] == "insufficient"
+
+
+def test_compute_quantile_coverage_both_intervals_scored_independently():
+    # inside p25-p75 (-2..2) but also inside p10-p90 -- both should show it
+    evaluated = [_graded(1.0), _graded(1.0), _graded(1.0)]
+
+    coverage = compute_quantile_coverage(evaluated)
+
+    assert coverage["p25_p75"]["realized_coverage_pct"] == 100.0
+    assert coverage["p10_p90"]["realized_coverage_pct"] == 100.0
+    assert coverage["p25_p75"]["expected_coverage_pct"] == 50.0
+
+
+# ---- POST-V9 Phase 4: compute_quantile_coverage_by_group ----
+
+
+def test_compute_quantile_coverage_by_group_partitions_by_regime():
+    evaluated = [
+        _graded(3.0, reference_regime="bull"),
+        _graded(10.0, reference_regime="bull"),  # miss in bull
+        _graded(1.0, reference_regime="bear"),
+        _graded(-1.0, reference_regime="bear"),
+    ]
+
+    by_regime = compute_quantile_coverage_by_group(evaluated, "reference_regime")
+
+    assert by_regime["bull"]["p10_p90"]["realized_coverage_pct"] == 50.0
+    assert by_regime["bear"]["p10_p90"]["realized_coverage_pct"] == 100.0
+
+
+def test_compute_quantile_coverage_by_group_groups_missing_key_under_none():
+    evaluated = [_graded(1.0), _graded(2.0)]  # no reference_regime key at all
+
+    by_regime = compute_quantile_coverage_by_group(evaluated, "reference_regime")
+
+    assert None in by_regime
+    assert by_regime[None]["p10_p90"]["sample_count"] == 2
+
+
+def test_compute_quantile_coverage_by_group_partitions_by_horizon():
+    evaluated = [
+        _graded(3.0, horizon_periods=1),
+        _graded(10.0, horizon_periods=7),  # miss at 7-period horizon
+    ]
+
+    by_horizon = compute_quantile_coverage_by_group(evaluated, "horizon_periods")
+
+    assert by_horizon[1]["p10_p90"]["realized_coverage_pct"] == 100.0
+    assert by_horizon[7]["p10_p90"]["realized_coverage_pct"] == 0.0

@@ -61,3 +61,41 @@ def test_monte_carlo_all_positive_trades_never_draws_down():
     trades = [0.01, 0.02, 0.03]
     result = monte_carlo_simulation(trades, n_simulations=200, seed=7)
     assert result["max_drawdown_p95_pct"] == 0.0
+
+
+# ---- Forecast Intelligence Upgrade: probability of profit/loss/ruin --------
+
+
+def test_monte_carlo_all_positive_trades_are_certain_profit_never_ruin():
+    trades = [0.01, 0.02, 0.03]
+    result = monte_carlo_simulation(trades, n_simulations=200, seed=7)
+    assert result["probability_of_profit_pct"] == 100.0
+    assert result["probability_of_loss_pct"] == 0.0
+    assert result["probability_of_ruin_pct"] == 0.0
+
+
+def test_monte_carlo_all_negative_trades_are_certain_loss():
+    trades = [-0.05, -0.08, -0.10]
+    result = monte_carlo_simulation(trades, n_simulations=200, seed=3)
+    assert result["probability_of_loss_pct"] == 100.0
+    assert result["probability_of_profit_pct"] == 0.0
+
+
+def test_monte_carlo_ruin_threshold_is_configurable_and_returned():
+    trades = [0.05, -0.03, 0.02, -0.01]
+    result = monte_carlo_simulation(trades, n_simulations=200, seed=5, ruin_drawdown_pct=10.0)
+    assert result["ruin_drawdown_pct"] == 10.0
+    # A tighter ruin threshold can only ever find equal-or-more ruin paths
+    # than a looser one over the exact same simulated outcomes.
+    looser = monte_carlo_simulation(trades, n_simulations=200, seed=5, ruin_drawdown_pct=90.0)
+    assert result["probability_of_ruin_pct"] >= looser["probability_of_ruin_pct"]
+
+
+def test_monte_carlo_profit_and_loss_probabilities_are_consistent_with_percentiles():
+    trades = [0.05, -0.03, 0.02, -0.01, 0.04, 0.03, -0.02]
+    result = monte_carlo_simulation(trades, n_simulations=500, seed=1)
+    # If the median outcome is a real profit, the majority of paths can't
+    # have landed on the loss side -- a basic sanity cross-check between
+    # two numbers derived from the same underlying simulated outcomes.
+    if result["total_return_p50_pct"] > 0:
+        assert result["probability_of_profit_pct"] > result["probability_of_loss_pct"]

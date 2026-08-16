@@ -1,4 +1,6 @@
+import functools
 import logging
+import time
 from datetime import UTC, datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -666,6 +668,27 @@ async def generate_report_job(report_type: str) -> None:
         logger.exception("Report broadcast failed (type=%s)", report_type)
 
 
+def _timed(job_func):
+    """POST-V9 Phase 19: wraps a scheduler job so every run logs its own
+    real wall-clock duration -- every job here already catches and logs
+    its own exceptions internally (see the `except Exception:
+    logger.exception(...)` block in each job above), so this never needs
+    to handle a raised exception itself; it only adds a duration
+    observation around whatever the job already does. Applied once, at
+    registration in start_scheduler(), rather than copy-pasted into
+    every job body."""
+    job_name = job_func.__name__
+
+    @functools.wraps(job_func)
+    async def _wrapper(*args, **kwargs) -> None:
+        start = time.monotonic()
+        await job_func(*args, **kwargs)
+        elapsed_ms = round((time.monotonic() - start) * 1000, 1)
+        logger.info("Job timing: %s completed in %sms", job_name, elapsed_ms)
+
+    return _wrapper
+
+
 def start_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler is not None:
@@ -674,7 +697,7 @@ def start_scheduler() -> AsyncIOScheduler:
     settings = get_settings()
     scheduler = AsyncIOScheduler(timezone="UTC")
     scheduler.add_job(
-        collect_market_data_job,
+        _timed(collect_market_data_job),
         trigger=IntervalTrigger(minutes=settings.market_data_interval_minutes, jitter=60),
         id=MARKET_DATA_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -682,7 +705,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        check_critical_alerts_job,
+        _timed(check_critical_alerts_job),
         trigger=IntervalTrigger(minutes=settings.market_data_interval_minutes, jitter=60),
         id=CRITICAL_ALERT_CHECK_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -690,7 +713,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        compute_technical_analysis_job,
+        _timed(compute_technical_analysis_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=TECHNICAL_ANALYSIS_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -698,7 +721,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        compute_watchdog_snapshot_job,
+        _timed(compute_watchdog_snapshot_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=WATCHDOG_SNAPSHOT_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -706,7 +729,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        compute_market_scan_job,
+        _timed(compute_market_scan_job),
         trigger=IntervalTrigger(minutes=settings.scanner_interval_minutes, jitter=120),
         id=MARKET_SCAN_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -714,7 +737,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        collect_news_job,
+        _timed(collect_news_job),
         trigger=IntervalTrigger(minutes=settings.news_collection_interval_minutes, jitter=90),
         id=NEWS_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -722,7 +745,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        compute_correlations_job,
+        _timed(compute_correlations_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=CORRELATION_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -730,7 +753,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        detect_regime_job,
+        _timed(detect_regime_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=REGIME_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -738,7 +761,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        compute_signals_job,
+        _timed(compute_signals_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=SIGNAL_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -746,7 +769,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        compute_global_score_job,
+        _timed(compute_global_score_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=GLOBAL_SCORE_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -754,7 +777,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        compute_sentiment_job,
+        _timed(compute_sentiment_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=SENTIMENT_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -762,7 +785,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        compute_scenarios_job,
+        _timed(compute_scenarios_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=SCENARIO_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -770,7 +793,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        snapshot_whale_etf_job,
+        _timed(snapshot_whale_etf_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=WHALE_ETF_SNAPSHOT_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -778,7 +801,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        sync_economic_calendar_job,
+        _timed(sync_economic_calendar_job),
         trigger=CronTrigger(hour=2, minute=0, timezone="UTC"),
         id=ECONOMIC_CALENDAR_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -786,7 +809,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        compute_features_job,
+        _timed(compute_features_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=FEATURE_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -794,7 +817,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        check_alerts_job,
+        _timed(check_alerts_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=ALERT_CHECK_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -802,7 +825,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        check_alert_rules_job,
+        _timed(check_alert_rules_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=ALERT_RULE_CHECK_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -810,7 +833,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        generate_report_job,
+        _timed(generate_report_job),
         trigger=IntervalTrigger(minutes=settings.report_interval_minutes, jitter=300),
         id=REPORT_JOB_ID,
         args=["scheduled"],
@@ -819,28 +842,28 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        generate_research_note_job,
+        _timed(generate_research_note_job),
         trigger=CronTrigger(hour=3, minute=0, timezone="UTC"),
         id=AI_RESEARCHER_JOB_ID,
         max_instances=1,
         coalesce=True,
     )
     scheduler.add_job(
-        test_hypotheses_job,
+        _timed(test_hypotheses_job),
         trigger=CronTrigger(day_of_week="mon", hour=4, minute=0, timezone="UTC"),
         id=HYPOTHESIS_JOB_ID,
         max_instances=1,
         coalesce=True,
     )
     scheduler.add_job(
-        compute_ranking_job,
+        _timed(compute_ranking_job),
         trigger=CronTrigger(day_of_week="mon", hour=5, minute=0, timezone="UTC"),
         id=RANKING_JOB_ID,
         max_instances=1,
         coalesce=True,
     )
     scheduler.add_job(
-        compute_forecast_job,
+        _timed(compute_forecast_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=FORECAST_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -848,7 +871,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        grade_forecasts_job,
+        _timed(grade_forecasts_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=FORECAST_GRADING_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -856,7 +879,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        invalidate_forecasts_job,
+        _timed(invalidate_forecasts_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=FORECAST_INVALIDATION_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -864,7 +887,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        grade_alert_performance_job,
+        _timed(grade_alert_performance_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=ALERT_PERFORMANCE_GRADING_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -872,7 +895,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        compute_market_replay_job,
+        _timed(compute_market_replay_job),
         trigger=IntervalTrigger(minutes=settings.replay_interval_minutes, jitter=120),
         id=REPLAY_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -880,7 +903,7 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        compute_breakout_job,
+        _timed(compute_breakout_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=BREAKOUT_JOB_ID,
         next_run_time=datetime.now(UTC),
@@ -888,14 +911,14 @@ def start_scheduler() -> AsyncIOScheduler:
         coalesce=True,
     )
     scheduler.add_job(
-        broadcast_weekly_review_job,
+        _timed(broadcast_weekly_review_job),
         trigger=CronTrigger(day_of_week="mon", hour=6, minute=0, timezone="UTC"),
         id=WEEKLY_REVIEW_JOB_ID,
         max_instances=1,
         coalesce=True,
     )
     scheduler.add_job(
-        broadcast_monthly_performance_job,
+        _timed(broadcast_monthly_performance_job),
         trigger=CronTrigger(day=1, hour=6, minute=30, timezone="UTC"),
         id=MONTHLY_PERFORMANCE_JOB_ID,
         max_instances=1,
@@ -903,7 +926,7 @@ def start_scheduler() -> AsyncIOScheduler:
     )
     for name, hour, minute in SESSION_REPORTS:
         scheduler.add_job(
-            generate_report_job,
+            _timed(generate_report_job),
             trigger=CronTrigger(hour=hour, minute=minute, timezone="UTC"),
             id=f"generate_{name}_report",
             args=[name],

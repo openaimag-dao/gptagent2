@@ -9,6 +9,7 @@ APScheduler==3.10.4
 pydantic==2.9.2
 pydantic-settings==2.6.1
 httpx==0.28.1
+websockets==15.0.1
 yfinance==0.2.50
 feedparser==6.0.11
 tenacity==9.0.0

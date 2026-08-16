@@ -35,6 +35,7 @@ from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.ranking.engine import RankingEngine
+from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.scenarios.engine import compute_scenarios, scenario_extremes
 from app.services.signals.engine import SignalEngine
 from app.services.similar_market.engine import SimilarMarketEngine
@@ -517,6 +518,7 @@ class ReportGenerator:
         whale_engine: WhaleIntelligenceEngine | None = None,
         agent_orchestrator: AgentOrchestrator | None = None,
         portfolio_advisor: PortfolioAdvisorEngine | None = None,
+        reliability_engine: AgentReliabilityEngine | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._market_repository = market_repository
@@ -538,6 +540,29 @@ class ReportGenerator:
             PortfolioEngine(session_factory, market_repository),
             RankingEngine(session_factory),
         )
+        self._reliability_engine = reliability_engine or AgentReliabilityEngine(session_factory)
+
+    async def _safe_reliability(self, regime: str | None = None) -> dict[str, float] | None:
+        """Forecast Intelligence Upgrade -- Regime-Aware Weighting: same
+        pattern as WatchdogEngine._safe_reliability() -- the report's own
+        Consensus tally (institutional_summary["consensus"]) previously
+        weighted every agent by raw confidence only, with no reliability
+        input at all. An agent's weight is now scaled by its own historical
+        accuracy IN THIS REGIME when one is available, falling back to the
+        flat regime-blind accuracy otherwise."""
+        try:
+            if regime is None:
+                return await self._reliability_engine.evaluate_reliability()
+            hierarchical = await self._reliability_engine.evaluate_reliability_hierarchical(
+                regime=regime
+            )
+            return {
+                agent: result["accuracy_pct"]
+                for agent, result in hierarchical.items()
+                if result.get("accuracy_pct") is not None
+            }
+        except Exception:
+            return None
 
     async def generate_and_store(self, report_type: str = "scheduled") -> Report:
         assets = await self._market_repository.get_latest()
@@ -575,7 +600,9 @@ class ReportGenerator:
         # Consensus and Scenarios are pure functions over data already fetched
         # this cycle (agent_outputs, global_score_row) -- no second agent run,
         # no second Global Score computation.
-        consensus_result = compute_consensus(agent_outputs) if agent_outputs else None
+        live_regime = regime_snapshot.regime.value if regime_snapshot is not None else None
+        reliability = await self._safe_reliability(live_regime) if agent_outputs else None
+        consensus_result = compute_consensus(agent_outputs, reliability) if agent_outputs else None
         scenarios = compute_scenarios(global_score_row) if global_score_row is not None else None
 
         try:

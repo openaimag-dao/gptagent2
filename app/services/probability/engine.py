@@ -7,6 +7,7 @@ from app.database.models import ProbabilitySnapshot
 from app.services.analysis.regime import reconstruct_regime_at
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
+from app.services.quality.metrics import classify_calibration_reliability
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,16 @@ _QUANTILE_LEVELS: tuple[tuple[str, float], ...] = (
     ("p50_pct", 0.50),
     ("p75_pct", 0.75),
     ("p90_pct", 0.90),
+)
+
+# (interval name, lower bound field, upper bound field, theoretical
+# coverage %) -- theoretical coverage follows directly from the quantile
+# definitions themselves (the p10-p90 interval covers 80% of a
+# distribution's mass by construction, p25-p75 covers 50%), so this is not
+# a tuned/estimated number.
+_COVERAGE_INTERVALS: tuple[tuple[str, str, str, float], ...] = (
+    ("p10_p90", "p10_pct", "p90_pct", 80.0),
+    ("p25_p75", "p25_pct", "p75_pct", 50.0),
 )
 
 
@@ -70,6 +81,86 @@ def compute_forward_return_quantiles(matches: list[float]) -> dict[str, float] |
         return ordered[lower_idx] + (ordered[upper_idx] - ordered[lower_idx]) * frac
 
     return {name: round(100 * _percentile(p), 4) for name, p in _QUANTILE_LEVELS}
+
+
+def compute_quantile_coverage(
+    evaluated: list[dict],
+    min_sample_size: int | None = None,
+    reliable_sample_size: int | None = None,
+) -> dict:
+    """POST-V9 Phase 4: pure function over
+    app.services.learning.engine.evaluate_predictions()-shaped rows (each
+    already carrying p10_pct..p90_pct plus realized_return_pct once its
+    horizon has elapsed) -> for each named quantile interval, how often
+    the interval actually contained the realized return versus the
+    interval's theoretical coverage. This is the actual validation of the
+    quantile bands `compute_forward_return_quantiles` produces -- nothing
+    upstream of this function ever checks whether they're honest.
+
+    A row missing either bound for an interval (its matched sample was too
+    small to compute quantiles from at prediction time) is excluded from
+    THAT interval's count entirely -- never counted as a miss, since there
+    was no claim made to fail. `sample_sufficiency` reuses the same
+    small-sample honesty classification calibration buckets already use
+    (see app.services.quality.metrics.classify_calibration_reliability),
+    so a 4-sample coverage number is never presented as validated."""
+    results: dict[str, dict] = {}
+    for name, lower_key, upper_key, expected_coverage_pct in _COVERAGE_INTERVALS:
+        usable = [
+            row
+            for row in evaluated
+            if row.get(lower_key) is not None
+            and row.get(upper_key) is not None
+            and row.get("realized_return_pct") is not None
+        ]
+        sample_count = len(usable)
+        covered = sum(
+            1 for row in usable if row[lower_key] <= row["realized_return_pct"] <= row[upper_key]
+        )
+        realized_coverage_pct = round(100 * covered / sample_count, 1) if sample_count else None
+        sufficiency_kwargs = {}
+        if min_sample_size is not None:
+            sufficiency_kwargs["min_sample_size"] = min_sample_size
+        if reliable_sample_size is not None:
+            sufficiency_kwargs["reliable_sample_size"] = reliable_sample_size
+        results[name] = {
+            "expected_coverage_pct": expected_coverage_pct,
+            "realized_coverage_pct": realized_coverage_pct,
+            "sample_count": sample_count,
+            "sample_sufficiency": classify_calibration_reliability(
+                sample_count, **sufficiency_kwargs
+            ),
+            "coverage_gap_pct": (
+                round(realized_coverage_pct - expected_coverage_pct, 1)
+                if realized_coverage_pct is not None
+                else None
+            ),
+        }
+    return results
+
+
+def compute_quantile_coverage_by_group(
+    evaluated: list[dict],
+    group_key: str,
+    min_sample_size: int | None = None,
+    reliable_sample_size: int | None = None,
+) -> dict:
+    """Same evaluated rows as compute_quantile_coverage, partitioned by
+    `group_key` (e.g. "reference_regime" for regime-conditioned coverage,
+    or "horizon_periods" for horizon-consistency coverage) before scoring
+    each partition -- POST-V9 Phase 4's requirement that coverage be
+    checked to hold in every regime/horizon individually, not just in
+    aggregate (an 80% aggregate coverage can hide 95% in calm regimes and
+    50% in volatile ones). Rows where evaluated[group_key] is missing are
+    grouped under key None rather than silently dropped, so a caller can
+    see how much data lacks that dimension."""
+    groups: dict = {}
+    for row in evaluated:
+        groups.setdefault(row.get(group_key), []).append(row)
+    return {
+        key: compute_quantile_coverage(rows, min_sample_size, reliable_sample_size)
+        for key, rows in groups.items()
+    }
 
 
 def compute_rsi_probability(

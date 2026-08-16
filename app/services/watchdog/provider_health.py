@@ -1,12 +1,13 @@
 """Honest, non-fabricated provider health for the Watchdog "Provider
 Status" panel. Every field is either a real, cheap live probe (Database,
-DefiLlama) or derived from a timestamp/counter another part of this
-platform already stores (AssetPrice.recorded_at per source,
-AlertLog.triggered_at, Report.generated_at, a Redis failure counter
-incremented by collect_market_data_job). Binance has no client anywhere in
-this codebase; Helius/Glassnode have a settings field but no wired
-wallet-level client (see app.services.onchain.engine's own docstring) --
-all three are reported not-configured/not-implemented, never faked,
+DefiLlama), derived from a timestamp/counter another part of this platform
+already stores (AssetPrice.recorded_at per source, AlertLog.triggered_at,
+Report.generated_at, a Redis failure counter incremented by
+collect_market_data_job), or read from RealtimePriceCollector's live
+Redis-published connection state (Binance -- see
+app.services.realtime.collector). Helius/Glassnode have a settings field
+but no wired wallet-level client (see app.services.onchain.engine's own
+docstring) -- reported not-configured/not-implemented, never faked,
 matching this project's "never fabricate values" precedent everywhere
 else.
 """
@@ -22,6 +23,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import get_settings
 from app.database.models import AlertLog, AssetPrice, Report
 from app.services.onchain.providers import DefiLlamaClient, DefiLlamaError
+from app.services.realtime.config import parse_watchlist
+from app.services.realtime.store import get_latest_ticks, get_status
 
 _RECONNECT_KEY_PREFIX = "watchdog:provider_failures:"
 
@@ -115,6 +118,51 @@ async def _database_health(session_factory: async_sessionmaker[AsyncSession]) ->
         }
 
 
+async def _binance_realtime_status(redis: Redis | None) -> dict:
+    """Live Dashboard Upgrade -- previously this row was permanently
+    hardcoded not-configured because no Binance client existed anywhere in
+    this codebase (see this module's own docstring). Now reads
+    RealtimePriceCollector's real Redis-published state instead of a
+    static string -- still honestly reports "not connected" if the
+    collector hasn't produced a status yet, never fabricates "healthy"."""
+    settings = get_settings()
+    if not settings.realtime_enabled:
+        return {
+            "name": "Binance",
+            "configured": False,
+            "healthy": False,
+            "latency_ms": None,
+            "reconnect_count": None,
+            "last_successful_update": None,
+            "reason": "Realtime price stream is disabled (realtime_enabled=false).",
+        }
+    if redis is None:
+        return {
+            "name": "Binance",
+            "configured": True,
+            "healthy": False,
+            "latency_ms": None,
+            "reconnect_count": None,
+            "last_successful_update": None,
+            "reason": "Redis unavailable -- cannot read realtime collector status.",
+        }
+    status = await get_status(redis)
+    latest = await get_latest_ticks(redis, parse_watchlist(settings.realtime_watchlist))
+    most_recent = max((tick.received_at for tick in latest.values()), default=None)
+    healthy = status["status"] == "connected"
+    result = {
+        "name": "Binance",
+        "configured": True,
+        "healthy": healthy,
+        "latency_ms": None,
+        "reconnect_count": None,
+        "last_successful_update": most_recent.isoformat() if most_recent is not None else None,
+    }
+    if not healthy:
+        result["reason"] = f"Realtime WebSocket status: {status['status']}."
+    return result
+
+
 async def _defillama_health(defillama: DefiLlamaClient) -> dict:
     """Unlike CoinGecko/FRED (inferred from AssetPrice write recency,
     never live-probed -- see module docstring), DefiLlama has no
@@ -204,19 +252,12 @@ async def get_provider_status(
         "last_successful_update": last_report.isoformat() if last_report is not None else None,
     }
 
-    database, defillama_health = await asyncio.gather(
-        _database_health(session_factory), _defillama_health(defillama or DefiLlamaClient())
+    database, defillama_health, binance = await asyncio.gather(
+        _database_health(session_factory),
+        _defillama_health(defillama or DefiLlamaClient()),
+        _binance_realtime_status(redis),
     )
 
-    binance = {
-        "name": "Binance",
-        "configured": False,
-        "healthy": False,
-        "latency_ms": None,
-        "reconnect_count": None,
-        "last_successful_update": None,
-        "reason": "No Binance client is implemented in this codebase.",
-    }
     helius = {
         "name": "Helius",
         "configured": bool(settings.helius_api_key),

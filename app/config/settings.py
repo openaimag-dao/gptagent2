@@ -201,6 +201,55 @@ class Settings(BaseSettings):
     # average (a regime shift that broke a previously-good agent shows up
     # within roughly one half-life instead of being diluted forever).
     reliability_recency_half_life_days: float = 30.0
+    # POST-V9 Phase 5: AgentReliabilityEngine.evaluate_reliability_hierarchical
+    # falls back from a narrow (horizon, regime) slice to a broader one
+    # whenever the narrow slice's recency-weighted effective sample size is
+    # below this threshold -- e.g. 2 stale predictions in "bull" regime
+    # should not be treated as a reliable regime-specific accuracy estimate;
+    # it should fall back to the agent's horizon-level or global accuracy
+    # instead. Effective sample size is in decayed-observation units, not
+    # raw row counts, so a small number of very recent predictions can still
+    # clear this bar.
+    reliability_hierarchical_min_effective_sample: float = 5.0
+
+    # ---- Agent vote correlation / redundancy (POST-V9 Phase 6) ----
+    # How many of an agent-pair's most recent SHARED reference_timestamps
+    # (both agents logged a direction) to correlate -- a rolling bounded
+    # window, not a full pairwise matrix over all stored history, so the
+    # cost of evaluate_agent_correlations() stays bounded as prediction
+    # logs accumulate.
+    agent_correlation_window: int = 30
+    # Below this many shared observations, a pair's correlation is honestly
+    # reported as unavailable (None) rather than a noisy small-sample guess.
+    agent_correlation_min_sample_size: int = 5
+    # Upper bound (percentage points) on how much of an agent's consensus
+    # weight a perfectly-correlated (redundant) partner can discount --
+    # mirrors reliability_shrinkage_pseudo_count's role of keeping any
+    # single adjustment bounded rather than able to zero out an agent.
+    agent_correlation_max_redundancy_penalty_pct: float = 30.0
+
+    # ---- Adaptive consensus weight bound (POST-V9 Phase 7) ----
+    # Caps any single agent's share of total cast consensus weight, even
+    # after reliability/redundancy scaling is applied at maximum -- so one
+    # highly-confident, highly-reliable, uncorrelated agent can never
+    # single-handedly determine the consensus direction. Only takes effect
+    # when at least 2 agents report a direction this cycle (a lone
+    # reporting agent's 100% share isn't "dominance" -- there is nothing
+    # else to weigh it against).
+    consensus_max_agent_weight_pct: float = 60.0
+
+    # ---- Trade Setup historical expectancy backtest (POST-V9 Phase 9) ----
+    # How many forward daily bars the walk-forward simulator searches for a
+    # stop/target touch before calling a hypothetical trade "open" (neither
+    # hit within the window) -- independent of the forecast horizon itself,
+    # since a 2:1 R:R stop/target can take longer to resolve than the
+    # horizon the forecast call was made for.
+    trade_setup_backtest_max_holding_days: int = 30
+    # Below this many backtested (non-"open") trade instances, expectancy
+    # stats are honestly reported as "insufficient" rather than implying a
+    # validated edge off a handful of historical trades.
+    trade_setup_backtest_min_sample_size: int = 30
+    trade_setup_backtest_reliable_sample_size: int = 100
 
     # ---- Alert performance analytics (V9 Increment 9) ----
     # How many days after an alert fires to look up its symbol's forward
@@ -212,3 +261,32 @@ class Settings(BaseSettings):
     # alert type gets, independent of whether the alert made a directional
     # claim.
     alert_grading_significant_move_pct: float = 3.0
+
+    # ---- POST-V9 Phase 3: calibration statistical honesty ----
+    # A calibration bucket (app.services.quality.metrics.compute_calibration)
+    # below this many graded predictions is labeled "insufficient" --
+    # displayed, never hidden, but flagged so it isn't read as strong
+    # statistical evidence. At or above `calibration_reliable_sample_size`
+    # it's labeled "reliable"; between the two, "usable".
+    calibration_min_sample_size: int = 30
+    calibration_reliable_sample_size: int = 100
+
+    # ---- Live Dashboard Upgrade: realtime price stream ----
+    # Binance's public market-data WebSocket needs no API key and has no
+    # meaningful rate limit for a handful of ticker streams -- unlike
+    # CoinGecko (the sole REST price source, see aggregator.py), which is
+    # already shared with the 500-symbol Scanner's free-tier quota.
+    realtime_enabled: bool = True
+    realtime_watchlist: str = "BTC,ETH,SOL,BNB,XRP"
+    realtime_ws_url: str = "wss://stream.binance.com:9443"
+    # Comma-separated seconds; reconnect attempts walk this list and hold
+    # at the last value rather than growing unbounded or tight-looping.
+    realtime_reconnect_backoff_seconds: str = "1,2,5,10,30"
+    # Freshness bands for a realtime tick's age (seconds). Below `live` is
+    # "live", [live, recent) is "recent", [recent, delayed) is "delayed",
+    # [delayed, stale) is "stale", >= stale is "offline" -- see
+    # app.services.realtime.freshness.classify_freshness().
+    realtime_freshness_live_seconds: float = 5.0
+    realtime_freshness_recent_seconds: float = 30.0
+    realtime_freshness_delayed_seconds: float = 120.0
+    realtime_freshness_stale_seconds: float = 300.0
