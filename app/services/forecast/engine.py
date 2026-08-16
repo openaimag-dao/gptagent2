@@ -532,6 +532,32 @@ def compute_horizon_consistency(directions: dict[str, str]) -> dict | None:
     }
 
 
+def check_target_reached(
+    direction: str, current_price: float, target_price: float, window_rows: list
+) -> bool | None:
+    """Pure function: Forecast Intelligence Upgrade -- did price actually
+    TOUCH target_price at any point during the window between the
+    forecast and its grading, not just where it happened to end up at
+    horizon-elapse (which is all error_pct/direction_correct check)?
+    Walks `window_rows`' (ascending, the bars strictly after the
+    forecast's own reference bar through the elapsed bar) real intrabar
+    high/low -- the same real-range read `simulate_trade_outcome`
+    (app.services.trade_setup.engine) uses for trade setups, but this
+    checks a single level, not two: a directional forecast's target has
+    no accompanying stop to race against, so there's nothing to resolve
+    an ambiguous same-bar touch against.
+
+    None for a Neutral call or when target_price doesn't actually differ
+    from current_price -- there's no directional touch to check."""
+    if _DIRECTION_SIGN.get(direction, 0) == 0:
+        return None
+    if target_price == current_price:
+        return None
+    if target_price > current_price:
+        return any(float(row.high) >= target_price for row in window_rows)
+    return any(float(row.low) <= target_price for row in window_rows)
+
+
 def _realized_sign(current_price: float, realized_price: float) -> int:
     if realized_price > current_price:
         return 1
@@ -677,6 +703,9 @@ async def grade_price_forecasts(
                 snapshot.direction, current_price, realized_price
             )
             db_row.confidence_correct = grade_confidence(error_pct, expected_volatility_pct)
+            db_row.target_reached = check_target_reached(
+                snapshot.direction, current_price, target_price, rows[idx + 1 : target_idx + 1]
+            )
             db_row.momentum_baseline_correct = grade_momentum_baseline(
                 prior_return_pct, current_price, realized_price
             )

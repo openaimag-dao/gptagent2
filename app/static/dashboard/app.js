@@ -2902,6 +2902,7 @@ function accuracyStatCards(stats) {
     card("Direction Accuracy", stats.direction_accuracy_pct != null ? `${stats.direction_accuracy_pct}%` : "n/a"),
     card("Avg Abs Error", stats.avg_abs_error_pct != null ? `${stats.avg_abs_error_pct}%` : "n/a"),
     card("Confidence Accuracy", stats.confidence_accuracy_pct != null ? `${stats.confidence_accuracy_pct}%` : "n/a"),
+    card("Target Hit Rate", stats.target_hit_rate_pct != null ? `${stats.target_hit_rate_pct}%` : "n/a"),
   ]);
 }
 
@@ -2995,7 +2996,7 @@ async function renderAccuracy() {
   } else {
     nodes.push(
       table(
-        ["Symbol", "Horizon", "Evaluated At", "Predicted", "Actual", "Error %", "Direction", "Confidence", "Tier"],
+        ["Symbol", "Horizon", "Evaluated At", "Predicted", "Actual", "Error %", "Direction", "Target Touched", "Confidence", "Tier"],
         data.recent.map((r) => [
           r.symbol,
           r.horizon,
@@ -3006,6 +3007,9 @@ async function renderAccuracy() {
           r.direction_correct == null
             ? "n/a"
             : el("span", { class: r.direction_correct ? "up" : "down" }, r.direction_correct ? "Correct" : "Wrong"),
+          r.target_reached == null
+            ? "n/a"
+            : el("span", { class: r.target_reached ? "up" : "down" }, r.target_reached ? "Yes" : "No"),
           r.confidence_correct == null
             ? "n/a"
             : el("span", { class: r.confidence_correct ? "up" : "down" }, r.confidence_correct ? "Correct" : "Wrong"),

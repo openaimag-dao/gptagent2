@@ -27,6 +27,7 @@ def _row(
     momentum_baseline_correct=None,
     historical_mean_baseline_error_pct=None,
     regime_at_forecast=None,
+    target_reached=None,
 ):
     return SimpleNamespace(
         symbol=symbol,
@@ -42,6 +43,7 @@ def _row(
         momentum_baseline_correct=momentum_baseline_correct,
         historical_mean_baseline_error_pct=historical_mean_baseline_error_pct,
         regime_at_forecast=regime_at_forecast,
+        target_reached=target_reached,
     )
 
 
@@ -127,6 +129,24 @@ def test_aggregate_stats_historical_mean_baseline_comparison():
     # smaller absolute error is better -- the forecast's own 1.0% beats the
     # naive baseline's 5.0%
     assert stats["beats_historical_mean_baseline"] is True
+
+
+# ---- Forecast Intelligence Upgrade: target_reached (intrabar touch) --------
+
+
+def test_aggregate_stats_target_hit_rate_honestly_none_without_data():
+    stats = _aggregate_stats([_row(target_reached=None)])
+    assert stats["target_hit_rate_pct"] is None
+
+
+def test_aggregate_stats_target_hit_rate_pct():
+    rows = [
+        _row(target_reached=True),
+        _row(target_reached=True),
+        _row(target_reached=False),
+    ]
+    stats = _aggregate_stats(rows)
+    assert stats["target_hit_rate_pct"] == round(100 * 2 / 3, 2)
 
 
 # ---- POST-V9 Phase 16: regime x horizon interaction matrix ----

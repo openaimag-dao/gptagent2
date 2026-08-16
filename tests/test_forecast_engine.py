@@ -11,6 +11,7 @@ from app.services.forecast.engine import (
     _onchain_confidence,
     _whale_confidence,
     check_and_invalidate_forecasts,
+    check_target_reached,
     classify_direction_label,
     compute_expected_max_drawdown_pct,
     compute_historical_mean_baseline_error_pct,
@@ -643,11 +644,58 @@ def test_compute_historical_mean_baseline_error_pct_computes_signed_error():
     )
 
 
+# ---- Forecast Intelligence Upgrade: target_reached (intrabar touch) --------
+
+
+def test_check_target_reached_none_for_neutral_call():
+    window = [SimpleNamespace(high=110.0, low=95.0)]
+    assert check_target_reached("Neutral", 100.0, 103.0, window) is None
+
+
+def test_check_target_reached_none_when_target_equals_current_price():
+    window = [SimpleNamespace(high=110.0, low=95.0)]
+    assert check_target_reached("Bullish", 100.0, 100.0, window) is None
+
+
+def test_check_target_reached_true_when_high_touches_a_bullish_target():
+    window = [SimpleNamespace(high=101.0, low=99.0), SimpleNamespace(high=104.0, low=100.0)]
+    assert check_target_reached("Bullish", 100.0, 103.0, window) is True
+
+
+def test_check_target_reached_false_when_high_never_reaches_a_bullish_target():
+    window = [SimpleNamespace(high=101.0, low=99.0), SimpleNamespace(high=102.0, low=98.0)]
+    assert check_target_reached("Bullish", 100.0, 103.0, window) is False
+
+
+def test_check_target_reached_true_when_low_touches_a_bearish_target():
+    window = [SimpleNamespace(high=100.0, low=98.0), SimpleNamespace(high=99.0, low=96.0)]
+    assert check_target_reached("Bearish", 100.0, 97.0, window) is True
+
+
+def test_check_target_reached_false_when_low_never_reaches_a_bearish_target():
+    window = [SimpleNamespace(high=100.0, low=98.0)]
+    assert check_target_reached("Bearish", 100.0, 97.0, window) is False
+
+
+def test_check_target_reached_false_over_an_empty_window():
+    # Horizon just elapsed with no intervening bars -- honestly False
+    # (never touched), not None, since the direction/target claim is
+    # real and gradable, there just happened to be nothing between.
+    assert check_target_reached("Bullish", 100.0, 103.0, []) is False
+
+
 async def test_grade_price_forecasts_grades_an_elapsed_row():
     ts0 = datetime(2026, 8, 1, tzinfo=UTC)
     rows = [
         SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0, return_pct=None),
-        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0, atr=2.0, return_pct=0.05),
+        SimpleNamespace(
+            timestamp=ts0 + timedelta(days=1),
+            close=105.0,
+            high=105.0,
+            low=105.0,
+            atr=2.0,
+            return_pct=0.05,
+        ),
     ]
     ungraded = SimpleNamespace(
         id=1,
@@ -682,6 +730,10 @@ async def test_grade_price_forecasts_grades_an_elapsed_row():
     # and no prior baseline sample -- honestly None, not fabricated.
     assert db_row.momentum_baseline_correct is None
     assert db_row.historical_mean_baseline_error_pct is None
+    # Forecast Intelligence Upgrade: price actually touched the target
+    # (high 105.0 >= target 103.0) during the window, not just ended up
+    # past it at horizon-elapse.
+    assert db_row.target_reached is True
     session.commit.assert_awaited()
 
 
@@ -691,7 +743,14 @@ async def test_grade_price_forecasts_computes_baseline_comparisons():
         SimpleNamespace(timestamp=ts0 - timedelta(days=2), close=95.0, atr=2.0, return_pct=0.02),
         SimpleNamespace(timestamp=ts0 - timedelta(days=1), close=100.0, atr=2.0, return_pct=0.05),
         SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0, return_pct=None),
-        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0, atr=2.0, return_pct=0.05),
+        SimpleNamespace(
+            timestamp=ts0 + timedelta(days=1),
+            close=105.0,
+            high=105.0,
+            low=105.0,
+            atr=2.0,
+            return_pct=0.05,
+        ),
     ]
     ungraded = SimpleNamespace(
         id=1,
@@ -728,7 +787,14 @@ async def test_grade_price_forecasts_preserves_invalidated_status():
     ts0 = datetime(2026, 8, 1, tzinfo=UTC)
     rows = [
         SimpleNamespace(timestamp=ts0, close=100.0, atr=2.0, return_pct=None),
-        SimpleNamespace(timestamp=ts0 + timedelta(days=1), close=105.0, atr=2.0, return_pct=0.05),
+        SimpleNamespace(
+            timestamp=ts0 + timedelta(days=1),
+            close=105.0,
+            high=105.0,
+            low=105.0,
+            atr=2.0,
+            return_pct=0.05,
+        ),
     ]
     ungraded = SimpleNamespace(
         id=1,

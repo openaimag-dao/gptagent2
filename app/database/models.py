@@ -1228,6 +1228,15 @@ class PriceForecastSnapshot(Base):
     historical_mean_baseline_error_pct: Mapped[float | None] = mapped_column(
         Numeric(10, 4), nullable=True
     )
+    # Forecast Intelligence Upgrade: filled in alongside the grading fields
+    # above, by the same grade_price_forecasts() call, walking the real
+    # intrabar high/low of every bar between the forecast and its grading
+    # (already-fetched `rows`, no extra I/O) -- did price actually TOUCH
+    # target_price at any point, not just where it ended up at
+    # horizon-elapse (error_pct/direction_correct only look at the final
+    # close). Nullable: honestly absent for a Neutral call or a target
+    # that never differed from the forecast's own current_price.
+    target_reached: Mapped[bool | None] = mapped_column(nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
