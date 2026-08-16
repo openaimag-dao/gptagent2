@@ -538,6 +538,26 @@ function forecastKeyLevels(levels) {
   ]);
 }
 
+function forecastHorizonConsistency(consistency) {
+  if (!consistency) {
+    return el("p", { class: "sub" }, "Multi-horizon consistency: not enough horizons computed yet.");
+  }
+  const groupCards = ["short_term", "medium_term", "long_term"]
+    .filter((key) => consistency[key] != null)
+    .map((key) => {
+      const style = FORECAST_DIRECTION_STYLE[consistency[key]] || FORECAST_DIRECTION_STYLE.Neutral;
+      const label = { short_term: "Short-term (24h)", medium_term: "Medium-term (3d-7d)", long_term: "Long-term (30d)" }[key];
+      return el("div", { class: "card" }, [
+        el("div", { class: "label" }, label),
+        el("div", { class: `value ${style.cls}` }, `${style.emoji} ${consistency[key]}`),
+      ]);
+    });
+  return el("div", {}, [
+    el("div", { class: "grid" }, groupCards),
+    el("p", {}, consistency.explanation),
+  ]);
+}
+
 function forecastTrackRecordLine(trackRecord) {
   if (!trackRecord || trackRecord.evaluated_count === 0) {
     return el(
@@ -737,6 +757,8 @@ function buildForecastCard(payload, onHorizonChange, historyNodes, history) {
   root.appendChild(el("h3", {}, "Key Levels"));
   const keyLevels = forecastKeyLevels(payload.key_levels);
   if (keyLevels) root.appendChild(keyLevels);
+  root.appendChild(el("h3", {}, "Multi-Horizon Consistency"));
+  root.appendChild(forecastHorizonConsistency(payload.horizon_consistency));
   root.appendChild(el("h3", {}, "What Can Change The Forecast"));
   root.appendChild(whatCanChange);
   for (const node of historyNodes || []) root.appendChild(node);

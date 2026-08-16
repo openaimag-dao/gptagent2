@@ -14,6 +14,7 @@ from app.services.forecast.engine import (
     classify_direction_label,
     compute_expected_max_drawdown_pct,
     compute_historical_mean_baseline_error_pct,
+    compute_horizon_consistency,
     compute_momentum_score,
     compute_prediction_range,
     compute_price_path,
@@ -247,6 +248,111 @@ def _build_engine():
         deps["pattern_engine"],
     )
     return engine, deps, session
+
+
+# ---- Forecast Intelligence Upgrade: Multi-Horizon Consistency ---------------
+
+
+def test_compute_horizon_consistency_none_with_fewer_than_2_horizons():
+    assert compute_horizon_consistency({}) is None
+    assert compute_horizon_consistency({"24h": "Bullish"}) is None
+
+
+def test_compute_horizon_consistency_ignores_unknown_direction_labels():
+    # A horizon with a direction string outside _DIRECTION_SIGN (e.g. a
+    # snapshot from before a label taxonomy change) is honestly dropped,
+    # not guessed at -- if that leaves fewer than 2 usable horizons the
+    # whole result is None.
+    assert compute_horizon_consistency({"24h": "Bullish", "3d": "???"}) is None
+
+
+def test_compute_horizon_consistency_full_agreement():
+    directions = {"24h": "Bullish", "3d": "Bullish", "7d": "Strong Bullish", "30d": "Bullish"}
+    result = compute_horizon_consistency(directions)
+    assert result["short_term"] == "Bullish"
+    assert result["medium_term"] == "Bullish"
+    assert result["long_term"] == "Bullish"
+    assert result["consistency_pct"] == 100.0
+    assert result["agreeing_pairs"] == result["total_pairs"] == 6
+    assert result["horizons_available"] == ["24h", "30d", "3d", "7d"]
+
+
+def test_compute_horizon_consistency_short_vs_long_split():
+    # Matches the spec's own example: short-term bullish, long-term
+    # bearish -- must be reported as a real split, never smoothed away.
+    # 3d=Bullish and 7d=Bearish cancel out to a genuinely Neutral medium
+    # read (avg sign 0), not just "whichever direction happened first".
+    directions = {"24h": "Bullish", "3d": "Bullish", "7d": "Bearish", "30d": "Bearish"}
+    result = compute_horizon_consistency(directions)
+    assert result["short_term"] == "Bullish"
+    assert result["medium_term"] == "Neutral"
+    assert result["long_term"] == "Bearish"
+    assert 0 < result["consistency_pct"] < 100
+    assert "Short-term (24h): Bullish" in result["explanation"]
+    assert "Long-term (30d): Bearish" in result["explanation"]
+
+
+def test_compute_horizon_consistency_partial_horizons_still_computes():
+    # Only 2 of the 4 horizons have data yet (e.g. right after a fresh
+    # symbol's first forecast cycle) -- must still produce a real,
+    # non-fabricated result over just what exists.
+    result = compute_horizon_consistency({"24h": "Bearish", "30d": "Bearish"})
+    assert result["short_term"] == "Bearish"
+    assert result["medium_term"] is None
+    assert result["long_term"] == "Bearish"
+    assert result["consistency_pct"] == 100.0
+    assert result["horizons_available"] == ["24h", "30d"]
+
+
+def _snapshot(horizon, direction, probability_pct, computed_at):
+    return SimpleNamespace(
+        horizon=horizon,
+        direction=direction,
+        probability_pct=probability_pct,
+        computed_at=computed_at,
+    )
+
+
+async def test_get_latest_per_horizon_keeps_first_row_seen_per_horizon():
+    engine, _, session = _build_engine()
+    rows = [
+        _snapshot("24h", "Bullish", 68, datetime(2026, 8, 2, tzinfo=UTC)),
+        _snapshot("7d", "Neutral", 50, datetime(2026, 8, 1, tzinfo=UTC)),
+        # An older 24h row further down the (already-DESC-ordered) result
+        # must NOT overwrite the first (newest) one seen above.
+        _snapshot("24h", "Bearish", 40, datetime(2026, 7, 30, tzinfo=UTC)),
+    ]
+    session.scalars = AsyncMock(return_value=rows)
+    latest = await engine.get_latest_per_horizon("BTC")
+    assert set(latest) == {"24h", "7d"}
+    assert latest["24h"].direction == "Bullish"
+
+
+async def test_get_horizon_consistency_none_without_any_snapshots():
+    engine, _, session = _build_engine()
+    session.scalars = AsyncMock(return_value=[])
+    assert await engine.get_horizon_consistency("BTC") is None
+
+
+async def test_get_horizon_consistency_none_with_only_one_horizon():
+    engine, _, session = _build_engine()
+    rows = [_snapshot("24h", "Bullish", 68, datetime(2026, 8, 2, tzinfo=UTC))]
+    session.scalars = AsyncMock(return_value=rows)
+    assert await engine.get_horizon_consistency("BTC") is None
+
+
+async def test_get_horizon_consistency_includes_by_horizon_detail():
+    engine, _, session = _build_engine()
+    rows = [
+        _snapshot("24h", "Bullish", 68, datetime(2026, 8, 2, tzinfo=UTC)),
+        _snapshot("30d", "Bearish", 64, datetime(2026, 8, 1, tzinfo=UTC)),
+    ]
+    session.scalars = AsyncMock(return_value=rows)
+    result = await engine.get_horizon_consistency("BTC")
+    assert result["short_term"] == "Bullish"
+    assert result["long_term"] == "Bearish"
+    assert result["by_horizon"]["24h"]["probability_pct"] == 68
+    assert result["by_horizon"]["30d"]["direction"] == "Bearish"
 
 
 async def test_compute_returns_none_for_unknown_horizon():

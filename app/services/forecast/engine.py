@@ -446,6 +446,91 @@ _DIRECTION_SIGN: dict[str, int] = {
     "Strong Bearish": -1,
 }
 
+# Forecast Intelligence Upgrade: which of the 4 existing HORIZONS group
+# into each read -- this project has no 1H/4H forecast data (ForecastEngine
+# only computes on the DAILY timeframe today), so "short/medium/long" here
+# means 24h / 3d+7d / 30d, not the intraday granularity a generic spec
+# might assume. Documented as a known limitation rather than silently
+# reinterpreted.
+_HORIZON_GROUPS: dict[str, tuple[str, ...]] = {
+    "short_term": ("24h",),
+    "medium_term": ("3d", "7d"),
+    "long_term": ("30d",),
+}
+
+
+def _group_direction_label(directions: dict[str, str], horizons: tuple[str, ...]) -> str | None:
+    signs = [_DIRECTION_SIGN[directions[h]] for h in horizons if h in directions]
+    if not signs:
+        return None
+    avg = sum(signs) / len(signs)
+    if avg > 0.25:
+        return "Bullish"
+    if avg < -0.25:
+        return "Bearish"
+    return "Neutral"
+
+
+def compute_horizon_consistency(directions: dict[str, str]) -> dict | None:
+    """Pure function: Forecast Intelligence Upgrade -- Multi-Horizon
+    Consistency. `directions` maps horizon label ("24h"/"3d"/"7d"/"30d")
+    to this project's own direction label (Strong Bullish..Strong
+    Bearish), read straight from each horizon's own already-computed
+    PriceForecastSnapshot.direction -- no new classification, just a
+    cross-horizon comparison of labels that already exist.
+
+    Horizons are never forced to agree: a genuine short-term-bullish /
+    long-term-bearish split is reported as such, not smoothed into a
+    single number. `consistency_pct` is the fraction of all horizon PAIRS
+    whose direction sign agrees (Bullish/Strong Bullish vs Bearish/Strong
+    Bearish are opposite signs; Neutral is its own sign) -- a real,
+    checkable measurement of how much the horizons actually agree, not an
+    opinion.
+
+    None when there are fewer than 2 known horizons to compare --
+    "consistency" is meaningless for a single data point."""
+    known = {h: d for h, d in directions.items() if d in _DIRECTION_SIGN}
+    if len(known) < 2:
+        return None
+
+    short_term = _group_direction_label(known, _HORIZON_GROUPS["short_term"])
+    medium_term = _group_direction_label(known, _HORIZON_GROUPS["medium_term"])
+    long_term = _group_direction_label(known, _HORIZON_GROUPS["long_term"])
+
+    items = list(known.items())
+    agreeing_pairs = 0
+    total_pairs = 0
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            total_pairs += 1
+            if _DIRECTION_SIGN[items[i][1]] == _DIRECTION_SIGN[items[j][1]]:
+                agreeing_pairs += 1
+    consistency_pct = round(100 * agreeing_pairs / total_pairs, 1) if total_pairs else None
+
+    parts = []
+    if short_term is not None:
+        parts.append(f"Short-term (24h): {short_term}")
+    if medium_term is not None:
+        parts.append(f"Medium-term (3d-7d): {medium_term}")
+    if long_term is not None:
+        parts.append(f"Long-term (30d): {long_term}")
+    if total_pairs:
+        parts.append(
+            f"{agreeing_pairs}/{total_pairs} horizon pairs agree ({consistency_pct}% consistency)"
+        )
+    explanation = ". ".join(parts) + "." if parts else ""
+
+    return {
+        "short_term": short_term,
+        "medium_term": medium_term,
+        "long_term": long_term,
+        "consistency_pct": consistency_pct,
+        "agreeing_pairs": agreeing_pairs,
+        "total_pairs": total_pairs,
+        "horizons_available": sorted(known),
+        "explanation": explanation,
+    }
+
 
 def _realized_sign(current_price: float, realized_price: float) -> int:
     if realized_price > current_price:
@@ -1126,6 +1211,51 @@ class ForecastEngine:
                 .limit(limit)
             )
             return list(result)
+
+    async def get_latest_per_horizon(self, symbol: str) -> dict[str, PriceForecastSnapshot]:
+        """Forecast Intelligence Upgrade: one row per horizon, the most
+        recently computed. `.limit(200)` is a generous safety bound, not a
+        tuning knob -- with only 4 horizons the first occurrence of each is
+        always found within the first few rows of this already-indexed,
+        already-descending scan (same query shape `get_latest_history`
+        already uses), so this adds no new query pattern."""
+        async with self._session_factory() as session:
+            result = await session.scalars(
+                select(PriceForecastSnapshot)
+                .where(PriceForecastSnapshot.symbol == symbol.upper())
+                .order_by(PriceForecastSnapshot.computed_at.desc())
+                .limit(200)
+            )
+            latest_by_horizon: dict[str, PriceForecastSnapshot] = {}
+            for row in result:
+                if row.horizon not in latest_by_horizon:
+                    latest_by_horizon[row.horizon] = row
+                if len(latest_by_horizon) == len(HORIZONS):
+                    break
+            return latest_by_horizon
+
+    async def get_horizon_consistency(self, symbol: str) -> dict | None:
+        """Forecast Intelligence Upgrade -- Multi-Horizon Consistency.
+        Reads each horizon's own latest already-computed snapshot (zero new
+        forecast computation, zero extra I/O beyond the one query above)
+        and reports whether they agree. See `compute_horizon_consistency`
+        for what "agree" means and why horizons are never forced to."""
+        latest_by_horizon = await self.get_latest_per_horizon(symbol)
+        if not latest_by_horizon:
+            return None
+        directions = {h: row.direction for h, row in latest_by_horizon.items()}
+        consistency = compute_horizon_consistency(directions)
+        if consistency is None:
+            return None
+        consistency["by_horizon"] = {
+            h: {
+                "direction": row.direction,
+                "probability_pct": row.probability_pct,
+                "computed_at": row.computed_at.isoformat(),
+            }
+            for h, row in latest_by_horizon.items()
+        }
+        return consistency
 
     async def summarize_accuracy(self, symbol: str, horizon: str) -> dict | None:
         return await summarize_forecast_accuracy(self._session_factory, symbol.upper(), horizon)

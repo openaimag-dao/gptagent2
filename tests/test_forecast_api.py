@@ -84,6 +84,23 @@ async def test_ai_explanation_merges_engine_breakdown_and_final_prediction():
     assert payload["ai_explanation"]["final_prediction"] == final_prediction
 
 
+async def test_horizon_consistency_reaches_the_payload():
+    engine = AsyncMock()
+    engine.compute.return_value = {"symbol": "BTC"}
+    engine.get_horizon_consistency.return_value = {"consistency_pct": 66.7}
+    with (
+        patch("app.api.forecast.build_forecast_engine", return_value=engine),
+        patch("app.api.forecast.get_job_next_run", return_value=None),
+        patch(
+            "app.api.forecast.build_explainability_engine",
+            return_value=_explainability_engine(),
+        ),
+    ):
+        payload = await forecast.get_forecast("BTC", horizon="24h")
+    engine.get_horizon_consistency.assert_awaited_once_with("BTC")
+    assert payload["horizon_consistency"] == {"consistency_pct": 66.7}
+
+
 async def test_history_endpoint_serializes_snapshots():
     snapshot = SimpleNamespace(
         horizon="24h",
