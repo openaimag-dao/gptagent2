@@ -576,11 +576,32 @@ class WatchdogEngine:
 
     # ------------------------------------------------------------ the cycle
 
-    async def _safe_reliability(self) -> dict[str, float] | None:
+    async def _safe_reliability(self, regime: str | None = None) -> dict[str, float] | None:
+        """Forecast Intelligence Upgrade -- Regime-Aware Weighting. When a
+        live `regime` is available, uses `evaluate_reliability_hierarchical`
+        (symbol+horizon+regime -> horizon+regime -> global fallback ladder,
+        already shrinkage/min-sample-guarded from a prior POST-V9
+        increment) instead of the flat, regime-blind `evaluate_reliability`
+        -- so an agent that's historically been more accurate IN THIS
+        REGIME gets more consensus weight, and one that's been worse in it
+        gets less, with no hardcoded per-regime weight table and no new
+        overfitting risk (the existing min-effective-sample-size fallback
+        already protects against thin per-regime slices). Falls back to
+        the flat method when no live regime is available, so behavior is
+        unchanged for any caller that doesn't pass one."""
         if self._reliability_engine is None:
             return None
         try:
-            return await self._reliability_engine.evaluate_reliability()
+            if regime is None:
+                return await self._reliability_engine.evaluate_reliability()
+            hierarchical = await self._reliability_engine.evaluate_reliability_hierarchical(
+                regime=regime
+            )
+            return {
+                agent: result["accuracy_pct"]
+                for agent, result in hierarchical.items()
+                if result.get("accuracy_pct") is not None
+            }
         except Exception:
             return None
 
@@ -655,9 +676,10 @@ class WatchdogEngine:
             self._technical_engine.get_latest("BTC"),
         )
 
+        live_regime = regime_snapshot.regime.value if regime_snapshot is not None else None
         agent_outputs, reliability = await asyncio.gather(
             self._agent_orchestrator.run_all(),
-            self._safe_reliability(),
+            self._safe_reliability(live_regime),
         )
         consensus = compute_consensus(agent_outputs, reliability)
         committee = convene_committee(agent_outputs, consensus) if consensus is not None else None
