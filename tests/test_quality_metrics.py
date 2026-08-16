@@ -3,6 +3,7 @@ from app.services.quality.metrics import (
     compute_average_error,
     compute_brier_score,
     compute_calibration,
+    compute_calibration_by_regime_horizon,
     compute_expected_calibration_error,
     compute_log_loss,
     compute_precision_recall,
@@ -10,7 +11,9 @@ from app.services.quality.metrics import (
 )
 
 
-def _entry(prob_up, prob_down, prob_flat, predicted, realized, horizon_periods=1) -> dict:
+def _entry(
+    prob_up, prob_down, prob_flat, predicted, realized, horizon_periods=1, reference_regime=None
+) -> dict:
     return {
         "prob_up_pct": prob_up,
         "prob_down_pct": prob_down,
@@ -19,6 +22,7 @@ def _entry(prob_up, prob_down, prob_flat, predicted, realized, horizon_periods=1
         "realized": realized,
         "correct": predicted == realized,
         "horizon_periods": horizon_periods,
+        "reference_regime": reference_regime,
     }
 
 
@@ -80,6 +84,35 @@ def test_compute_expected_calibration_error_uses_absolute_gap():
     # miscalibration magnitude, not direction.
     buckets = [{"count": 10, "calibration_gap_pct": -5.0}]
     assert compute_expected_calibration_error(buckets) == 5.0
+
+
+# ---- Forecast Intelligence Upgrade: 2D regime x horizon calibration --------
+
+
+def test_compute_calibration_by_regime_horizon_groups_by_combined_key():
+    evaluated = [
+        _entry(70, 20, 10, "up", "up", horizon_periods=1, reference_regime="bull"),
+        _entry(70, 20, 10, "up", "down", horizon_periods=1, reference_regime="bull"),
+        _entry(70, 20, 10, "up", "up", horizon_periods=7, reference_regime="bull"),
+        _entry(70, 20, 10, "up", "up", horizon_periods=1, reference_regime="bear"),
+    ]
+    result = compute_calibration_by_regime_horizon(evaluated)
+    keys = [(row["regime"], row["horizon_periods"]) for row in result]
+    assert keys == [("bear", 1), ("bull", 1), ("bull", 7)]
+    bull_1h = next(r for r in result if r["regime"] == "bull" and r["horizon_periods"] == 1)
+    assert bull_1h["count"] == 2
+    assert bull_1h["expected_calibration_error"] is not None
+
+
+def test_compute_calibration_by_regime_horizon_groups_missing_dimensions_under_none():
+    evaluated = [_entry(70, 20, 10, "up", "up")]  # no reference_regime set
+    result = compute_calibration_by_regime_horizon(evaluated)
+    assert result[0]["regime"] is None
+    assert result[0]["count"] == 1
+
+
+def test_compute_calibration_by_regime_horizon_empty_without_data():
+    assert compute_calibration_by_regime_horizon([]) == []
 
 
 def test_compute_precision_recall_matches_hand_calculation():

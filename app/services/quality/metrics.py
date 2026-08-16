@@ -203,6 +203,45 @@ def compute_calibration(
     return result
 
 
+def compute_calibration_by_regime_horizon(
+    evaluated: list[dict],
+    bin_width: int = _CALIBRATION_BIN_WIDTH,
+    min_sample_size: int = _MIN_CALIBRATION_BUCKET_SAMPLE_SIZE,
+    reliable_sample_size: int = _RELIABLE_CALIBRATION_BUCKET_SAMPLE_SIZE,
+) -> list[dict]:
+    """Forecast Intelligence Upgrade -- the 2D regime x horizon
+    calibration matrix: calibration is only ever broken down one
+    dimension at a time elsewhere (compute_calibration buckets by
+    confidence; app.services.probability.engine.compute_quantile_coverage_by_group
+    splits by regime OR horizon, never both together). A healthy
+    aggregate ECE can hide one regime/horizon combination that's badly
+    miscalibrated while others are fine.
+
+    Groups `evaluated` by the (reference_regime, horizon_periods)
+    combination, then runs the SAME `compute_calibration` bucketing and
+    `compute_expected_calibration_error` scalar over just that slice --
+    no new bucketing rule, just a finer partition of the existing one.
+    Rows missing either dimension are grouped under a None key rather
+    than silently dropped, so a caller can see how much data lacks it."""
+    groups: dict[tuple, list[dict]] = {}
+    for entry in evaluated:
+        key = (entry.get("reference_regime"), entry.get("horizon_periods"))
+        groups.setdefault(key, []).append(entry)
+
+    result = []
+    for (regime, horizon_periods), entries in groups.items():
+        buckets = compute_calibration(entries, bin_width, min_sample_size, reliable_sample_size)
+        result.append(
+            {
+                "regime": regime,
+                "horizon_periods": horizon_periods,
+                "count": len(entries),
+                "expected_calibration_error": compute_expected_calibration_error(buckets),
+            }
+        )
+    return sorted(result, key=lambda row: (row["regime"] or "", row["horizon_periods"] or 0))
+
+
 def compute_time_horizon_accuracy(evaluated: list[dict]) -> list[dict]:
     """Accuracy segmented by each prediction's horizon_periods -- a
     single row when every prediction shares one horizon, more if horizons

@@ -2893,6 +2893,20 @@ async function renderQuality() {
           )
         );
       }
+      if (r.calibration_by_regime_horizon && r.calibration_by_regime_horizon.length) {
+        results.appendChild(el("h2", {}, "Calibration by Regime × Horizon"));
+        results.appendChild(
+          table(
+            ["Regime", "Horizon (periods)", "Count", "ECE"],
+            r.calibration_by_regime_horizon.map((row) => [
+              row.regime || "n/a",
+              row.horizon_periods ?? "n/a",
+              row.count,
+              row.expected_calibration_error != null ? row.expected_calibration_error : "n/a",
+            ])
+          )
+        );
+      }
     } catch (err) {
       results.appendChild(errorBox(err));
     }

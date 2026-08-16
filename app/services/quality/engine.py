@@ -23,6 +23,7 @@ from app.services.quality.metrics import (
     compute_average_error,
     compute_brier_score,
     compute_calibration,
+    compute_calibration_by_regime_horizon,
     compute_expected_calibration_error,
     compute_log_loss,
     compute_precision_recall,
@@ -67,6 +68,12 @@ class PredictionQualityEngine:
             "average_error_pct": compute_average_error(evaluated),
             "calibration": calibration,
             "expected_calibration_error": compute_expected_calibration_error(calibration),
+            "calibration_by_regime_horizon": compute_calibration_by_regime_horizon(
+                evaluated,
+                bin_width=settings.calibration_bin_width_pct,
+                min_sample_size=settings.calibration_min_sample_size,
+                reliable_sample_size=settings.calibration_reliable_sample_size,
+            ),
             "time_horizon_accuracy": compute_time_horizon_accuracy(evaluated),
             # POST-V9 Phase 4: does the forecast engine's own p10-p90/p25-p75
             # quantile bands actually contain the realized outcome as often
