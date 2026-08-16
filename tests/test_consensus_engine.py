@@ -209,6 +209,48 @@ def test_compute_consensus_discounts_correlated_bloc_relative_to_independent_age
     assert discounted.bearish_pct > undiscounted.bearish_pct
 
 
+# ---- Forecast Intelligence Upgrade: raw vs redundancy-adjusted consensus ---
+
+
+def test_compute_consensus_raw_equals_adjusted_without_any_discount():
+    outputs = {
+        "macro": _output("macro", "bullish", 80.0),
+        "news": _output("news", "bearish", 80.0),
+    }
+    result = compute_consensus(outputs)
+    assert result.raw_bullish_pct == result.bullish_pct
+    assert result.raw_bearish_pct == result.bearish_pct
+    assert result.raw_agreement_score == result.agreement_score
+
+
+def test_compute_consensus_raw_stays_at_the_undiscounted_level():
+    # Same fixture as the redundancy-discount test above: raw_* must
+    # match what compute_consensus returns with NO redundancy_penalties
+    # at all -- the real "before adjustment" number, not a second,
+    # differently-derived estimate.
+    outputs = {
+        "macro": _output("macro", "bullish", 80.0),
+        "crypto": _output("crypto", "bullish", 80.0),
+        "news": _output("news", "bearish", 80.0),
+    }
+    undiscounted = compute_consensus(outputs)
+    discounted = compute_consensus(outputs, redundancy_penalties={("crypto", "macro"): 50.0})
+
+    assert discounted.raw_bullish_pct == undiscounted.bullish_pct
+    assert discounted.raw_agreement_score == undiscounted.agreement_score
+    # The adjusted number is real evidence-of-discount: strictly less
+    # bullish than what the raw (pre-discount) number reports.
+    assert discounted.bullish_pct < discounted.raw_bullish_pct
+
+
+def test_compute_consensus_to_dict_includes_raw_fields():
+    outputs = {"macro": _output("macro", "bullish", 80.0)}
+    result = compute_consensus(outputs)
+    payload = result.to_dict()
+    assert payload["raw_bullish_pct"] == result.raw_bullish_pct
+    assert payload["raw_agreement_score"] == result.raw_agreement_score
+
+
 def test_compute_consensus_redundancy_penalty_ignores_unrelated_pairs():
     outputs = {
         "macro": _output("macro", "bullish", 80.0),

@@ -78,6 +78,19 @@ class ConsensusResult:
     # disagree" (v8.0) can quote each agent's real reasoning instead of
     # just naming which bucket it landed in.
     agent_evidence: dict[str, str] = field(default_factory=dict)
+    # Forecast Intelligence Upgrade -- Signal Independence: the same
+    # dominant-bucket share as agreement_score, but computed BEFORE the
+    # redundancy discount and weight cap are applied (confidence x
+    # reliability only). Equal to agreement_score whenever neither
+    # adjustment was passed to compute_consensus(); once they are, this
+    # is the real "raw consensus vs effective independent evidence" pair
+    # the spec asks for (e.g. "82% bullish raw -> 66% after correlation
+    # adjustment") instead of only ever showing the already-discounted
+    # number with no way to see what it discounted away.
+    raw_agreement_score: float = 0.0
+    raw_bullish_pct: float = 0.0
+    raw_bearish_pct: float = 0.0
+    raw_neutral_pct: float = 0.0
     computed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     @property
@@ -129,6 +142,10 @@ class ConsensusResult:
             "agent_evidence": self.agent_evidence,
             "strongest_agent": self.strongest_agent,
             "invalidation_risk": self.invalidation_risk,
+            "raw_agreement_score": self.raw_agreement_score,
+            "raw_bullish_pct": self.raw_bullish_pct,
+            "raw_bearish_pct": self.raw_bearish_pct,
+            "raw_neutral_pct": self.raw_neutral_pct,
             "computed_at": self.computed_at.isoformat(),
         }
 
@@ -186,6 +203,23 @@ def _apply_max_weight_cap(
     return weights
 
 
+def _normalize_to_pct(weights_by_bucket: dict[str, float]) -> dict[str, float]:
+    """Pure helper: {bucket: raw weight} -> {bucket: pct of total},
+    rounded to 1dp with the leftover rounding drift folded into the
+    largest bucket so the three always sum to exactly 100.0 -- the exact
+    normalization compute_consensus() already did inline for its
+    adjusted buckets, extracted so the raw (pre-discount) buckets use the
+    identical rule rather than a second, possibly-inconsistent one."""
+    total = sum(weights_by_bucket.values())
+    percentages = {name: 100.0 * weight / total for name, weight in weights_by_bucket.items()}
+    rounded = {name: round(pct, 1) for name, pct in percentages.items()}
+    drift = round(100.0 - sum(rounded.values()), 1)
+    if drift != 0:
+        largest = max(percentages, key=percentages.get)
+        rounded[largest] = round(rounded[largest] + drift, 1)
+    return rounded
+
+
 def compute_consensus(
     agent_outputs: dict[str, AgentOutput],
     reliability: dict[str, float] | None = None,
@@ -218,6 +252,7 @@ def compute_consensus(
         "neutral": neutral_agents,
     }
     per_agent_weight: dict[str, float] = {}
+    per_agent_raw_weight: dict[str, float] = {}
     reporting_agents = {
         name for name, output in agent_outputs.items() if output.direction is not None
     }
@@ -233,6 +268,10 @@ def compute_consensus(
         )
         if reliability is not None and name in reliability:
             weight *= reliability[name] / 100.0
+        # Confidence x reliability only, captured BEFORE the redundancy
+        # discount below -- this is the "raw" half of the raw-vs-adjusted
+        # pair (never itself weight-capped either; see raw_total below).
+        raw_weight = weight
         if redundancy_penalties:
             penalty_pct = _agent_redundancy_penalty_pct(
                 name, reporting_agents, redundancy_penalties
@@ -240,6 +279,7 @@ def compute_consensus(
             weight *= 1 - penalty_pct / 100.0
         agents_by_direction[output.direction].append(name)
         per_agent_weight[name] = weight
+        per_agent_raw_weight[name] = raw_weight
 
     if max_agent_weight_pct is not None:
         per_agent_weight = _apply_max_weight_cap(per_agent_weight, max_agent_weight_pct)
@@ -251,14 +291,15 @@ def compute_consensus(
     if total_weight == 0:
         return None
 
-    percentages = {name: 100.0 * weight / total_weight for name, weight in weights.items()}
-    rounded = {name: round(pct, 1) for name, pct in percentages.items()}
-    drift = round(100.0 - sum(rounded.values()), 1)
-    if drift != 0:
-        largest = max(percentages, key=percentages.get)
-        rounded[largest] = round(rounded[largest] + drift, 1)
-
+    rounded = _normalize_to_pct(weights)
     agreement_score = max(rounded.values())
+
+    raw_weights_by_bucket = {"bullish": 0.0, "bearish": 0.0, "neutral": 0.0}
+    for name, weight in per_agent_raw_weight.items():
+        raw_weights_by_bucket[agent_outputs[name].direction] += weight
+    raw_rounded = _normalize_to_pct(raw_weights_by_bucket)
+    raw_agreement_score = max(raw_rounded.values())
+
     agent_weights = {
         name: round(100.0 * weight / total_weight, 1) for name, weight in per_agent_weight.items()
     }
@@ -277,6 +318,10 @@ def compute_consensus(
         unavailable_agents=unavailable_agents,
         agent_weights=agent_weights,
         agent_evidence=agent_evidence,
+        raw_agreement_score=raw_agreement_score,
+        raw_bullish_pct=raw_rounded["bullish"],
+        raw_bearish_pct=raw_rounded["bearish"],
+        raw_neutral_pct=raw_rounded["neutral"],
     )
 
 

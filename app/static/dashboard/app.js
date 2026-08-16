@@ -415,6 +415,14 @@ function forecastConsensusSection(consensus) {
       el("strong", {}, "Final Consensus: "),
       `${dominantLabel} (${consensus.agreement_score}% agreement)`,
     ]),
+    consensus.raw_agreement_score != null && consensus.raw_agreement_score !== consensus.agreement_score
+      ? el(
+          "p",
+          { class: "sub" },
+          `Before correlation adjustment: ${consensus.raw_agreement_score}% agreement -- ` +
+            `redundant/correlated agents discounted this to ${consensus.agreement_score}%.`
+        )
+      : null,
   ]);
 }
 
