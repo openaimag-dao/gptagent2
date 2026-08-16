@@ -48,6 +48,25 @@ def compute_data_quality_score(days_since_last_update: int | None, status: str) 
     return round(100 * (1 - days_since_last_update / _STALENESS_CEILING_DAYS))
 
 
+def explain_data_quality(status: str, days_since_last_update: int | None) -> str:
+    """Forecast Intelligence Upgrade -- a human-readable reason for a
+    symbol/timeframe's own status, never a magic number with no
+    explanation. Deliberately does NOT claim a specific cadence
+    violation (e.g. "should update daily") -- this module's own
+    docstring explains why: different tables have very different
+    natural update cadences, and guessing wrong would cry wolf on
+    legitimately-slow series. So this reports what's actually known
+    (how stale, in days) rather than a fabricated verdict on whether
+    that's "too" stale for this particular table."""
+    if status == "empty":
+        return "No historical data synced yet for this symbol/timeframe."
+    if days_since_last_update is None:
+        return "Has stored data but its freshness could not be determined."
+    if days_since_last_update <= 1:
+        return "Up to date -- synced within the last day."
+    return f"Synced {days_since_last_update} days ago."
+
+
 def assess_symbol_quality(rows: list, now: datetime) -> dict:
     """Pure and directly testable: no rows is the only hard "empty" status;
     any rows at all is "has_data" with row_count/most_recent_timestamp/
@@ -81,7 +100,16 @@ class DataQualityEngine:
                 {
                     "symbol": config.symbol,
                     "market": config.market,
+                    # Forecast Intelligence Upgrade: the actual DB table
+                    # this row's history is stored in -- a finer-grained,
+                    # more honest source category than `market` (which
+                    # tags MacroHistory rows "equity" alongside real
+                    # equities, see registry.py's construction calls).
+                    "source": config.model.__tablename__,
                     "timeframe": timeframe.value,
+                    "reason": explain_data_quality(
+                        assessment["status"], assessment["days_since_last_update"]
+                    ),
                     **assessment,
                 }
             )
@@ -89,13 +117,36 @@ class DataQualityEngine:
 
     async def assess_all(self) -> dict:
         """Full registry sweep -- every symbol/timeframe combination
-        app.services.history.registry.build_registry() knows about."""
+        app.services.history.registry.build_registry() knows about.
+
+        Forecast Intelligence Upgrade: `by_source` breaks the same
+        results down by their real DB table (crypto_history,
+        stock_history, market_history, macro_history, forex_history) --
+        this engine's actual coverage boundary. It does NOT cover News
+        or On-chain data (those have their own systems, e.g. NewsRepository
+        and OnChainIntelligenceEngine, tracked separately) -- reporting a
+        News/On-chain % here would be fabricating coverage this engine
+        doesn't actually have."""
         now = datetime.now(UTC)
         results: list[dict] = []
         for config in build_registry():
             results.extend(await self._assess_config(config, now))
 
         empty = [r for r in results if r["status"] == "empty"]
+        by_source: dict[str, list[dict]] = {}
+        for row in results:
+            by_source.setdefault(row["source"], []).append(row)
+        source_summary = [
+            {
+                "source": source,
+                "total": len(rows),
+                "has_data": sum(1 for r in rows if r["status"] == "has_data"),
+                "complete_pct": round(
+                    100 * sum(1 for r in rows if r["status"] == "has_data") / len(rows), 1
+                ),
+            }
+            for source, rows in sorted(by_source.items())
+        ]
         return {
             "generated_at": now.isoformat(),
             "results": results,
@@ -105,4 +156,5 @@ class DataQualityEngine:
                 "has_data": len(results) - len(empty),
                 "empty_symbols": sorted({r["symbol"] for r in empty}),
             },
+            "by_source": source_summary,
         }
