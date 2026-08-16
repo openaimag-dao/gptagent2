@@ -2732,6 +2732,9 @@ async function renderStrategies() {
             card("Total return p95", fmtPct(r.total_return_p95_pct)),
             card("Max drawdown p50", `${r.max_drawdown_p50_pct}%`),
             card("Max drawdown p95", `${r.max_drawdown_p95_pct}%`),
+            card("Probability of Profit", `${r.probability_of_profit_pct}%`),
+            card("Probability of Loss", `${r.probability_of_loss_pct}%`),
+            card(`Probability of Ruin (>${r.ruin_drawdown_pct}% DD)`, `${r.probability_of_ruin_pct}%`),
           ])
         );
       } else {
