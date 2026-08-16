@@ -1218,6 +1218,194 @@ async function renderOverview() {
   return nodes;
 }
 
+// ---- Watchlist -------------------------------------------------------
+// User-managed list, persisted client-side (no backend watchlist concept
+// exists -- same localStorage pattern already used for the admin key).
+// Prices reuse the same RealtimeStore/fallback-quote pattern as Overview's
+// live ticker so this page updates without polling.
+
+const _WATCHLIST_STORAGE_KEY = "dashboard_watchlist_symbols";
+
+function _loadWatchlistSymbols(defaults) {
+  try {
+    const raw = localStorage.getItem(_WATCHLIST_STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {
+    // Corrupted localStorage value -- fall through to defaults.
+  }
+  return [...defaults];
+}
+
+function _saveWatchlistSymbols(symbols) {
+  localStorage.setItem(_WATCHLIST_STORAGE_KEY, JSON.stringify(symbols));
+}
+
+function _watchlistCurrentQuote(symbol, marketBySymbol) {
+  const entry = RealtimeStore.get(symbol);
+  const fallback = marketBySymbol.get(symbol);
+  return {
+    price: entry ? entry.price : fallback ? fallback.price : null,
+    changePct: entry ? entry.changePercent24h : fallback ? fallback.change_pct_24h : null,
+    volume: entry ? entry.volume24h : fallback ? fallback.volume_24h : null,
+    freshness: entry ? entry.freshness : fallback ? fallback.freshness : null,
+    ageSeconds: entry ? entry.ageSeconds : fallback ? fallback.age_seconds : null,
+  };
+}
+
+function _watchlistForecastCell(forecast) {
+  if (!forecast || !forecast.direction) return "n/a";
+  const d = forecast.direction.toLowerCase();
+  const arrow = d.includes("bullish") ? "↑" : d.includes("bearish") ? "↓" : "→";
+  const cls = d.includes("bullish") ? "up" : d.includes("bearish") ? "down" : "neutral";
+  return el("span", { class: cls }, `${arrow} ${forecast.probability_pct}%`);
+}
+
+async function renderWatchlist() {
+  const nodes = [
+    el("h2", {}, "Watchlist"),
+    el(
+      "p",
+      { class: "sub" },
+      "Prices update in realtime for symbols on the live feed (see the header indicator); " +
+        "others fall back to the last collected snapshot with an honest freshness label."
+    ),
+  ];
+
+  const [market, realtimeStatus] = await Promise.all([
+    safe("/api/market"),
+    safe("/api/realtime/status"),
+  ]);
+  const marketBySymbol = new Map((market ? market.quotes : []).map((q) => [q.symbol, q]));
+  const defaultWatchlist =
+    realtimeStatus && realtimeStatus.watchlist ? realtimeStatus.watchlist : ["BTC", "ETH", "SOL"];
+  let symbols = _loadWatchlistSymbols(defaultWatchlist);
+
+  const tableWrap = el("div");
+  nodes.push(tableWrap);
+
+  let sortKey = null;
+  let sortDir = 1;
+
+  function sortValue(symbol) {
+    const q = _watchlistCurrentQuote(symbol, marketBySymbol);
+    if (sortKey === "price") return q.price ?? -Infinity;
+    if (sortKey === "change") return q.changePct ?? -Infinity;
+    if (sortKey === "volume") return q.volume ?? -Infinity;
+    return symbol;
+  }
+
+  function sortHeader(label, key) {
+    const th = el(
+      "th",
+      { style: "cursor:pointer" },
+      label + (sortKey === key ? (sortDir === 1 ? " ▲" : " ▼") : "")
+    );
+    th.addEventListener("click", () => {
+      sortDir = sortKey === key ? -sortDir : 1;
+      sortKey = key;
+      draw();
+    });
+    return th;
+  }
+
+  async function draw() {
+    tableWrap.innerHTML = "";
+    if (!symbols.length) {
+      tableWrap.appendChild(el("p", { class: "sub" }, "Watchlist is empty -- add a symbol below."));
+      return;
+    }
+
+    const forecasts = await Promise.all(symbols.map((s) => safe(`/api/forecast/${s}?horizon=24h`)));
+    const forecastBySymbol = new Map(symbols.map((s, i) => [s, forecasts[i]]));
+
+    const ordered = [...symbols];
+    if (sortKey) {
+      ordered.sort((a, b) => {
+        const av = sortValue(a);
+        const bv = sortValue(b);
+        if (av < bv) return -1 * sortDir;
+        if (av > bv) return 1 * sortDir;
+        return 0;
+      });
+    }
+
+    const t = el("table");
+    t.appendChild(
+      el("tr", {}, [
+        el("th", {}, "Symbol"),
+        sortHeader("Price", "price"),
+        sortHeader("24H", "change"),
+        sortHeader("Volume", "volume"),
+        el("th", {}, "Freshness"),
+        el("th", {}, "Forecast (24h)"),
+        el("th", {}, ""),
+      ])
+    );
+    for (const symbol of ordered) {
+      const q = _watchlistCurrentQuote(symbol, marketBySymbol);
+      const removeBtn = el("button", {}, "Remove");
+      removeBtn.addEventListener("click", () => {
+        symbols = symbols.filter((s) => s !== symbol);
+        _saveWatchlistSymbols(symbols);
+        draw();
+      });
+      t.appendChild(
+        el("tr", { "data-symbol": symbol }, [
+          el("td", {}, symbol),
+          el("td", { class: "wl-price" }, q.price != null ? fmtNum(q.price) : "n/a"),
+          el("td", { class: `wl-change ${changeClass(q.changePct)}` }, fmtPct(q.changePct)),
+          el("td", { class: "wl-volume" }, q.volume != null ? fmtNum(q.volume, 0) : "n/a"),
+          el("td", { class: "wl-freshness" }, dataFreshnessBadge(q.freshness, q.ageSeconds)),
+          el("td", {}, _watchlistForecastCell(forecastBySymbol.get(symbol))),
+          el("td", {}, removeBtn),
+        ])
+      );
+    }
+    tableWrap.appendChild(t);
+
+    // Patches only the changed symbol's price/change/freshness cells --
+    // the same pattern as Overview's liveTicker, just table rows instead
+    // of cards. Re-mounted on every draw() (sort/add/remove) so it always
+    // targets the DOM nodes actually on screen.
+    RealtimeStore.mount({
+      onTick: (dirtySymbols) => {
+        for (const symbol of dirtySymbols) {
+          const row = tableWrap.querySelector(`tr[data-symbol="${symbol}"]`);
+          if (!row) continue;
+          const q = _watchlistCurrentQuote(symbol, marketBySymbol);
+          row.querySelector(".wl-price").textContent = q.price != null ? fmtNum(q.price) : "n/a";
+          const changeEl = row.querySelector(".wl-change");
+          changeEl.textContent = fmtPct(q.changePct);
+          changeEl.className = `wl-change ${changeClass(q.changePct)}`;
+          row.querySelector(".wl-volume").textContent = q.volume != null ? fmtNum(q.volume, 0) : "n/a";
+          row.querySelector(".wl-freshness").replaceWith(dataFreshnessBadge(q.freshness, q.ageSeconds));
+        }
+      },
+    });
+  }
+  await draw();
+
+  const addInput = el("input", { type: "text", placeholder: "Add symbol (e.g. AAPL)" });
+  const addBtn = el("button", {}, "Add to watchlist");
+  const addError = el("span", { class: "error" }, "");
+  addBtn.addEventListener("click", () => {
+    const symbol = addInput.value.trim().toUpperCase();
+    addError.textContent = "";
+    if (!symbol) return;
+    if (symbols.includes(symbol)) {
+      addError.textContent = "Already in watchlist.";
+      return;
+    }
+    symbols = [...symbols, symbol];
+    _saveWatchlistSymbols(symbols);
+    addInput.value = "";
+    draw();
+  });
+  nodes.push(el("div", { class: "controls" }, [addInput, addBtn, addError]));
+
+  return nodes;
+}
+
 async function renderConsensus() {
   const data = await safe("/api/consensus");
   const nodes = [el("h2", {}, "Consensus")];
@@ -2760,6 +2948,128 @@ async function renderResearch() {
   return nodes;
 }
 
+// A fixed, small DSL over app.services.backtest.conditions.Condition --
+// see that module's own docstring ("deliberately not a free-text/NLP
+// parser"). Listed here once rather than free-text parsing (unlike the
+// older Strategies page's SYMBOL:field:op:value input) since the backend
+// only ever accepts exactly these fields/operators.
+const _BACKTEST_FIELDS = [
+  "close", "return_pct", "volatility", "atr", "rsi", "macd", "macd_signal",
+  "macd_histogram", "sma_20", "sma_50", "sma_200", "volume_change_pct",
+];
+const _BACKTEST_OPERATORS = ["gt", "lt", "gte", "lte"];
+
+function _backtestConditionRow(defaults = {}) {
+  const symbol = el("input", { type: "text", value: defaults.symbol || "BTC", placeholder: "Symbol" });
+  const field = el("select", {}, _BACKTEST_FIELDS.map((f) => el("option", { value: f }, f)));
+  field.value = defaults.field || "rsi";
+  const operator = el("select", {}, _BACKTEST_OPERATORS.map((o) => el("option", { value: o }, o)));
+  operator.value = defaults.operator || "lt";
+  const value = el("input", { type: "text", value: defaults.value ?? "30", placeholder: "Value" });
+  const removeBtn = el("button", {}, "Remove");
+  const row = el("div", { class: "controls" }, [symbol, field, operator, value, removeBtn]);
+  removeBtn.addEventListener("click", () => row.remove());
+  row._read = () => ({
+    symbol: symbol.value.trim().toUpperCase(),
+    field: field.value,
+    operator: operator.value,
+    value: parseFloat(value.value),
+  });
+  return row;
+}
+
+async function renderBacktest() {
+  const nodes = [
+    el("h2", {}, "Backtest"),
+    el(
+      "p",
+      { class: "sub" },
+      "Tests a structured rule (AND of conditions) against a symbol's full stored history -- " +
+        "every historical date the rule fired, the target's forward return becomes one trade. " +
+        "Includes a 1-bar fill lag and round-trip fee/slippage costs, so results aren't an " +
+        "unrealistic same-bar zero-cost fill."
+    ),
+  ];
+
+  const targetInput = el("input", { type: "text", value: "BTC", placeholder: "Target symbol" });
+  const timeframeSelect = el("select", {}, ["1d", "4h", "1h"].map((t) => el("option", { value: t }, t)));
+  const horizonInput = el("input", { type: "text", value: "5", placeholder: "Horizon (periods)" });
+  nodes.push(el("div", { class: "controls" }, [targetInput, timeframeSelect, horizonInput]));
+
+  const conditionsWrap = el("div");
+  nodes.push(conditionsWrap);
+  conditionsWrap.appendChild(_backtestConditionRow());
+  const addConditionBtn = el("button", {}, "+ Add condition");
+  addConditionBtn.addEventListener("click", () => conditionsWrap.appendChild(_backtestConditionRow()));
+
+  const runBtn = el("button", {}, "Run backtest");
+  nodes.push(el("div", { class: "controls" }, [addConditionBtn, runBtn]));
+
+  const results = el("div");
+  nodes.push(results);
+
+  runBtn.addEventListener("click", async () => {
+    results.innerHTML = "";
+    const conditions = [...conditionsWrap.children].map((row) => row._read());
+    if (conditions.some((c) => !c.symbol || Number.isNaN(c.value))) {
+      results.appendChild(el("p", { class: "error" }, "Every condition needs a symbol and a numeric value."));
+      return;
+    }
+    results.appendChild(el("p", { class: "loading" }, "Running..."));
+    try {
+      const r = await fetchJSON("/api/backtest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_symbol: targetInput.value.trim().toUpperCase(),
+          conditions,
+          timeframe: timeframeSelect.value,
+          horizon: parseInt(horizonInput.value, 10) || 1,
+        }),
+      });
+      results.innerHTML = "";
+      results.appendChild(
+        el("div", { class: "grid" }, [
+          card("Occurrences", r.occurrences),
+          card("Win rate", `${r.win_rate_pct}%`, null, changeClass(r.win_rate_pct - 50)),
+          card("Avg return", fmtPct(r.avg_return_pct), null, changeClass(r.avg_return_pct)),
+          card("Expectancy", fmtPct(r.expectancy_pct), null, changeClass(r.expectancy_pct)),
+          card("Max drawdown", `${r.max_drawdown_pct}%`, null, "down"),
+          card("Profit factor", r.profit_factor ?? "n/a"),
+          card("Sharpe ratio", r.sharpe_ratio ?? "n/a"),
+          card("Sortino ratio", r.sortino_ratio ?? "n/a"),
+          card("Calmar ratio", r.calmar_ratio ?? "n/a"),
+          card("CAGR", fmtPct(r.cagr_pct)),
+          card("Avg win", fmtPct(r.avg_win_pct), null, "up"),
+          // avg_loss_pct/var_95_pct/cvar_95_pct are all magnitudes (always
+          // >= 0 by backend contract, see compute_backtest_metrics) -- not
+          // signed returns, so fmtPct()'s "+" gain framing would misread
+          // as a profit next to the "down" styling.
+          card("Avg loss", `${r.avg_loss_pct}%`, null, "down"),
+          card("VaR 95%", `${r.var_95_pct}%`, null, "down"),
+          card("CVaR 95%", `${r.cvar_95_pct}%`, null, "down"),
+        ])
+      );
+      results.appendChild(
+        el(
+          "p",
+          { class: "sub" },
+          `${r.target_symbol} · ${r.timeframe} · horizon ${r.horizon_periods} · fill lag ${r.fill_lag_periods} bar(s) · ` +
+            `fee ${r.fee_pct}% + slippage ${r.slippage_pct}% per round trip`
+        )
+      );
+      if (r.universe_caveat) {
+        results.appendChild(el("p", { class: "error" }, r.universe_caveat));
+      }
+    } catch (err) {
+      results.innerHTML = "";
+      results.appendChild(errorBox(err));
+    }
+  });
+
+  return nodes;
+}
+
 async function renderStrategies() {
   const nodes = [el("h2", {}, "Strategies")];
   const symbolInput = el("input", { type: "text", value: "BTC", placeholder: "Target symbol" });
@@ -3966,12 +4276,12 @@ async function renderSettings() {
 }
 
 const PAGES = {
-  overview: renderOverview, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
+  overview: renderOverview, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
   patterns: renderPatterns, breakout: renderBreakout, features: renderFeatures, liquidity: renderLiquidity, sentiment: renderSentiment,
   calendar: renderCalendar, similarity: renderSimilarity, brain: renderBrain,
-  research: renderResearch, strategies: renderStrategies,
+  research: renderResearch, strategies: renderStrategies, backtest: renderBacktest,
   probability: renderProbability, learning: renderLearning, quality: renderQuality, accuracy: renderAccuracy,
   scenarios: renderScenarios,
   whatif: renderWhatif,
