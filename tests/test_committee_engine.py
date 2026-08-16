@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from app.services.agents.base import AgentOutput
@@ -284,4 +285,39 @@ async def test_committee_engine_survives_reliability_engine_failure():
 
     verdict = await CommitteeEngine(orchestrator, reliability_engine).convene()
 
+    assert verdict.majority_decision == "BUY"
+
+
+# ---- Forecast Intelligence Upgrade: Regime-Aware Weighting -----------------
+
+
+async def test_committee_engine_uses_hierarchical_reliability_with_a_live_regime():
+    orchestrator = AsyncMock()
+    orchestrator.run_all.return_value = {"macro": _output("macro", "bullish", 60.0, "Bullish.")}
+    reliability_engine = AsyncMock()
+    reliability_engine.evaluate_reliability_hierarchical.return_value = {
+        "macro": {"accuracy_pct": 70.0, "level": "regime", "effective_sample_size": 20}
+    }
+    regime_detector = AsyncMock()
+    regime_detector.get_latest.return_value = SimpleNamespace(
+        regime=SimpleNamespace(value="risk_on")
+    )
+
+    verdict = await CommitteeEngine(orchestrator, reliability_engine, regime_detector).convene()
+
+    reliability_engine.evaluate_reliability_hierarchical.assert_awaited_once_with(regime="risk_on")
+    reliability_engine.evaluate_reliability.assert_not_called()
+    assert verdict.majority_decision == "BUY"
+
+
+async def test_committee_engine_without_regime_detector_uses_flat_reliability():
+    orchestrator = AsyncMock()
+    orchestrator.run_all.return_value = {"macro": _output("macro", "bullish", 60.0, "Bullish.")}
+    reliability_engine = AsyncMock()
+    reliability_engine.evaluate_reliability.return_value = {"macro": 55.0}
+
+    verdict = await CommitteeEngine(orchestrator, reliability_engine).convene()
+
+    reliability_engine.evaluate_reliability.assert_awaited_once()
+    reliability_engine.evaluate_reliability_hierarchical.assert_not_called()
     assert verdict.majority_decision == "BUY"

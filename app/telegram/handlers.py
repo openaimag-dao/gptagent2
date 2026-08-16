@@ -885,8 +885,11 @@ async def cmd_consensus(message: Message) -> None:
 
 @router.message(Command("committee"))
 async def cmd_committee(message: Message) -> None:
+    session_factory = get_session_factory()
     engine = CommitteeEngine(
-        build_agent_orchestrator(), AgentReliabilityEngine(get_session_factory())
+        build_agent_orchestrator(),
+        AgentReliabilityEngine(session_factory),
+        RegimeDetector(session_factory, _market_repository()),
     )
     verdict = await engine.convene()
     await _answer(message, format_committee(verdict.to_dict() if verdict is not None else None))
@@ -913,7 +916,7 @@ def _build_terminal_engine() -> TerminalEngine:
     feature_engine = FeatureEngine(session_factory, market_repository)
     breakout_engine = BreakoutEngine(session_factory, regime_detector, feature_engine)
     committee_engine = CommitteeEngine(
-        build_agent_orchestrator(), AgentReliabilityEngine(session_factory)
+        build_agent_orchestrator(), AgentReliabilityEngine(session_factory), regime_detector
     )
     replay_engine = MarketReplayEngine(
         session_factory,

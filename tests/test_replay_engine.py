@@ -1,11 +1,29 @@
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock
 
 from app.services.committee.engine import CommitteeVerdict
 from app.services.replay.engine import (
+    MarketReplayEngine,
     build_replay_insight,
     committee_from_snapshot,
     diff_snapshots,
 )
+
+
+def _replay_engine(reliability_engine=None):
+    return MarketReplayEngine(
+        session_factory=AsyncMock(),
+        market_repository=AsyncMock(),
+        news_repository=AsyncMock(),
+        regime_detector=AsyncMock(),
+        global_score_engine=AsyncMock(),
+        agent_orchestrator=AsyncMock(),
+        reliability_engine=reliability_engine or AsyncMock(),
+        portfolio_advisor=AsyncMock(),
+        whale_engine=AsyncMock(),
+        etf_engine=AsyncMock(),
+        probability_engine=AsyncMock(),
+    )
 
 
 def _snapshot(
@@ -260,3 +278,42 @@ def test_build_replay_insight_never_fabricates_historical_similarity_when_lesson
     insight = build_replay_insight(row, committee=None, historical_lesson=None)
 
     assert insight["historical_similarity"] is None
+
+
+# ---- Forecast Intelligence Upgrade: Regime-Aware Weighting -----------------
+
+
+async def test_safe_reliability_uses_flat_method_without_a_live_regime():
+    reliability_engine = AsyncMock()
+    reliability_engine.evaluate_reliability.return_value = {"macro": 55.0}
+    engine = _replay_engine(reliability_engine)
+
+    result = await engine._safe_reliability(None)
+
+    assert result == {"macro": 55.0}
+    reliability_engine.evaluate_reliability.assert_awaited_once()
+    reliability_engine.evaluate_reliability_hierarchical.assert_not_called()
+
+
+async def test_safe_reliability_uses_hierarchical_method_with_a_live_regime():
+    reliability_engine = AsyncMock()
+    reliability_engine.evaluate_reliability_hierarchical.return_value = {
+        "macro": {"accuracy_pct": 62.0, "level": "regime", "effective_sample_size": 30},
+        "crypto": {"accuracy_pct": None, "level": "insufficient_data", "effective_sample_size": 2},
+    }
+    engine = _replay_engine(reliability_engine)
+
+    result = await engine._safe_reliability("risk_off")
+
+    assert result == {"macro": 62.0}
+    reliability_engine.evaluate_reliability_hierarchical.assert_awaited_once_with(regime="risk_off")
+
+
+async def test_safe_reliability_survives_reliability_engine_failure():
+    reliability_engine = AsyncMock()
+    reliability_engine.evaluate_reliability_hierarchical.side_effect = RuntimeError("db down")
+    engine = _replay_engine(reliability_engine)
+
+    result = await engine._safe_reliability("bull")
+
+    assert result is None

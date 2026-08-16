@@ -275,6 +275,26 @@ class MarketReplayEngine:
         except Exception:
             return None
 
+    async def _safe_reliability(self, regime: str | None = None) -> dict[str, float] | None:
+        """Forecast Intelligence Upgrade -- Regime-Aware Weighting: same
+        pattern as WatchdogEngine._safe_reliability() -- an agent's weight
+        is scaled by its own historical accuracy IN THIS REGIME when one
+        is available, falling back to the flat regime-blind accuracy
+        otherwise."""
+        try:
+            if regime is None:
+                return await self._reliability_engine.evaluate_reliability()
+            hierarchical = await self._reliability_engine.evaluate_reliability_hierarchical(
+                regime=regime
+            )
+            return {
+                agent: result["accuracy_pct"]
+                for agent, result in hierarchical.items()
+                if result.get("accuracy_pct") is not None
+            }
+        except Exception:
+            return None
+
     async def compute_and_store(self) -> MarketSnapshot:
         # Each read below hits a different table/engine and none depends on
         # another's result -- gathering them cuts this cycle's latency to
@@ -285,14 +305,14 @@ class MarketReplayEngine:
             self._global_score_engine.get_latest(),
         )
         by_symbol = {a.symbol: a for a in assets}
+        live_regime = regime_snapshot.regime.value if regime_snapshot is not None else None
 
         agent_outputs = await self._agent_orchestrator.run_all()
-        reliability: dict[str, float] | None = None
+        reliability = await self._safe_reliability(live_regime)
         try:
-            reliability = await self._reliability_engine.evaluate_reliability()
             await self._reliability_engine.log(agent_outputs)
         except Exception:
-            reliability = None
+            pass
         consensus_result = compute_consensus(agent_outputs, reliability)
 
         (
@@ -315,7 +335,7 @@ class MarketReplayEngine:
         alerts = await memory_engine.get_category("alerts", limit=50, since=since)
 
         row = MarketSnapshot(
-            regime=regime_snapshot.regime.value if regime_snapshot is not None else None,
+            regime=live_regime,
             health_score=global_score.global_score if global_score is not None else None,
             trend_strength_score=(
                 global_score.trend_strength_score if global_score is not None else None

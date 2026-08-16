@@ -81,6 +81,52 @@ def _existing_row(tier="high", active=True, last_updated_at=None, message_ids=No
     )
 
 
+# ---- Forecast Intelligence Upgrade: Regime-Aware Weighting -----------------
+
+
+async def test_safe_reliability_uses_flat_method_without_a_live_regime():
+    engine, _ = _engine()
+    engine._reliability_engine.evaluate_reliability.return_value = {"macro": 55.0}
+
+    result = await engine._safe_reliability(None)
+
+    assert result == {"macro": 55.0}
+    engine._reliability_engine.evaluate_reliability.assert_awaited_once()
+    engine._reliability_engine.evaluate_reliability_hierarchical.assert_not_called()
+
+
+async def test_safe_reliability_uses_hierarchical_method_with_a_live_regime():
+    engine, _ = _engine()
+    engine._reliability_engine.evaluate_reliability_hierarchical.return_value = {
+        "macro": {"accuracy_pct": 62.0, "level": "regime", "effective_sample_size": 30},
+    }
+
+    result = await engine._safe_reliability("risk_off")
+
+    assert result == {"macro": 62.0}
+    engine._reliability_engine.evaluate_reliability_hierarchical.assert_awaited_once_with(
+        regime="risk_off"
+    )
+
+
+async def test_cycle_context_passes_live_regime_into_hierarchical_reliability():
+    engine, _ = _engine()
+    engine._regime_detector.get_latest.return_value = SimpleNamespace(
+        regime=SimpleNamespace(value="accumulation")
+    )
+    engine._global_score_engine.get_latest.return_value = None
+    engine._scenario_engine.get_latest.return_value = None
+    engine._agent_orchestrator.run_all.return_value = {}
+    engine._reliability_engine.evaluate_reliability_hierarchical.return_value = {}
+
+    context = await engine._cycle_context()
+
+    engine._reliability_engine.evaluate_reliability_hierarchical.assert_awaited_once_with(
+        regime="accumulation"
+    )
+    assert context["regime"] == "accumulation"
+
+
 async def test_new_episode_notifies_and_persists_when_tier_eligible():
     engine, session = _engine()
     session.scalar.return_value = None  # no existing active episode
