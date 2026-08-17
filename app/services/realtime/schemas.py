@@ -21,7 +21,7 @@ class RealtimePriceTick(BaseModel):
     volume_24h: float | None = None
     high_24h: float | None = None
     low_24h: float | None = None
-    source: str = "binance"
+    source: str = "coinbase"
     # When the exchange generated this tick, vs. when our collector
     # processed it -- the gap between the two is real network/processing
     # latency, not fabricated.

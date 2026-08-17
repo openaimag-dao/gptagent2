@@ -4,7 +4,7 @@ DefiLlama), derived from a timestamp/counter another part of this platform
 already stores (AssetPrice.recorded_at per source, AlertLog.triggered_at,
 Report.generated_at, a Redis failure counter incremented by
 collect_market_data_job), or read from RealtimePriceCollector's live
-Redis-published connection state (Binance -- see
+Redis-published connection state (Coinbase -- see
 app.services.realtime.collector). Helius/Glassnode have a settings field
 but no wired wallet-level client (see app.services.onchain.engine's own
 docstring) -- reported not-configured/not-implemented, never faked,
@@ -118,17 +118,20 @@ async def _database_health(session_factory: async_sessionmaker[AsyncSession]) ->
         }
 
 
-async def _binance_realtime_status(redis: Redis | None) -> dict:
-    """Live Dashboard Upgrade -- previously this row was permanently
-    hardcoded not-configured because no Binance client existed anywhere in
-    this codebase (see this module's own docstring). Now reads
-    RealtimePriceCollector's real Redis-published state instead of a
-    static string -- still honestly reports "not connected" if the
-    collector hasn't produced a status yet, never fabricates "healthy"."""
+async def _coinbase_realtime_status(redis: Redis | None) -> dict:
+    """Live Dashboard Upgrade -- reads RealtimePriceCollector's real
+    Redis-published state instead of a static string -- still honestly
+    reports "not connected" if the collector hasn't produced a status yet,
+    never fabricates "healthy". (Originally a "Binance" row: permanently
+    hardcoded not-configured because no client existed at all -- then a
+    real Binance client, until Binance.com's geo-blocking of datacenter/
+    cloud IPs made it permanently OFFLINE on this project's actual Railway
+    deployment. Now Coinbase -- see app.services.realtime.coinbase_client
+    and this module's own docstring.)"""
     settings = get_settings()
     if not settings.realtime_enabled:
         return {
-            "name": "Binance",
+            "name": "Coinbase",
             "configured": False,
             "healthy": False,
             "latency_ms": None,
@@ -138,7 +141,7 @@ async def _binance_realtime_status(redis: Redis | None) -> dict:
         }
     if redis is None:
         return {
-            "name": "Binance",
+            "name": "Coinbase",
             "configured": True,
             "healthy": False,
             "latency_ms": None,
@@ -151,7 +154,7 @@ async def _binance_realtime_status(redis: Redis | None) -> dict:
     most_recent = max((tick.received_at for tick in latest.values()), default=None)
     healthy = status["status"] == "connected"
     result = {
-        "name": "Binance",
+        "name": "Coinbase",
         "configured": True,
         "healthy": healthy,
         "latency_ms": None,
@@ -252,10 +255,10 @@ async def get_provider_status(
         "last_successful_update": last_report.isoformat() if last_report is not None else None,
     }
 
-    database, defillama_health, binance = await asyncio.gather(
+    database, defillama_health, coinbase = await asyncio.gather(
         _database_health(session_factory),
         _defillama_health(defillama or DefiLlamaClient()),
-        _binance_realtime_status(redis),
+        _coinbase_realtime_status(redis),
     )
 
     helius = {
@@ -272,4 +275,4 @@ async def get_provider_status(
         ),
     }
 
-    return [coingecko, fred, binance, defillama_health, helius, telegram, database, brain]
+    return [coingecko, fred, coinbase, defillama_health, helius, telegram, database, brain]

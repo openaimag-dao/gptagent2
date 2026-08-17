@@ -3,7 +3,7 @@
 // /api/realtime/prices exists for the entire page, no matter how many
 // price cards subscribe to it -- never one connection per card.
 //
-// Every value here comes from a real Binance tick relayed through the
+// Every value here comes from a real Coinbase tick relayed through the
 // backend's SSE endpoint; there is no simulated/random price update path.
 
 const RealtimeStore = (() => {
@@ -18,11 +18,11 @@ const RealtimeStore = (() => {
 
   // Two distinct connection states, kept separate on purpose: this
   // browser tab's own SSE link to *our* server can be perfectly healthy
-  // while the backend collector's upstream Binance WebSocket is down (or
+  // while the backend collector's upstream Coinbase WebSocket is down (or
   // vice versa mid-reconnect) -- collapsing them into one flag would let
   // the header claim "LIVE" while prices are actually not live at all.
   let browserStatus = "connecting"; // this tab's EventSource connection
-  let upstreamStatus = "connecting"; // backend collector's Binance connection
+  let upstreamStatus = "connecting"; // backend collector's Coinbase connection
   let connectionStatus = "connecting"; // the honest, displayed combination of both
   let latencyMs = null;
   let eventSource = null;
@@ -54,7 +54,7 @@ const RealtimeStore = (() => {
   // The tab's own SSE link is a necessary but not sufficient condition for
   // "prices are live": if it's down, that's the honest thing to show
   // (RECONNECTING/OFFLINE to our server). If it's up, what actually
-  // matters to the user is whether the backend's Binance link is up --
+  // matters to the user is whether the backend's Coinbase link is up --
   // so the upstream state passes through unchanged in that case.
   function recomputeAndPublishStatus() {
     const next = browserStatus === "connected" ? upstreamStatus : browserStatus;
@@ -173,8 +173,8 @@ const RealtimeStore = (() => {
         console.error("Bad realtime tick payload", e);
       }
     };
-    // The backend collector's own Binance connection state -- this tab's
-    // SSE link to *our* server can be healthy while Binance itself is
+    // The backend collector's own Coinbase connection state -- this tab's
+    // SSE link to *our* server can be healthy while Coinbase itself is
     // unreachable (e.g. network-restricted deployment), so the header
     // must reflect this, not just "is my browser talking to the backend."
     eventSource.addEventListener("status", (ev) => {

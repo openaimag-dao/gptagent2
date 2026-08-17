@@ -238,7 +238,7 @@ HELP_TEXT = (
     "provider health, alert history)\n"
     "/watchdog events -- recent alert detections and whether each was sent or "
     "suppressed (conviction gate or cooldown) -- the original /watchdog view\n"
-    "/watchdog providers -- provider health (CoinGecko/FRED/Binance/DefiLlama/Helius/"
+    "/watchdog providers -- provider health (CoinGecko/FRED/Coinbase/DefiLlama/Helius/"
     "Telegram/Database/Brain)\n"
     "/watchdog market -- current market/crypto/macro/on-chain overview\n"
     "/watchdog ai -- committee/consensus/expected scenario/highest risk/biggest opportunity\n"
