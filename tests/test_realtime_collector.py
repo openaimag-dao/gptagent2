@@ -1,10 +1,11 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.services.realtime.binance_client import parse_ticker_message, to_binance_pair
+from app.services.realtime.coinbase_client import parse_ticker_message, to_coinbase_product
 from app.services.realtime.collector import (
     LATEST_KEY_PREFIX,
     STATUS_CHANNEL,
@@ -33,7 +34,7 @@ class _OneTickThenFailsClient:
 def _tick(symbol="BTC", price=100000.0):
     now = datetime.now(UTC)
     return RealtimePriceTick(
-        symbol=symbol, price=price, source="binance", event_timestamp=now, received_at=now
+        symbol=symbol, price=price, source="coinbase", event_timestamp=now, received_at=now
     )
 
 
@@ -113,29 +114,45 @@ async def test_run_reports_connected_status_while_ticks_are_flowing():
     assert any('"status": "connected"' in payload for _key, payload in set_calls)
 
 
-def test_to_binance_pair_lowercases_and_appends_usdt():
-    assert to_binance_pair("BTC") == "btcusdt"
-    assert to_binance_pair(" eth ") == "ethusdt"
+def test_to_coinbase_product_uppercases_and_appends_usd():
+    assert to_coinbase_product("btc") == "BTC-USD"
+    assert to_coinbase_product(" eth ") == "ETH-USD"
 
 
-def test_parse_ticker_message_normalizes_a_combined_stream_envelope():
-    raw = (
-        '{"stream": "btcusdt@ticker", "data": '
-        '{"s": "BTCUSDT", "c": "100000.5", "p": "1200.0", "P": "1.22", '
-        '"v": "50000", "h": "101000", "l": "98000", "E": 1735689600000}}'
+def test_parse_ticker_message_normalizes_a_coinbase_ticker_envelope():
+    raw = json.dumps(
+        {
+            "type": "ticker",
+            "product_id": "BTC-USD",
+            "price": "100000.5",
+            "open_24h": "98800.5",
+            "volume_24h": "50000",
+            "high_24h": "101000",
+            "low_24h": "98000",
+            "time": "2026-01-01T00:00:00.000000Z",
+        }
     )
     tick = parse_ticker_message(raw)
     assert tick is not None
     assert tick.symbol == "BTC"
     assert tick.price == 100000.5
-    assert tick.change_24h == 1200.0
-    assert tick.change_pct_24h == 1.22
+    # change_24h/change_pct_24h are derived from price/open_24h -- Coinbase's
+    # ticker payload has no ready-made 24h-change field, unlike Binance.
+    assert tick.change_24h == pytest.approx(1200.0)
+    assert tick.change_pct_24h == pytest.approx((1200.0 / 98800.5) * 100)
     assert tick.volume_24h == 50000.0
     assert tick.high_24h == 101000.0
     assert tick.low_24h == 98000.0
-    assert tick.source == "binance"
+    assert tick.source == "coinbase"
+
+
+def test_parse_ticker_message_ignores_non_ticker_messages():
+    # Coinbase sends a subscription ack right after subscribing, and can
+    # send heartbeat/error frames too -- none of these are price ticks.
+    assert parse_ticker_message(json.dumps({"type": "subscriptions", "channels": []})) is None
+    assert parse_ticker_message(json.dumps({"type": "error", "message": "bad request"})) is None
 
 
 def test_parse_ticker_message_returns_none_for_malformed_input_instead_of_raising():
     assert parse_ticker_message("not json at all") is None
-    assert parse_ticker_message('{"stream": "btcusdt@ticker", "data": {}}') is None
+    assert parse_ticker_message(json.dumps({"type": "ticker"})) is None

@@ -56,7 +56,7 @@ async def test_get_provider_status_returns_all_eight_providers():
     assert names == {
         "CoinGecko",
         "FRED",
-        "Binance",
+        "Coinbase",
         "DefiLlama",
         "Helius",
         "Telegram",
@@ -65,7 +65,7 @@ async def test_get_provider_status_returns_all_eight_providers():
     }
 
 
-async def test_binance_not_configured_when_realtime_disabled():
+async def test_coinbase_not_configured_when_realtime_disabled():
     session_factory = _session_factory([None, None, None, None])
     redis = AsyncMock()
     redis.get.return_value = None
@@ -76,12 +76,12 @@ async def test_binance_not_configured_when_realtime_disabled():
     ):
         providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
-    binance = next(p for p in providers if p["name"] == "Binance")
-    assert binance["configured"] is False
-    assert "disabled" in binance["reason"]
+    coinbase = next(p for p in providers if p["name"] == "Coinbase")
+    assert coinbase["configured"] is False
+    assert "disabled" in coinbase["reason"]
 
 
-async def test_binance_unhealthy_when_collector_has_never_reported_status():
+async def test_coinbase_unhealthy_when_collector_has_never_reported_status():
     session_factory = _session_factory([None, None, None, None])
     redis = AsyncMock()
     redis.get.return_value = None
@@ -89,13 +89,13 @@ async def test_binance_unhealthy_when_collector_has_never_reported_status():
     with patch("app.services.watchdog.provider_health.get_settings", return_value=_settings()):
         providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
-    binance = next(p for p in providers if p["name"] == "Binance")
-    assert binance["configured"] is True
-    assert binance["healthy"] is False
-    assert "offline" in binance["reason"]
+    coinbase = next(p for p in providers if p["name"] == "Coinbase")
+    assert coinbase["configured"] is True
+    assert coinbase["healthy"] is False
+    assert "offline" in coinbase["reason"]
 
 
-async def test_binance_healthy_when_collector_reports_connected():
+async def test_coinbase_healthy_when_collector_reports_connected():
     import json
 
     session_factory = _session_factory([None, None, None, None])
@@ -109,7 +109,7 @@ async def test_binance_healthy_when_collector_reports_connected():
                 {
                     "symbol": "BTC",
                     "price": 100000.0,
-                    "source": "binance",
+                    "source": "coinbase",
                     "event_timestamp": "2026-01-01T00:00:00+00:00",
                     "received_at": "2026-01-01T00:00:00+00:00",
                 }
@@ -121,11 +121,11 @@ async def test_binance_healthy_when_collector_reports_connected():
     with patch("app.services.watchdog.provider_health.get_settings", return_value=_settings()):
         providers = await get_provider_status(session_factory, redis, defillama=_defillama())
 
-    binance = next(p for p in providers if p["name"] == "Binance")
-    assert binance["configured"] is True
-    assert binance["healthy"] is True
-    assert binance["last_successful_update"] is not None
-    assert "reason" not in binance
+    coinbase = next(p for p in providers if p["name"] == "Coinbase")
+    assert coinbase["configured"] is True
+    assert coinbase["healthy"] is True
+    assert coinbase["last_successful_update"] is not None
+    assert "reason" not in coinbase
 
 
 async def test_defillama_healthy_when_tvl_fetch_succeeds():
@@ -197,7 +197,7 @@ async def test_fred_not_configured_when_no_api_key():
 
 def _redis_get_stub(reconnect_count: str):
     # Blanket-returning a reconnect-count string for every redis.get() call
-    # would also feed it to _binance_realtime_status's realtime:status/
+    # would also feed it to _coinbase_realtime_status's realtime:status/
     # realtime:latest:* reads, which expect JSON -- scope the stub value to
     # the actual reconnect-counter key and return None (honest "no data")
     # for everything else, same as the rest of this file's default mocks.

@@ -1,4 +1,4 @@
-"""Runs the Binance WebSocket stream forever (until cancelled), publishing
+"""Runs the Coinbase WebSocket stream forever (until cancelled), publishing
 every tick to Redis for /api/realtime to fan out over SSE. Reconnects with
 a capped exponential backoff on disconnect -- never an unbounded or tight
 retry loop (see app.config.settings.realtime_reconnect_backoff_seconds).
@@ -13,7 +13,7 @@ from redis.asyncio import Redis
 
 from app.config import get_settings
 from app.database.redis import get_redis
-from app.services.realtime.binance_client import BinanceRealtimeClient
+from app.services.realtime.coinbase_client import CoinbaseRealtimeClient
 from app.services.realtime.config import parse_backoff_seconds, parse_watchlist
 from app.services.realtime.schemas import ConnectionStatus, RealtimePriceTick
 
@@ -32,7 +32,7 @@ _LATEST_TTL_SECONDS = 3600
 class RealtimePriceCollector:
     def __init__(
         self,
-        client: BinanceRealtimeClient,
+        client: CoinbaseRealtimeClient,
         redis: Redis,
         backoff_seconds: list[float],
     ) -> None:
@@ -82,5 +82,5 @@ def build_realtime_collector() -> RealtimePriceCollector:
     settings = get_settings()
     watchlist = parse_watchlist(settings.realtime_watchlist)
     backoff = parse_backoff_seconds(settings.realtime_reconnect_backoff_seconds)
-    client = BinanceRealtimeClient(settings.realtime_ws_url, watchlist)
+    client = CoinbaseRealtimeClient(settings.realtime_ws_url, watchlist)
     return RealtimePriceCollector(client, get_redis(), backoff)

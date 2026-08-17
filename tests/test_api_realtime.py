@@ -22,7 +22,11 @@ def _settings_stub(**overrides):
 def _tick(symbol="BTC", price=100000.0, seconds_ago=0.0):
     received = datetime.now(UTC) - timedelta(seconds=seconds_ago)
     return RealtimePriceTick(
-        symbol=symbol, price=price, source="binance", event_timestamp=received, received_at=received
+        symbol=symbol,
+        price=price,
+        source="coinbase",
+        event_timestamp=received,
+        received_at=received,
     )
 
 

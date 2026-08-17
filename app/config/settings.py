@@ -272,13 +272,19 @@ class Settings(BaseSettings):
     calibration_reliable_sample_size: int = 100
 
     # ---- Live Dashboard Upgrade: realtime price stream ----
-    # Binance's public market-data WebSocket needs no API key and has no
-    # meaningful rate limit for a handful of ticker streams -- unlike
-    # CoinGecko (the sole REST price source, see aggregator.py), which is
-    # already shared with the 500-symbol Scanner's free-tier quota.
+    # Coinbase Exchange's public market-data WebSocket needs no API key and
+    # has no meaningful rate limit for a handful of ticker streams --
+    # unlike CoinGecko (the sole REST price source, see aggregator.py),
+    # which is already shared with the 500-symbol Scanner's free-tier
+    # quota. Originally built against Binance's combined-stream WebSocket,
+    # but Binance.com geo-blocks datacenter/cloud-hosting IP ranges as a
+    # matter of regulatory policy -- this surfaced as a permanently
+    # OFFLINE feed on this project's actual Railway deployment. Coinbase
+    # is a US-licensed exchange with no comparable reason to block
+    # US-origin/cloud traffic.
     realtime_enabled: bool = True
     realtime_watchlist: str = "BTC,ETH,SOL,BNB,XRP"
-    realtime_ws_url: str = "wss://stream.binance.com:9443"
+    realtime_ws_url: str = "wss://ws-feed.exchange.coinbase.com"
     # Comma-separated seconds; reconnect attempts walk this list and hold
     # at the last value rather than growing unbounded or tight-looping.
     realtime_reconnect_backoff_seconds: str = "1,2,5,10,30"
