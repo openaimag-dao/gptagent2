@@ -29,7 +29,9 @@ from app.services.forecast.engine import (
     compute_probability_distribution,
     compute_scenario_cases,
     derive_learning_insights,
+    derive_official_calibration_curve,
     derive_regime_label,
+    derive_regime_performance_breakdown,
     derive_risk_meter,
     grade_confidence,
     grade_direction,
@@ -37,6 +39,7 @@ from app.services.forecast.engine import (
     grade_price_forecasts,
     price_forecast_quality_multiplier,
     summarize_forecast_accuracy,
+    summarize_official_performance,
 )
 
 
@@ -1319,3 +1322,146 @@ async def test_get_learning_insights_joins_agent_forecasts_regime_and_outcome():
         insights = await engine.get_learning_insights(("BTC",))
 
     assert insights == []
+
+
+# ---- Forecasting 2.0: Forecast Details (Page 3) -----------------------------
+
+
+async def test_get_forecast_detail_returns_snapshot_and_agents():
+    engine, deps, session = _build_engine()
+    snapshot = SimpleNamespace(id=7, symbol="BTC", is_official_daily=True)
+    agent_row = SimpleNamespace(forecast_id=7, agent_name="Technical Analysis")
+    session.scalar = AsyncMock(return_value=snapshot)
+    session.scalars = AsyncMock(return_value=[agent_row])
+
+    detail = await engine.get_forecast_detail(7)
+
+    assert detail == {"forecast": snapshot, "agents": [agent_row]}
+
+
+async def test_get_forecast_detail_none_when_id_not_found():
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(return_value=None)
+
+    detail = await engine.get_forecast_detail(999)
+
+    assert detail is None
+    session.scalars.assert_not_called()  # no wasted second query
+
+
+# ---- Forecasting 2.0: Performance (Page 4) ----------------------------------
+
+
+def test_summarize_official_performance_empty_input():
+    assert summarize_official_performance([]) == {
+        "graded_count": 0,
+        "direction_accuracy_pct": None,
+        "avg_abs_error_pct": None,
+        "target_reached_rate_pct": None,
+    }
+
+
+def test_summarize_official_performance_excludes_missing_error_and_target_fields():
+    # Two graded rows: one has error_pct/target_reached, the other (a
+    # Neutral call) has neither -- those None fields must not drag the
+    # averages/rates down or be silently counted as a miss.
+    graded = [
+        (True, 2.0, True),
+        (False, None, None),
+    ]
+    result = summarize_official_performance(graded)
+    assert result["graded_count"] == 2
+    assert result["direction_accuracy_pct"] == 50.0
+    assert result["avg_abs_error_pct"] == 2.0
+    assert result["target_reached_rate_pct"] == 100.0
+
+
+def test_summarize_official_performance_averages_absolute_error():
+    graded = [(True, -4.0, True), (True, 2.0, False)]
+    result = summarize_official_performance(graded)
+    assert result["avg_abs_error_pct"] == 3.0  # mean(|-4|, |2|)
+    assert result["target_reached_rate_pct"] == 50.0
+
+
+def test_derive_official_calibration_curve_buckets_by_stated_probability():
+    graded = [(65, True), (68, True), (72, False)]
+    curve = derive_official_calibration_curve(graded, bin_width=20)
+    assert len(curve) == 1
+    bucket = curve[0]
+    assert bucket["probability_bucket"] == "60-80%"
+    assert bucket["count"] == 3
+    assert bucket["avg_stated_probability_pct"] == round((65 + 68 + 72) / 3, 2)
+    assert bucket["observed_accuracy_pct"] == round(100 * 2 / 3, 2)
+    assert bucket["sample_sufficiency"] == "insufficient"  # far below the N=30 floor
+
+
+def test_derive_official_calibration_curve_empty_input():
+    assert derive_official_calibration_curve([], bin_width=20) == []
+
+
+def test_derive_official_calibration_curve_clamps_100_pct_into_last_bucket():
+    curve = derive_official_calibration_curve([(100, True)], bin_width=20)
+    assert curve[0]["probability_bucket"] == "80-100%"
+
+
+def test_derive_regime_performance_breakdown_gates_small_groups():
+    graded = [("risk_on", True)] * 2 + [("risk_off", True)] * 5 + [("risk_off", False)] * 3
+    result = derive_regime_performance_breakdown(graded, min_sample_size=5)
+    assert result == [
+        {
+            "regime": "risk_off",
+            "sample_size": 8,
+            "accuracy_pct": 62.5,
+            "insufficient_sample": False,
+        },
+        {
+            "regime": "risk_on",
+            "sample_size": 2,
+            "accuracy_pct": None,
+            "insufficient_sample": True,
+        },
+    ]
+
+
+def test_derive_regime_performance_breakdown_empty_input():
+    assert derive_regime_performance_breakdown([], min_sample_size=5) == []
+
+
+async def test_get_official_performance_combines_summary_calibration_and_regime():
+    engine, deps, session = _build_engine()
+    session.execute = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                probability_pct=70,
+                direction_correct=True,
+                error_pct=1.5,
+                target_reached=True,
+                regime_at_forecast="risk_on",
+            ),
+            SimpleNamespace(
+                probability_pct=72,
+                direction_correct=False,
+                error_pct=-3.0,
+                target_reached=False,
+                regime_at_forecast="risk_on",
+            ),
+        ]
+    )
+
+    with patch(
+        "app.services.forecast.engine.get_settings",
+        return_value=SimpleNamespace(agent_performance_min_sample_size=1),
+    ):
+        result = await engine.get_official_performance(("BTC",))
+
+    assert result["summary"]["graded_count"] == 2
+    assert result["summary"]["direction_accuracy_pct"] == 50.0
+    assert len(result["calibration"]) == 1
+    assert result["regime_breakdown"] == [
+        {
+            "regime": "risk_on",
+            "sample_size": 2,
+            "accuracy_pct": 50.0,
+            "insufficient_sample": False,
+        }
+    ]

@@ -1544,7 +1544,7 @@ async function renderForecast2() {
       table(
         ["Date", "Asset", "Price", "Direction", "Probability", "Target", "Actual", "Result"],
         rows.map((f) => [
-          f.official_forecast_date || "n/a",
+          el("a", { href: `#forecast2detail?id=${f.id}` }, f.official_forecast_date || "n/a"),
           f.symbol,
           fmtNum(f.current_price),
           f.direction,
@@ -1565,6 +1565,8 @@ async function renderForecast2() {
   nodes.push(
     el("p", { class: "sub nav-pointer" }, [
       "See also: ",
+      el("a", { href: "#forecast2performance" }, "Performance"),
+      " · ",
       el("a", { href: "#forecast2agents" }, "Agent Performance"),
       " · ",
       el("a", { href: "#forecast2errors" }, "Error Lab"),
@@ -1572,6 +1574,265 @@ async function renderForecast2() {
       el("a", { href: "#forecast2learning" }, "Learning Center"),
     ])
   );
+
+  return nodes;
+}
+
+// ---- Forecasting 2.0: Forecast Details (Page 3) -------------------------
+// Drill-down for ONE official daily forecast, reached by clicking its date
+// in the Forecast Table above: the full input snapshot (checkpoints,
+// distribution, key levels, which history candle it was computed from) and
+// every AgentForecast row regardless of outcome -- unlike Error Lab, which
+// only shows agent evidence for calls that graded wrong.
+
+async function renderForecastDetail(params) {
+  const id = params && params.get("id");
+  const nodes = [
+    el("h1", {}, "Forecast Details"),
+    el("p", { class: "sub nav-pointer" }, [el("a", { href: "#forecast2" }, "<- Back to Forecast Table")]),
+  ];
+
+  if (!id) {
+    nodes.push(el("p", { class: "error" }, "No forecast selected."));
+    return nodes;
+  }
+
+  const data = await safe(`/api/forecast/official/detail/${id}`);
+  if (!data) {
+    nodes.push(el("p", { class: "error" }, "That forecast could not be found."));
+    return nodes;
+  }
+
+  const f = data.forecast;
+  const label = forecastOutcomeLabel(f);
+  nodes.push(el("h2", {}, `${f.symbol} -- ${f.official_forecast_date || "n/a"}`));
+  nodes.push(
+    el("div", { class: "grid" }, [
+      el("div", { class: "card" }, [
+        el("div", { class: "label" }, "Call"),
+        el("div", { class: "value" }, `${f.direction} ${f.probability_pct}%`),
+        el("div", { class: "sub" }, decisionPill(label, forecastOutcomeTone(label))),
+      ]),
+      el("div", { class: "card" }, [
+        el("div", { class: "label" }, "Price"),
+        el("div", { class: "value" }, `${fmtNum(f.current_price)} -> ${fmtNum(f.target_price)}`),
+        el(
+          "div",
+          { class: "sub" },
+          `Actual: ${f.realized_price != null ? fmtNum(f.realized_price) : "pending"}`
+        ),
+      ]),
+      el("div", { class: "card" }, [
+        el("div", { class: "label" }, "Error / Excursions"),
+        el(
+          "div",
+          { class: "value" },
+          f.error_pct != null ? fmtPct(f.error_pct) : "pending"
+        ),
+        el(
+          "div",
+          { class: "sub" },
+          `MFE ${f.max_favorable_excursion_pct != null ? fmtPct(f.max_favorable_excursion_pct) : "n/a"} ` +
+            `/ MAE ${f.max_adverse_excursion_pct != null ? fmtPct(f.max_adverse_excursion_pct) : "n/a"}`
+        ),
+      ]),
+      el("div", { class: "card" }, [
+        el("div", { class: "label" }, "Regime / Status"),
+        el("div", { class: "value" }, f.regime_at_forecast || "n/a"),
+        el("div", { class: "sub" }, `${f.forecast_status}${f.error_type ? ` -- ${f.error_type}` : ""}`),
+      ]),
+    ])
+  );
+
+  nodes.push(el("h2", {}, "Input Snapshot"));
+  nodes.push(
+    el("ul", { class: "structured-list" }, [
+      el("li", {}, `Reference candle: ${f.reference_timestamp || "n/a"}`),
+      el("li", {}, `Computed at: ${f.computed_at}`),
+      el("li", {}, `Forecast version: ${f.forecast_version}`),
+      el(
+        "li",
+        {},
+        `Key levels: ${
+          f.key_levels && Object.keys(f.key_levels).length
+            ? Object.entries(f.key_levels)
+                .map(([k, v]) => `${k}=${v}`)
+                .join(", ")
+            : "n/a"
+        }`
+      ),
+      el(
+        "li",
+        {},
+        `Checkpoints: ${
+          f.checkpoints && f.checkpoints.length
+            ? f.checkpoints.map((c) => JSON.stringify(c)).join(" | ")
+            : "n/a"
+        }`
+      ),
+      el(
+        "li",
+        {},
+        `Distribution: ${
+          f.distribution && f.distribution.length
+            ? f.distribution.map((c) => JSON.stringify(c)).join(" | ")
+            : "n/a"
+        }`
+      ),
+    ])
+  );
+
+  if (f.invalidation_reason) {
+    nodes.push(el("h2", {}, "Invalidation"));
+    nodes.push(
+      el(
+        "p",
+        { class: "sub" },
+        `${f.invalidation_reason} (at ${f.invalidated_at || "n/a"})`
+      )
+    );
+  }
+
+  nodes.push(el("h2", {}, "Baseline Comparisons"));
+  nodes.push(
+    el("ul", { class: "structured-list" }, [
+      el(
+        "li",
+        {},
+        `Momentum baseline (naive "last move continues"): ${
+          f.momentum_baseline_correct == null ? "not graded yet" : f.momentum_baseline_correct ? "correct" : "wrong"
+        }`
+      ),
+      el(
+        "li",
+        {},
+        `Historical-mean baseline error: ${
+          f.historical_mean_baseline_error_pct != null
+            ? fmtPct(f.historical_mean_baseline_error_pct)
+            : "not graded yet"
+        }`
+      ),
+    ])
+  );
+
+  nodes.push(el("h2", {}, "Per-Agent Evidence"));
+  if (data.agents.length) {
+    nodes.push(
+      table(
+        ["Agent", "Direction", "Confidence"],
+        data.agents.map((a) => [
+          a.agent_name,
+          a.direction || "n/a",
+          a.confidence_pct != null ? `${a.confidence_pct}%` : "n/a",
+        ])
+      )
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No per-agent evidence recorded for this forecast."));
+  }
+
+  return nodes;
+}
+
+// ---- Forecasting 2.0: Performance (Page 4) -------------------------------
+// The overall (not per-agent) scorecard: summary stats, a probability-
+// calibration curve, and accuracy by regime, across every graded official
+// daily forecast. Every bucket/group below its own configured minimum
+// sample size is shown as INSUFFICIENT SAMPLE rather than a number -- same
+// rule as Agent Performance/Learning Center, applied to a coarser grouping.
+
+async function renderForecastPerformance() {
+  const nodes = [
+    el("h1", {}, "Performance"),
+    el(
+      "p",
+      { class: "sub" },
+      "Overall accuracy and calibration across every graded official daily forecast -- " +
+        "the top-level scorecard, distinct from the per-agent breakdown on Agent Performance."
+    ),
+  ];
+
+  const data = await safe("/api/forecast/official/performance");
+  if (!data || !data.summary || data.summary.graded_count === 0) {
+    nodes.push(
+      el(
+        "p",
+        { class: "sub" },
+        "No graded official daily forecasts yet -- this page fills in as forecasts resolve."
+      )
+    );
+    return nodes;
+  }
+
+  const s = data.summary;
+  nodes.push(
+    el("div", { class: "grid" }, [
+      el("div", { class: "card" }, [
+        el("div", { class: "label" }, "Graded Forecasts"),
+        el("div", { class: "value" }, String(s.graded_count)),
+      ]),
+      el("div", { class: "card" }, [
+        el("div", { class: "label" }, "Direction Accuracy"),
+        el(
+          "div",
+          { class: `value ${changeClass(s.direction_accuracy_pct - 50)}` },
+          `${s.direction_accuracy_pct}%`
+        ),
+      ]),
+      el("div", { class: "card" }, [
+        el("div", { class: "label" }, "Avg |Error|"),
+        el("div", { class: "value" }, s.avg_abs_error_pct != null ? fmtPct(s.avg_abs_error_pct) : "n/a"),
+      ]),
+      el("div", { class: "card" }, [
+        el("div", { class: "label" }, "Target Reached Rate"),
+        el(
+          "div",
+          { class: "value" },
+          s.target_reached_rate_pct != null ? `${s.target_reached_rate_pct}%` : "n/a"
+        ),
+      ]),
+    ])
+  );
+
+  nodes.push(el("h2", {}, "Calibration Curve"));
+  if (data.calibration.length) {
+    nodes.push(
+      table(
+        ["Stated Probability", "Count", "Avg Stated", "Observed Accuracy", "Gap", "Sufficiency"],
+        data.calibration.map((b) => [
+          b.probability_bucket,
+          String(b.count),
+          `${b.avg_stated_probability_pct}%`,
+          `${b.observed_accuracy_pct}%`,
+          fmtPct(b.calibration_gap_pct),
+          decisionPill(
+            b.sample_sufficiency.toUpperCase(),
+            b.sample_sufficiency === "reliable" ? "good" : b.sample_sufficiency === "usable" ? "neutral" : "bad"
+          ),
+        ])
+      )
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No calibration buckets yet."));
+  }
+
+  nodes.push(el("h2", {}, "Accuracy By Regime"));
+  if (data.regime_breakdown.length) {
+    nodes.push(
+      table(
+        ["Regime", "Sample Size", "Accuracy"],
+        data.regime_breakdown.map((r) => [
+          r.regime,
+          String(r.sample_size),
+          r.insufficient_sample
+            ? decisionPill("INSUFFICIENT SAMPLE", "neutral")
+            : el("span", { class: changeClass(r.accuracy_pct - 50) }, `${r.accuracy_pct}%`),
+        ])
+      )
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No regime-tagged graded forecasts yet."));
+  }
 
   return nodes;
 }
@@ -4616,7 +4877,7 @@ async function renderSettings() {
 }
 
 const PAGES = {
-  overview: renderOverview, forecast2: renderForecast2, forecast2agents: renderForecastAgents, forecast2errors: renderForecastErrorLab, forecast2learning: renderForecastLearningCenter, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
+  overview: renderOverview, forecast2: renderForecast2, forecast2detail: renderForecastDetail, forecast2performance: renderForecastPerformance, forecast2agents: renderForecastAgents, forecast2errors: renderForecastErrorLab, forecast2learning: renderForecastLearningCenter, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
   patterns: renderPatterns, breakout: renderBreakout, features: renderFeatures, liquidity: renderLiquidity, sentiment: renderSentiment,

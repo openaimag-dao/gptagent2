@@ -38,6 +38,7 @@ from app.telegram.formatters import (
     format_market_summary,
     format_monthly_performance,
     format_no_trade_verdict,
+    format_official_daily_digest,
     format_onchain,
     format_opportunities,
     format_quality,
@@ -716,6 +717,40 @@ def test_format_onchain_includes_solana_note():
     }
     text = format_onchain(snapshot)
     assert "Solana-specific coverage needs Helius." in text
+
+
+def test_format_official_daily_digest_no_forecasts():
+    text = format_official_daily_digest([], "2026-08-17")
+    assert "2026-08-17" in text
+    assert "No official forecasts could be generated" in text
+
+
+def test_format_official_daily_digest_one_line_per_symbol():
+    payloads = [
+        {
+            "symbol": "BTC",
+            "direction": "Bullish",
+            "probability_pct": 68,
+            "current_price": 65000.1234,
+            "target_price": 66500.5,
+            "expected_change_pct": 2.31,
+        },
+        {
+            "symbol": "SOL",
+            "direction": "Bearish",
+            "probability_pct": 55,
+            "current_price": 150.0,
+            "target_price": 145.0,
+            "expected_change_pct": -3.33,
+        },
+    ]
+    text = format_official_daily_digest(payloads, "2026-08-17")
+    assert "2026-08-17" in text
+    assert "BTC: Bullish 68%" in text
+    assert "65,000.12 -> 66,500.50" in text
+    assert "+2.31%" in text
+    assert "SOL: Bearish 55%" in text
+    assert "-3.33%" in text
 
 
 def test_format_committee_none():

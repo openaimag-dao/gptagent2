@@ -591,15 +591,34 @@ async def generate_official_daily_forecast_job() -> None:
     to enforce the one-per-day guarantee (idempotent against a retried
     tick -- see _persist's own docstring). A symbol with insufficient
     synced history (LINK/UNI until their history backfills) honestly
-    computes nothing this cycle rather than fabricating a forecast."""
+    computes nothing this cycle rather than fabricating a forecast.
+
+    Once every symbol has been attempted, broadcasts a Telegram digest of
+    whatever forecasts this cycle actually produced (see
+    format_official_daily_digest) -- the exact same payloads compute()
+    already returned, no re-fetch. broadcast_text() itself no-ops when
+    Telegram isn't configured, so this is a no-op deployment with no
+    broadcast chat ids configured."""
+    from app.telegram.broadcast import broadcast_text
+    from app.telegram.formatters import format_official_daily_digest
+
     engine = build_forecast_engine()
+    payloads = []
     for symbol in official_forecast_symbols():
         try:
             payload = await engine.compute(symbol, "24h", is_official_daily=True)
             if payload is None:
                 logger.info("Official daily forecast %s/24h: insufficient data this cycle", symbol)
+            else:
+                payloads.append(payload)
         except Exception:
             logger.exception("Official daily forecast computation failed for %s/24h", symbol)
+
+    try:
+        digest = format_official_daily_digest(payloads, datetime.now(UTC).date().isoformat())
+        await broadcast_text(digest)
+    except Exception:
+        logger.exception("Official daily forecast digest broadcast failed")
 
 
 async def grade_alert_performance_job() -> None:

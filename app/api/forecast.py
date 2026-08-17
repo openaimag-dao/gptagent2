@@ -17,6 +17,7 @@ def _official_forecast_symbols() -> tuple[str, ...]:
 
 def _serialize_official(row) -> dict:
     return {
+        "id": row.id,
         "symbol": row.symbol,
         "available": True,
         "current_price": float(row.current_price),
@@ -44,6 +45,37 @@ def _serialize_official(row) -> dict:
         "error_type": row.error_type,
         "evaluated_at": row.evaluated_at.isoformat() if row.evaluated_at is not None else None,
     }
+
+
+def _serialize_official_detail(row) -> dict:
+    """Page 3 (Forecast Details): every field `_serialize_official`
+    exposes plus the full input snapshot and lineage a drill-down needs --
+    checkpoints/distribution/key_levels (the actual model output that
+    produced target_price/direction), reference_timestamp (which history
+    candle this was computed from), forecast_version/invalidation fields
+    (is this still the live call for its day, or superseded), and the two
+    baseline comparisons already graded alongside it."""
+    payload = _serialize_official(row)
+    payload.update(
+        {
+            "checkpoints": row.checkpoints,
+            "distribution": row.distribution,
+            "key_levels": row.key_levels,
+            "reference_timestamp": row.reference_timestamp.isoformat()
+            if row.reference_timestamp is not None
+            else None,
+            "forecast_version": row.forecast_version,
+            "invalidation_reason": row.invalidation_reason,
+            "invalidated_at": row.invalidated_at.isoformat()
+            if row.invalidated_at is not None
+            else None,
+            "momentum_baseline_correct": row.momentum_baseline_correct,
+            "historical_mean_baseline_error_pct": float(row.historical_mean_baseline_error_pct)
+            if row.historical_mean_baseline_error_pct is not None
+            else None,
+        }
+    )
+    return payload
 
 
 def _next_refresh() -> str | None:
@@ -171,6 +203,17 @@ async def get_agent_performance() -> dict:
     return {"min_sample_size": get_settings().agent_performance_min_sample_size, "rows": rows}
 
 
+@router.get("/official/performance")
+async def get_official_performance() -> dict:
+    """Forecasting 2.0 (Page 4, Performance) -- the overall scorecard
+    across every graded official daily forecast in official_forecast_symbols:
+    summary stats, a probability-calibration curve, and accuracy broken
+    down by regime. Distinct from /official/agent-performance (per-agent)
+    and /official/learning-center (needs two regimes per agent)."""
+    engine = build_forecast_engine()
+    return await engine.get_official_performance(_official_forecast_symbols())
+
+
 @router.get("/official/error-lab")
 async def get_error_lab(limit: int = Query(20, le=100)) -> dict:
     """Forecasting 2.0 (Part 27/28 / Page 6) -- the most recent official
@@ -193,6 +236,33 @@ async def get_error_lab(limit: int = Query(20, le=100)) -> dict:
             }
             for entry in entries
         ]
+    }
+
+
+@router.get("/official/detail/{forecast_id}")
+async def get_forecast_detail(forecast_id: int) -> dict:
+    """Forecasting 2.0 (Page 3, Forecast Details): full input snapshot and
+    complete per-agent evidence for one official daily forecast. 404 when
+    forecast_id doesn't match an official daily row -- never a fabricated
+    detail page for an id that doesn't exist or isn't official."""
+    engine = build_forecast_engine()
+    detail = await engine.get_forecast_detail(forecast_id)
+    if detail is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No official daily forecast with id {forecast_id}.",
+        )
+    return {
+        "forecast": _serialize_official_detail(detail["forecast"]),
+        "agents": [
+            {
+                "agent_name": a.agent_name,
+                "direction": a.direction,
+                "confidence_pct": a.confidence_pct,
+                "key_factors": a.key_factors,
+            }
+            for a in detail["agents"]
+        ],
     }
 
 
