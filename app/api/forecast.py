@@ -1,10 +1,49 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, HTTPException, Query
 
+from app.config import get_settings
 from app.scheduler.jobs import FORECAST_JOB_ID, get_job_next_run
 from app.services.explainability.engine import build_explainability_engine
 from app.services.forecast.engine import HORIZONS, build_forecast_engine
+from app.services.realtime.config import parse_watchlist
 
 router = APIRouter(prefix="/api/forecast", tags=["forecast"])
+
+
+def _official_forecast_symbols() -> tuple[str, ...]:
+    return tuple(parse_watchlist(get_settings().official_forecast_symbols))
+
+
+def _serialize_official(row) -> dict:
+    return {
+        "symbol": row.symbol,
+        "available": True,
+        "current_price": float(row.current_price),
+        "target_price": float(row.target_price),
+        "expected_change_pct": float(row.expected_change_pct),
+        "direction": row.direction,
+        "probability_pct": row.probability_pct,
+        "confidence_tier": row.confidence_tier,
+        "regime_at_forecast": row.regime_at_forecast,
+        "official_forecast_date": row.official_forecast_date.isoformat()
+        if row.official_forecast_date is not None
+        else None,
+        "computed_at": row.computed_at.isoformat(),
+        "forecast_status": row.forecast_status,
+        "realized_price": float(row.realized_price) if row.realized_price is not None else None,
+        "error_pct": float(row.error_pct) if row.error_pct is not None else None,
+        "direction_correct": row.direction_correct,
+        "target_reached": row.target_reached,
+        "max_favorable_excursion_pct": float(row.max_favorable_excursion_pct)
+        if row.max_favorable_excursion_pct is not None
+        else None,
+        "max_adverse_excursion_pct": float(row.max_adverse_excursion_pct)
+        if row.max_adverse_excursion_pct is not None
+        else None,
+        "error_type": row.error_type,
+        "evaluated_at": row.evaluated_at.isoformat() if row.evaluated_at is not None else None,
+    }
 
 
 def _next_refresh() -> str | None:
@@ -86,3 +125,35 @@ async def get_forecast_history(symbol: str, limit: int = Query(20, le=100)) -> d
             for s in snapshots
         ],
     }
+
+
+@router.get("/official/daily")
+async def get_official_daily_forecasts() -> dict:
+    """Forecasting 2.0 (Part 34 Page 1) -- today's (UTC) one official 24h
+    forecast per asset in official_forecast_symbols (BTC/SOL/LINK/UNI by
+    default). A symbol with no row for today (insufficient data, or the
+    daily job hasn't fired yet) is reported as `available: false`, never
+    a fabricated forecast."""
+    engine = build_forecast_engine()
+    symbols = _official_forecast_symbols()
+    by_symbol = await engine.get_official_daily(symbols)
+    return {
+        "date": datetime.now(UTC).date().isoformat(),
+        "forecasts": [
+            _serialize_official(by_symbol[symbol])
+            if symbol in by_symbol
+            else {"symbol": symbol, "available": False}
+            for symbol in symbols
+        ],
+    }
+
+
+@router.get("/{symbol}/official/history")
+async def get_official_forecast_history(symbol: str, limit: int = Query(30, le=100)) -> dict:
+    """Forecasting 2.0 (Part 34 Page 2/3) -- past official daily 24h
+    forecasts for one symbol, most recent first, with graded outcomes
+    where available."""
+    symbol = symbol.upper()
+    engine = build_forecast_engine()
+    rows = await engine.get_official_history(symbol, limit)
+    return {"symbol": symbol, "forecasts": [_serialize_official(r) for r in rows]}

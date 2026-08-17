@@ -32,6 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.database.models import (
+    AgentForecast,
     EconomicCalendarEvent,
     MarketRegimeSnapshot,
     PriceForecastSnapshot,
@@ -558,6 +559,51 @@ def check_target_reached(
     return any(float(row.low) <= target_price for row in window_rows)
 
 
+def compute_excursions(
+    direction: str, current_price: float, window_rows: list
+) -> tuple[float | None, float | None]:
+    """Pure function: Forecasting 2.0 (Part 20/21) -- path analysis, not
+    just the final-price error_pct: the best (MFE) and worst (MAE)
+    percentage excursion from current_price during the same window
+    check_target_reached already walks (real intrabar high/low, zero extra
+    I/O). Signed relative to `direction`, matching the exact convention
+    AlertPerformanceGrade's own max_favorable/adverse_excursion_pct already
+    use elsewhere in this codebase: for a Bullish call, MFE is the highest
+    % gain reached (positive) and MAE is the deepest % drawdown (negative);
+    for Bearish these invert (MFE negative -- price fell, as the call
+    implied -- MAE positive). Both None for a Neutral call or an empty
+    window -- there is no "favorable side" to measure."""
+    if _DIRECTION_SIGN.get(direction, 0) == 0 or not window_rows:
+        return None, None
+    max_up_pct = 100 * (max(float(r.high) for r in window_rows) - current_price) / current_price
+    max_down_pct = 100 * (min(float(r.low) for r in window_rows) - current_price) / current_price
+    if _DIRECTION_SIGN[direction] > 0:
+        return round(max_up_pct, 4), round(max_down_pct, 4)
+    return round(max_down_pct, 4), round(max_up_pct, 4)
+
+
+def classify_error_type(
+    direction_correct: bool | None,
+    target_reached: bool | None,
+    confidence_correct: bool | None,
+) -> str | None:
+    """Pure function: Forecasting 2.0 (Part 27) -- a coarse, honestly-
+    derivable classification of what kind of miss this was, using only
+    fields this same grading pass already computed. None for a correct or
+    ungradable-direction (Neutral) call -- there is nothing to classify.
+    Deliberately limited to what these three fields can actually
+    distinguish -- see PriceForecastSnapshot.error_type's own docstring for
+    why the full spec taxonomy (regime/event/model attribution, which would
+    need causal evidence this row doesn't have) isn't attempted here."""
+    if direction_correct is not False:
+        return None
+    if target_reached is True:
+        return "TIMING_ERROR"  # right call, price touched target, but reversed by horizon-elapse
+    if confidence_correct is False:
+        return "VOLATILITY_ERROR"  # missed by more than this call's own expected volatility band
+    return "DIRECTION_ERROR"
+
+
 def _realized_sign(current_price: float, realized_price: float) -> int:
     if realized_price > current_price:
         return 1
@@ -645,8 +691,13 @@ async def grade_price_forecasts(
     `historical_mean_baseline_error_pct` -- two naive-baseline comparisons
     computed entirely from the same `rows` already fetched for grading, no
     extra I/O -- so app.services.accuracy.engine can report whether the
-    forecast actually beats doing nothing clever. Returns how many rows
-    were graded this call."""
+    forecast actually beats doing nothing clever. Forecasting 2.0 (Part
+    20/21/27): also fills in `max_favorable_excursion_pct`/
+    `max_adverse_excursion_pct` (path analysis, not just the final-price
+    error) and `error_type` (a coarse, honestly-derivable classification of
+    wrong calls) -- both computed from the exact same already-fetched
+    grading window, still zero extra I/O. Returns how many rows were
+    graded this call."""
     async with session_factory() as session:
         ungraded = list(
             await session.scalars(
@@ -703,8 +754,15 @@ async def grade_price_forecasts(
                 snapshot.direction, current_price, realized_price
             )
             db_row.confidence_correct = grade_confidence(error_pct, expected_volatility_pct)
+            grading_window = rows[idx + 1 : target_idx + 1]
             db_row.target_reached = check_target_reached(
-                snapshot.direction, current_price, target_price, rows[idx + 1 : target_idx + 1]
+                snapshot.direction, current_price, target_price, grading_window
+            )
+            mfe_pct, mae_pct = compute_excursions(snapshot.direction, current_price, grading_window)
+            db_row.max_favorable_excursion_pct = mfe_pct
+            db_row.max_adverse_excursion_pct = mae_pct
+            db_row.error_type = classify_error_type(
+                db_row.direction_correct, db_row.target_reached, db_row.confidence_correct
             )
             db_row.momentum_baseline_correct = grade_momentum_baseline(
                 prior_return_pct, current_price, realized_price
@@ -845,8 +903,14 @@ class ForecastEngine:
         technical_confidence: float | None,
         watchdog: WatchdogSnapshot | None,
         momentum_score: float | None,
+        as_of: datetime | None = None,
     ) -> list[ConfidenceRow]:
-        sentiment_snapshot = await self._sentiment_engine.get_latest()
+        # Forecasting 2.0 (Part 41): bounds the sentiment read to what was
+        # actually knowable at this forecast's own reference bar -- without
+        # this, a forecast computed "as of" an older reference_timestamp
+        # (e.g. a re-graded or backfilled read) could silently absorb
+        # sentiment published after the fact.
+        sentiment_snapshot = await self._sentiment_engine.get_latest(as_of=as_of)
         correlations = await self._correlation_engine.get_latest()
         whale_snapshot = await self._whale_engine.get_snapshot(symbol)
         onchain_snapshot = await self._onchain_engine.get_snapshot(symbol)
@@ -923,7 +987,18 @@ class ForecastEngine:
 
         return items
 
-    async def compute(self, symbol: str, horizon_label: str = "24h") -> dict | None:
+    async def compute(
+        self, symbol: str, horizon_label: str = "24h", is_official_daily: bool = False
+    ) -> dict | None:
+        """`is_official_daily=True` (Forecasting 2.0, Part 2/3/4) is the
+        one published record of the day for this symbol/horizon --
+        `_persist()` enforces at most one such row per (symbol, horizon,
+        UTC calendar date) via the DB's own partial unique index, so a
+        duplicate call (e.g. a retried scheduler tick) is a graceful
+        no-op that returns the existing official row's payload rather
+        than a second row or a crash. Every other call site (the existing
+        intraday recompute, the live dashboard fetch) keeps calling this
+        with the default False, unaffected."""
         horizon_periods = HORIZONS.get(horizon_label)
         if horizon_periods is None:
             return None
@@ -1025,6 +1100,7 @@ class ForecastEngine:
             else None,
             watchdog,
             momentum_score,
+            latest.timestamp,
         )
         what_can_change = await self._what_can_change(watchdog, config.symbol)
 
@@ -1167,7 +1243,12 @@ class ForecastEngine:
 
         regime_at_forecast = regime.value if regime is not None else None
         forecast_version = await self._persist(
-            payload, latest.timestamp, conviction["tier"], regime_at_forecast
+            payload,
+            latest.timestamp,
+            conviction["tier"],
+            regime_at_forecast,
+            is_official_daily,
+            confidence_breakdown,
         )
         payload["forecast_version"] = forecast_version
         payload["forecast_status"] = ForecastStatus.ACTIVE.value
@@ -1179,6 +1260,8 @@ class ForecastEngine:
         reference_timestamp: datetime,
         confidence_tier: str,
         regime_at_forecast: str | None,
+        is_official_daily: bool,
+        confidence_breakdown: list[ConfidenceRow],
     ) -> int:
         """Always INSERTs a new row (this table is append-only by design --
         an existing forecast is never overwritten). `forecast_version` is
@@ -1188,8 +1271,32 @@ class ForecastEngine:
         same (symbol, horizon) that's still ACTIVE (status_after_superseded
         -- their own predicted values are untouched, only the lifecycle
         marker changes), so at most one ACTIVE forecast ever exists per
-        (symbol, horizon) at a time. Returns the version number assigned."""
+        (symbol, horizon) at a time. Returns the version number assigned.
+
+        Forecasting 2.0 (Part 2/4): when `is_official_daily`, checks first
+        whether today's (symbol, horizon) official row already exists --
+        the DB's own partial unique index (uq_official_daily_forecast) is
+        the real guarantee, this check just makes a retried/duplicate
+        scheduler tick a graceful no-op (return the existing version)
+        instead of an IntegrityError. Forecasting 2.0 (Part 10/11): every
+        persisted forecast (official or not) also gets one AgentForecast
+        row per confidence_breakdown entry -- the per-agent evidence table
+        the spec asks for, built from data ForecastEngine already computed
+        this cycle, not a new agent system."""
+        today = datetime.now(UTC).date()
         async with self._session_factory() as session:
+            if is_official_daily:
+                existing = await session.scalar(
+                    select(PriceForecastSnapshot).where(
+                        PriceForecastSnapshot.symbol == payload["symbol"],
+                        PriceForecastSnapshot.horizon == payload["horizon"],
+                        PriceForecastSnapshot.is_official_daily.is_(True),
+                        PriceForecastSnapshot.official_forecast_date == today,
+                    )
+                )
+                if existing is not None:
+                    return existing.forecast_version
+
             prior_version = await session.scalar(
                 select(func.max(PriceForecastSnapshot.forecast_version)).where(
                     PriceForecastSnapshot.symbol == payload["symbol"],
@@ -1210,24 +1317,39 @@ class ForecastEngine:
             for row in prior_active:
                 row.forecast_status = status_after_superseded(row.forecast_status)
 
-            session.add(
-                PriceForecastSnapshot(
-                    symbol=payload["symbol"],
-                    horizon=payload["horizon"],
-                    current_price=payload["current_price"],
-                    target_price=payload["target_price"],
-                    expected_change_pct=payload["expected_change_pct"],
-                    direction=payload["direction"],
-                    probability_pct=payload["probability_pct"],
-                    confidence_tier=confidence_tier,
-                    checkpoints=payload["price_path"],
-                    distribution=payload["probability_distribution"],
-                    key_levels=payload["key_levels"],
-                    reference_timestamp=reference_timestamp,
-                    forecast_version=next_version,
-                    regime_at_forecast=regime_at_forecast,
-                )
+            row = PriceForecastSnapshot(
+                symbol=payload["symbol"],
+                horizon=payload["horizon"],
+                current_price=payload["current_price"],
+                target_price=payload["target_price"],
+                expected_change_pct=payload["expected_change_pct"],
+                direction=payload["direction"],
+                probability_pct=payload["probability_pct"],
+                confidence_tier=confidence_tier,
+                checkpoints=payload["price_path"],
+                distribution=payload["probability_distribution"],
+                key_levels=payload["key_levels"],
+                reference_timestamp=reference_timestamp,
+                forecast_version=next_version,
+                regime_at_forecast=regime_at_forecast,
+                is_official_daily=is_official_daily,
+                official_forecast_date=today if is_official_daily else None,
             )
+            session.add(row)
+            await session.flush()  # assigns row.id, needed for AgentForecast FKs below
+
+            for source in confidence_breakdown:
+                session.add(
+                    AgentForecast(
+                        forecast_id=row.id,
+                        agent_name=source.name,
+                        direction=payload["direction"],
+                        confidence_pct=source.confidence_pct,
+                        key_factors=[],
+                        computed_at=datetime.now(UTC),
+                    )
+                )
+
             await session.commit()
         return next_version
 
@@ -1288,6 +1410,47 @@ class ForecastEngine:
 
     async def summarize_accuracy(self, symbol: str, horizon: str) -> dict | None:
         return await summarize_forecast_accuracy(self._session_factory, symbol.upper(), horizon)
+
+    async def get_official_daily(
+        self, symbols: tuple[str, ...]
+    ) -> dict[str, PriceForecastSnapshot]:
+        """Forecasting 2.0 (Part 34 Page 1): today's (UTC) official 24h
+        forecast for each of `symbols` that has one -- a symbol with no
+        row for today (e.g. insufficient data, or the daily job hasn't
+        fired yet) is simply absent from the result, never a placeholder.
+        One query for the whole roster, not one per symbol."""
+        today = datetime.now(UTC).date()
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(PriceForecastSnapshot).where(
+                    PriceForecastSnapshot.symbol.in_(symbols),
+                    PriceForecastSnapshot.horizon == "24h",
+                    PriceForecastSnapshot.is_official_daily.is_(True),
+                    PriceForecastSnapshot.official_forecast_date == today,
+                )
+            )
+            return {row.symbol: row for row in rows}
+
+    async def get_official_history(
+        self, symbol: str, limit: int = 30
+    ) -> list[PriceForecastSnapshot]:
+        """Forecasting 2.0 (Part 34 Page 2/3): past official daily 24h
+        forecasts for one symbol, most recent first -- includes graded
+        outcome fields (realized_price/error_pct/direction_correct/
+        target_reached/excursions/error_type) once grade_price_forecasts
+        has filled them in, still None until then."""
+        async with self._session_factory() as session:
+            result = await session.scalars(
+                select(PriceForecastSnapshot)
+                .where(
+                    PriceForecastSnapshot.symbol == symbol.upper(),
+                    PriceForecastSnapshot.horizon == "24h",
+                    PriceForecastSnapshot.is_official_daily.is_(True),
+                )
+                .order_by(PriceForecastSnapshot.official_forecast_date.desc())
+                .limit(limit)
+            )
+            return list(result)
 
 
 def build_forecast_engine() -> ForecastEngine:

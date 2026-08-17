@@ -296,3 +296,20 @@ class Settings(BaseSettings):
     realtime_freshness_recent_seconds: float = 30.0
     realtime_freshness_delayed_seconds: float = 120.0
     realtime_freshness_stale_seconds: float = 300.0
+
+    # ---- Forecasting 2.0: official daily forecast (Part 1-4) ----
+    # Comma-separated, parsed with the same app.services.realtime.config.
+    # parse_watchlist() the realtime watchlist already uses. Exactly one
+    # official 24h forecast per symbol per UTC calendar day is generated
+    # for this roster -- distinct from the existing compute_forecast_job's
+    # intraday recomputes, which keep running for every symbol they
+    # already cover. LINK/UNI need app.services.history.registry's crypto
+    # history synced before a forecast is possible for them (see that
+    # registry's own docstring) -- until then compute() honestly returns
+    # None ("insufficient data") for those two, same as any other symbol
+    # without enough history, never a fabricated result.
+    official_forecast_symbols: str = "BTC,SOL,LINK,UNI"
+    # UTC hour (0-23) the daily job fires at -- configurable rather than
+    # hardcoded, per this feature's own honesty requirement that forecast
+    # timing be an explicit, auditable setting.
+    daily_forecast_hour_utc: int = 0

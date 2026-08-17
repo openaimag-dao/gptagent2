@@ -98,7 +98,12 @@ def build_registry() -> list[HistorySymbolConfig]:
         registry.append(
             HistorySymbolConfig(symbol, StockHistory, stock_provider, _ALL_TIMEFRAMES, "equity")
         )
-    for symbol in ("BTC", "ETH", "SOL"):
+    # LINK/UNI added for Forecasting 2.0's official daily forecast roster
+    # (app/services/forecast/engine.py's OFFICIAL_FORECAST_SYMBOLS) --
+    # CoinGeckoHistoricalProvider already supports any symbol in its own
+    # COINGECKO_SYMBOL_IDS map, so this is a registry entry, not new
+    # provider code.
+    for symbol in ("BTC", "ETH", "SOL", "LINK", "UNI"):
         registry.append(
             HistorySymbolConfig(symbol, CryptoHistory, crypto_provider, _ALL_TIMEFRAMES, "crypto")
         )

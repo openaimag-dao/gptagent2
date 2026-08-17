@@ -1466,6 +1466,105 @@ async function renderWatchlist() {
   return nodes;
 }
 
+// ---- Forecasting 2.0 --------------------------------------------------
+// Deliberately visually distinct from Scanner/Watchlist: one official 24h
+// forecast per asset per UTC day (app/services/forecast/engine.py's
+// is_official_daily), immutable once created, automatically graded
+// against real outcomes. Every number here comes straight from
+// /api/forecast/official/daily and /api/forecast/{symbol}/official/history
+// -- a symbol with no row yet is shown as honestly unavailable, never a
+// placeholder forecast.
+
+function forecastOutcomeLabel(f) {
+  if (f.evaluated_at == null) return "PENDING";
+  if (f.direction_correct == null) return "NEUTRAL";
+  return f.direction_correct ? "CORRECT" : "WRONG";
+}
+
+function forecastOutcomeTone(label) {
+  if (label === "CORRECT") return "good";
+  if (label === "WRONG") return "bad";
+  return "neutral";
+}
+
+function forecastDailyCard(f) {
+  if (!f.available) {
+    return el("div", { class: "card" }, [
+      el("div", { class: "label" }, f.symbol),
+      el("div", { class: "value sub" }, "No official forecast yet"),
+    ]);
+  }
+  const d = (f.direction || "").toLowerCase();
+  const cls = d.includes("bullish") ? "up" : d.includes("bearish") ? "down" : "neutral";
+  return el("div", { class: "card" }, [
+    el("div", { class: "label" }, f.symbol),
+    el("div", { class: `value ${cls}` }, `${f.direction} ${f.probability_pct}%`),
+    el(
+      "div",
+      { class: "sub" },
+      `${fmtNum(f.current_price)} -> ${fmtNum(f.target_price)} (${fmtPct(f.expected_change_pct)})`
+    ),
+  ]);
+}
+
+async function renderForecast2() {
+  const nodes = [
+    el("h1", {}, "Forecasting 2.0"),
+    el(
+      "p",
+      { class: "sub" },
+      "One official 24h forecast per asset per UTC day, frozen at creation and " +
+        "automatically graded against real outcomes -- distinct from the intraday " +
+        "AI Forecast Center on Overview."
+    ),
+  ];
+
+  const daily = await safe("/api/forecast/official/daily");
+  nodes.push(el("h2", {}, `Daily Forecast -- ${daily ? daily.date : "..."}`));
+  if (daily && daily.forecasts.length) {
+    const grid = el("div", { class: "grid" });
+    for (const f of daily.forecasts) grid.appendChild(forecastDailyCard(f));
+    nodes.push(grid);
+  } else {
+    nodes.push(el("p", { class: "error" }, "Official daily forecasts not available yet."));
+  }
+
+  nodes.push(el("h2", {}, "Forecast Table"));
+  const symbols = daily ? daily.forecasts.map((f) => f.symbol) : [];
+  const histories = await Promise.all(
+    symbols.map((s) => safe(`/api/forecast/${s}/official/history?limit=30`))
+  );
+  const rows = histories
+    .filter(Boolean)
+    .flatMap((h) => h.forecasts)
+    .sort((a, b) => (b.official_forecast_date || "").localeCompare(a.official_forecast_date || ""));
+
+  if (rows.length) {
+    nodes.push(
+      table(
+        ["Date", "Asset", "Price", "Direction", "Probability", "Target", "Actual", "Result"],
+        rows.map((f) => [
+          f.official_forecast_date || "n/a",
+          f.symbol,
+          fmtNum(f.current_price),
+          f.direction,
+          `${f.probability_pct}%`,
+          fmtNum(f.target_price),
+          f.realized_price != null ? fmtNum(f.realized_price) : "pending",
+          (() => {
+            const label = forecastOutcomeLabel(f);
+            return decisionPill(label, forecastOutcomeTone(label));
+          })(),
+        ])
+      )
+    );
+  } else {
+    nodes.push(el("p", { class: "sub" }, "No official forecasts recorded yet."));
+  }
+
+  return nodes;
+}
+
 async function renderConsensus() {
   const data = await safe("/api/consensus");
   const nodes = [el("h2", {}, "Consensus")];
@@ -4336,7 +4435,7 @@ async function renderSettings() {
 }
 
 const PAGES = {
-  overview: renderOverview, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
+  overview: renderOverview, forecast2: renderForecast2, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
   patterns: renderPatterns, breakout: renderBreakout, features: renderFeatures, liquidity: renderLiquidity, sentiment: renderSentiment,

@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.database.models import AgentForecast, PriceForecastSnapshot
 from app.services.analysis.regime import MarketRegime
 from app.services.forecast.engine import (
     ForecastEngine,
@@ -13,6 +14,8 @@ from app.services.forecast.engine import (
     check_and_invalidate_forecasts,
     check_target_reached,
     classify_direction_label,
+    classify_error_type,
+    compute_excursions,
     compute_expected_max_drawdown_pct,
     compute_historical_mean_baseline_error_pct,
     compute_horizon_consistency,
@@ -491,7 +494,18 @@ async def test_compute_builds_full_payload_and_persists():
         "quality_multiplier": None,
         "adjusted_confidence_pct": None,
     }
-    session.add.assert_called_once()
+    # One PriceForecastSnapshot row plus one AgentForecast row per
+    # confidence_breakdown entry (Forecasting 2.0 Part 10/11's per-agent
+    # evidence table) -- confidence_breakdown has 10 rows (Technical/News/
+    # Sentiment/Macro/Whales/On-chain/Correlations/Momentum/Pattern/Risk).
+    assert session.add.call_count == 1 + len(payload["confidence_breakdown"])
+    added_snapshot = session.add.call_args_list[0][0][0]
+    assert isinstance(added_snapshot, PriceForecastSnapshot)
+    added_agent_rows = [c[0][0] for c in session.add.call_args_list[1:]]
+    assert all(isinstance(r, AgentForecast) for r in added_agent_rows)
+    assert {r.agent_name for r in added_agent_rows} == {
+        r["name"] for r in payload["confidence_breakdown"]
+    }
     session.commit.assert_awaited()
 
 
@@ -682,6 +696,53 @@ def test_check_target_reached_false_over_an_empty_window():
     # (never touched), not None, since the direction/target claim is
     # real and gradable, there just happened to be nothing between.
     assert check_target_reached("Bullish", 100.0, 103.0, []) is False
+
+
+# ---- Forecasting 2.0: MAE/MFE path analysis + error classification --------
+
+
+def test_compute_excursions_none_for_neutral_call():
+    window = [SimpleNamespace(high=110.0, low=95.0)]
+    assert compute_excursions("Neutral", 100.0, window) == (None, None)
+
+
+def test_compute_excursions_none_for_empty_window():
+    assert compute_excursions("Bullish", 100.0, []) == (None, None)
+
+
+def test_compute_excursions_bullish_mfe_is_the_high_mae_is_the_low():
+    # Ran up to 107 (favorable, +7%) then down to 96 (adverse, -4%).
+    window = [SimpleNamespace(high=107.0, low=101.0), SimpleNamespace(high=103.0, low=96.0)]
+    mfe, mae = compute_excursions("Bullish", 100.0, window)
+    assert mfe == 7.0
+    assert mae == -4.0
+
+
+def test_compute_excursions_bearish_mfe_is_negative_mae_is_positive():
+    # A "down" call's favorable excursion is itself negative (price fell,
+    # as the call implied) -- same signed convention as
+    # AlertPerformanceGrade's own max_favorable/adverse_excursion_pct.
+    window = [SimpleNamespace(high=107.0, low=101.0), SimpleNamespace(high=103.0, low=93.0)]
+    mfe, mae = compute_excursions("Bearish", 100.0, window)
+    assert mfe == -7.0
+    assert mae == 7.0
+
+
+def test_classify_error_type_none_when_direction_correct_or_ungraded():
+    assert classify_error_type(True, False, True) is None
+    assert classify_error_type(None, None, None) is None
+
+
+def test_classify_error_type_timing_error_when_target_was_touched():
+    assert classify_error_type(False, True, True) == "TIMING_ERROR"
+
+
+def test_classify_error_type_volatility_error_when_confidence_band_missed():
+    assert classify_error_type(False, False, False) == "VOLATILITY_ERROR"
+
+
+def test_classify_error_type_direction_error_as_the_default_miss():
+    assert classify_error_type(False, False, True) == "DIRECTION_ERROR"
 
 
 async def test_grade_price_forecasts_grades_an_elapsed_row():
@@ -956,7 +1017,12 @@ async def test_persist_assigns_incrementing_forecast_version():
         "key_levels": {},
     }
     version = await engine._persist(
-        payload, datetime(2026, 8, 2, tzinfo=UTC), "high", regime_at_forecast="bull"
+        payload,
+        datetime(2026, 8, 2, tzinfo=UTC),
+        "high",
+        regime_at_forecast="bull",
+        is_official_daily=False,
+        confidence_breakdown=[],
     )
 
     assert version == 4
@@ -982,7 +1048,12 @@ async def test_persist_starts_at_version_one_when_no_prior_forecast():
         "key_levels": {},
     }
     version = await engine._persist(
-        payload, datetime(2026, 8, 2, tzinfo=UTC), "low", regime_at_forecast=None
+        payload,
+        datetime(2026, 8, 2, tzinfo=UTC),
+        "low",
+        regime_at_forecast=None,
+        is_official_daily=False,
+        confidence_breakdown=[],
     )
 
     assert version == 1
@@ -1010,9 +1081,80 @@ async def test_persist_supersedes_prior_active_forecasts_for_same_symbol_horizon
         "key_levels": {},
     }
     version = await engine._persist(
-        payload, datetime(2026, 8, 2, tzinfo=UTC), "high", regime_at_forecast="bull"
+        payload,
+        datetime(2026, 8, 2, tzinfo=UTC),
+        "high",
+        regime_at_forecast="bull",
+        is_official_daily=False,
+        confidence_breakdown=[],
     )
 
     assert version == 3
     assert prior_active_row.forecast_status == "SUPERSEDED"
     session.add.assert_called_once()  # the new row -- the old one is UPDATEd, not re-inserted
+
+
+async def test_persist_official_daily_skips_insert_when_todays_row_already_exists():
+    # Forecasting 2.0 (Part 2/4): a retried/duplicate scheduler tick for
+    # the same (symbol, horizon, UTC date) must be a graceful no-op --
+    # returns the existing row's own version, never a second INSERT (the
+    # DB's own partial unique index is the real backstop; this is the
+    # engine-side check that avoids ever hitting it).
+    engine, deps, session = _build_engine()
+    existing_row = SimpleNamespace(forecast_version=5)
+    session.scalar = AsyncMock(return_value=existing_row)
+
+    payload = {
+        "symbol": "BTC",
+        "horizon": "24h",
+        "current_price": 100.0,
+        "target_price": 103.0,
+        "expected_change_pct": 3.0,
+        "direction": "Bullish",
+        "probability_pct": 70,
+        "price_path": [],
+        "probability_distribution": [],
+        "key_levels": {},
+    }
+    version = await engine._persist(
+        payload,
+        datetime(2026, 8, 2, tzinfo=UTC),
+        "high",
+        regime_at_forecast="bull",
+        is_official_daily=True,
+        confidence_breakdown=[],
+    )
+
+    assert version == 5
+    session.add.assert_not_called()
+
+
+async def test_persist_official_daily_inserts_and_stamps_official_fields_when_none_exists():
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(side_effect=[None, 2])  # no existing official row; prior_version=2
+
+    payload = {
+        "symbol": "SOL",
+        "horizon": "24h",
+        "current_price": 100.0,
+        "target_price": 103.0,
+        "expected_change_pct": 3.0,
+        "direction": "Bullish",
+        "probability_pct": 70,
+        "price_path": [],
+        "probability_distribution": [],
+        "key_levels": {},
+    }
+    version = await engine._persist(
+        payload,
+        datetime(2026, 8, 2, tzinfo=UTC),
+        "high",
+        regime_at_forecast="bull",
+        is_official_daily=True,
+        confidence_breakdown=[],
+    )
+
+    assert version == 3
+    added = session.add.call_args[0][0]
+    assert added.is_official_daily is True
+    assert added.official_forecast_date == datetime.now(UTC).date()

@@ -1,5 +1,9 @@
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock, MagicMock
+
 from app.database.models import NewsCategory, NewsItem, NewsSentiment
 from app.services.sentiment.engine import (
+    SentimentEngine,
     _alphavantage_news_score,
     _news_sentiment_score,
     compute_global_sentiment,
@@ -65,3 +69,37 @@ def test_alphavantage_news_score_bullish_average():
 def test_alphavantage_news_score_bearish_average():
     items = [{"sentiment_score": -0.4}]
     assert _alphavantage_news_score(items) == 30
+
+
+async def test_get_latest_bounds_the_query_when_as_of_is_given():
+    # Forecasting 2.0 (Part 41): a forecast's own reference_timestamp must
+    # bound the sentiment read so nothing published after the fact can
+    # leak in -- without this, get_latest() always reads whatever's newest
+    # in the DB at wall-clock call time regardless of `as_of`.
+    session = AsyncMock()
+    session.scalar = AsyncMock(return_value=None)
+    session.__aenter__.return_value = session
+    session_factory = MagicMock(return_value=session)
+    engine = SentimentEngine(session_factory, news_repository=MagicMock())
+
+    cutoff = datetime(2026, 8, 1, tzinfo=UTC)
+    await engine.get_latest(as_of=cutoff)
+
+    query = session.scalar.call_args[0][0]
+    compiled = str(query.compile(compile_kwargs={"literal_binds": True}))
+    assert "computed_at <=" in compiled
+    assert "2026-08-01" in compiled
+
+
+async def test_get_latest_unbounded_when_as_of_is_none():
+    session = AsyncMock()
+    session.scalar = AsyncMock(return_value=None)
+    session.__aenter__.return_value = session
+    session_factory = MagicMock(return_value=session)
+    engine = SentimentEngine(session_factory, news_repository=MagicMock())
+
+    await engine.get_latest()
+
+    query = session.scalar.call_args[0][0]
+    compiled = str(query.compile())
+    assert "computed_at <=" not in compiled
