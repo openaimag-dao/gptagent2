@@ -157,3 +157,40 @@ async def get_official_forecast_history(symbol: str, limit: int = Query(30, le=1
     engine = build_forecast_engine()
     rows = await engine.get_official_history(symbol, limit)
     return {"symbol": symbol, "forecasts": [_serialize_official(r) for r in rows]}
+
+
+@router.get("/official/agent-performance")
+async def get_agent_performance() -> dict:
+    """Forecasting 2.0 (Part 26 / Page 5) -- per (agent, symbol) direction
+    accuracy across graded official daily forecasts, for
+    official_forecast_symbols. A group with too few graded observations
+    reports `accuracy_pct: null, insufficient_sample: true` instead of an
+    unreliable percentage."""
+    engine = build_forecast_engine()
+    rows = await engine.get_agent_performance(_official_forecast_symbols())
+    return {"min_sample_size": get_settings().agent_performance_min_sample_size, "rows": rows}
+
+
+@router.get("/official/error-lab")
+async def get_error_lab(limit: int = Query(20, le=100)) -> dict:
+    """Forecasting 2.0 (Part 27/28 / Page 6) -- the most recent official
+    daily forecasts that graded WRONG, most recent first, each with its
+    linked per-agent evidence."""
+    engine = build_forecast_engine()
+    entries = await engine.get_error_lab(_official_forecast_symbols(), limit)
+    return {
+        "entries": [
+            {
+                "forecast": _serialize_official(entry["forecast"]),
+                "agents": [
+                    {
+                        "agent_name": a.agent_name,
+                        "direction": a.direction,
+                        "confidence_pct": a.confidence_pct,
+                    }
+                    for a in entry["agents"]
+                ],
+            }
+            for entry in entries
+        ]
+    }

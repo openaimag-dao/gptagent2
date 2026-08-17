@@ -1562,6 +1562,134 @@ async function renderForecast2() {
     nodes.push(el("p", { class: "sub" }, "No official forecasts recorded yet."));
   }
 
+  nodes.push(
+    el("p", { class: "sub nav-pointer" }, [
+      "See also: ",
+      el("a", { href: "#forecast2agents" }, "Agent Performance"),
+      " · ",
+      el("a", { href: "#forecast2errors" }, "Error Lab"),
+    ])
+  );
+
+  return nodes;
+}
+
+// ---- Forecasting 2.0: Agent Performance (Part 26 / Page 5) -------------
+// Direction accuracy per (agent, symbol), conditioned on the agent
+// actually having real data on a graded official daily forecast -- every
+// AgentForecast row mirrors its parent's own direction (there is no
+// independent per-agent direction call in this data model), so this is
+// "how often was the roster's call right when this source had data,"
+// not a claim the agent alone drove the outcome. Groups below the
+// server's own configured minimum sample size are shown as
+// INSUFFICIENT SAMPLE, never a number.
+
+async function renderForecastAgents() {
+  const nodes = [
+    el("h1", {}, "Agent Performance"),
+    el(
+      "p",
+      { class: "sub" },
+      "Direction accuracy per data source, conditioned on that source actually " +
+        "having real data on a graded official daily forecast."
+    ),
+  ];
+
+  const data = await safe("/api/forecast/official/agent-performance");
+  if (data && data.rows.length) {
+    nodes.push(
+      table(
+        ["Agent", "Asset", "Sample Size", "Accuracy"],
+        data.rows.map((r) => [
+          r.agent_name,
+          r.symbol,
+          String(r.sample_size),
+          r.insufficient_sample
+            ? decisionPill(`INSUFFICIENT SAMPLE (min ${data.min_sample_size})`, "neutral")
+            : el("span", { class: changeClass(r.accuracy_pct - 50) }, `${r.accuracy_pct}%`),
+        ])
+      )
+    );
+  } else {
+    nodes.push(
+      el(
+        "p",
+        { class: "sub" },
+        "No graded official daily forecasts yet -- accuracy accumulates as forecasts resolve."
+      )
+    );
+  }
+
+  return nodes;
+}
+
+// ---- Forecasting 2.0: Error Lab (Part 27/28 / Page 6) -------------------
+// The most recent official daily forecasts that graded WRONG, each with
+// its linked per-agent evidence -- "what each source said when we got
+// this wrong." error_type is a coarse, honestly-derivable classification
+// (see classify_error_type's own docstring), never a fabricated root
+// cause beyond what the graded fields can actually support.
+
+function errorLabEntryCard(entry) {
+  const f = entry.forecast;
+  const agentRows = entry.agents.length
+    ? el(
+        "ul",
+        { class: "structured-list" },
+        entry.agents.map((a) =>
+          el(
+            "li",
+            {},
+            `${a.agent_name}: ${a.confidence_pct != null ? a.confidence_pct + "%" : "n/a"}`
+          )
+        )
+      )
+    : el("p", { class: "sub" }, "No per-agent evidence recorded for this forecast.");
+
+  return el("div", { class: "card" }, [
+    el("div", { class: "label" }, `${f.symbol} -- ${f.official_forecast_date || "n/a"}`),
+    el(
+      "div",
+      { class: "value down" },
+      `${f.direction} ${f.probability_pct}% -> actual ${
+        f.realized_price != null ? fmtNum(f.realized_price) : "pending"
+      }`
+    ),
+    el(
+      "div",
+      { class: "sub" },
+      `Error: ${f.error_pct != null ? fmtPct(f.error_pct) : "n/a"} | ` +
+        `MFE: ${f.max_favorable_excursion_pct != null ? fmtPct(f.max_favorable_excursion_pct) : "n/a"} | ` +
+        `MAE: ${f.max_adverse_excursion_pct != null ? fmtPct(f.max_adverse_excursion_pct) : "n/a"}`
+    ),
+    decisionPill(f.error_type || "UNCLASSIFIED", "bad"),
+    el("div", { class: "sub" }, "Agent evidence at forecast time:"),
+    agentRows,
+  ]);
+}
+
+async function renderForecastErrorLab() {
+  const nodes = [
+    el("h1", {}, "Error Lab"),
+    el(
+      "p",
+      { class: "sub" },
+      "The most recent official daily forecasts that graded wrong, with the real " +
+        "per-agent evidence recorded at the moment each forecast was made."
+    ),
+  ];
+
+  const data = await safe("/api/forecast/official/error-lab?limit=20");
+  if (data && data.entries.length) {
+    const grid = el("div", { class: "grid" });
+    for (const entry of data.entries) grid.appendChild(errorLabEntryCard(entry));
+    nodes.push(grid);
+  } else {
+    nodes.push(
+      el("p", { class: "sub" }, "No wrong official daily forecasts recorded yet.")
+    );
+  }
+
   return nodes;
 }
 
@@ -4435,7 +4563,7 @@ async function renderSettings() {
 }
 
 const PAGES = {
-  overview: renderOverview, forecast2: renderForecast2, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
+  overview: renderOverview, forecast2: renderForecast2, forecast2agents: renderForecastAgents, forecast2errors: renderForecastErrorLab, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
   patterns: renderPatterns, breakout: renderBreakout, features: renderFeatures, liquidity: renderLiquidity, sentiment: renderSentiment,

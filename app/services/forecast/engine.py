@@ -25,12 +25,14 @@ Breakdown entirely out of numbers other engines already compute:
 
 import logging
 import math
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import get_settings
 from app.database.models import (
     AgentForecast,
     EconomicCalendarEvent,
@@ -602,6 +604,49 @@ def classify_error_type(
     if confidence_correct is False:
         return "VOLATILITY_ERROR"  # missed by more than this call's own expected volatility band
     return "DIRECTION_ERROR"
+
+
+def aggregate_agent_performance(
+    graded: list[tuple[str, str, bool]], min_sample_size: int
+) -> list[dict]:
+    """Pure function: Forecasting 2.0 (Part 26) -- per (agent, symbol)
+    direction accuracy, conditioned on the agent actually having
+    participated (a real confidence_pct, not missing/unavailable data) in
+    graded official daily forecasts. `graded` is (agent_name, symbol,
+    direction_correct) triples, already filtered upstream to rows where
+    the agent had real data and the parent forecast graded a resolvable
+    direction (a Neutral call has direction_correct=None and is excluded
+    before this function ever sees it).
+
+    Every AgentForecast row mirrors its parent forecast's own direction
+    (see AgentForecast's own docstring -- there is no independent per-
+    agent direction call in this data model), so this reports realized
+    accuracy on the subset of graded days each agent actually had data
+    for, not a claim that the agent alone drove the outcome. Groups with
+    fewer than `min_sample_size` observations report accuracy_pct=None
+    and insufficient_sample=True rather than an unreliable percentage
+    from a handful of forecasts -- same statistical-honesty rule this
+    project's calibration engine already applies."""
+    buckets: dict[tuple[str, str], list[bool]] = defaultdict(list)
+    for agent_name, symbol, correct in graded:
+        buckets[(agent_name, symbol)].append(correct)
+
+    results = []
+    for (agent_name, symbol), outcomes in sorted(buckets.items()):
+        sample_size = len(outcomes)
+        insufficient = sample_size < min_sample_size
+        results.append(
+            {
+                "agent_name": agent_name,
+                "symbol": symbol,
+                "sample_size": sample_size,
+                "accuracy_pct": None
+                if insufficient
+                else round(100 * sum(outcomes) / sample_size, 1),
+                "insufficient_sample": insufficient,
+            }
+        )
+    return results
 
 
 def _realized_sign(current_price: float, realized_price: float) -> int:
@@ -1451,6 +1496,74 @@ class ForecastEngine:
                 .limit(limit)
             )
             return list(result)
+
+    async def get_agent_performance(self, symbols: tuple[str, ...]) -> list[dict]:
+        """Forecasting 2.0 (Part 26 / Page 5): per (agent, symbol)
+        direction accuracy across graded official daily forecasts. Joins
+        `agent_forecasts` to their parent `price_forecast_snapshots` --
+        reuses AgentForecast rows already persisted at forecast time
+        (Part 10/11), no new data collection, no second agent system."""
+        min_sample_size = get_settings().agent_performance_min_sample_size
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(
+                    AgentForecast.agent_name,
+                    PriceForecastSnapshot.symbol,
+                    PriceForecastSnapshot.direction_correct,
+                )
+                .join(
+                    PriceForecastSnapshot,
+                    AgentForecast.forecast_id == PriceForecastSnapshot.id,
+                )
+                .where(
+                    PriceForecastSnapshot.symbol.in_(symbols),
+                    PriceForecastSnapshot.is_official_daily.is_(True),
+                    PriceForecastSnapshot.direction_correct.is_not(None),
+                    AgentForecast.confidence_pct.is_not(None),
+                )
+            )
+            graded = [(r.agent_name, r.symbol, r.direction_correct) for r in rows]
+        return aggregate_agent_performance(graded, min_sample_size)
+
+    async def get_error_lab(self, symbols: tuple[str, ...], limit: int = 20) -> list[dict]:
+        """Forecasting 2.0 (Part 27/28 / Page 6): the most recent official
+        daily forecasts that graded WRONG (direction_correct is False),
+        most recent first, each with its linked per-agent evidence
+        (AgentForecast rows) -- "what each source said when we got this
+        wrong," not a fabricated root-cause narrative beyond what
+        error_type (see classify_error_type) already honestly encodes."""
+        async with self._session_factory() as session:
+            wrong = list(
+                await session.scalars(
+                    select(PriceForecastSnapshot)
+                    .where(
+                        PriceForecastSnapshot.symbol.in_(symbols),
+                        PriceForecastSnapshot.is_official_daily.is_(True),
+                        PriceForecastSnapshot.direction_correct.is_(False),
+                    )
+                    .order_by(PriceForecastSnapshot.official_forecast_date.desc())
+                    .limit(limit)
+                )
+            )
+            if not wrong:
+                return []
+            forecast_ids = [row.id for row in wrong]
+            agent_rows = list(
+                await session.scalars(
+                    select(AgentForecast).where(AgentForecast.forecast_id.in_(forecast_ids))
+                )
+            )
+        agents_by_forecast: dict[int, list[AgentForecast]] = defaultdict(list)
+        for row in agent_rows:
+            agents_by_forecast[row.forecast_id].append(row)
+
+        return [
+            {
+                "forecast": snapshot,
+                "agents": agents_by_forecast.get(snapshot.id, []),
+            }
+            for snapshot in wrong
+        ]
 
 
 def build_forecast_engine() -> ForecastEngine:

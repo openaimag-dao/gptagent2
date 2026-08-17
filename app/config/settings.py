@@ -313,3 +313,9 @@ class Settings(BaseSettings):
     # hardcoded, per this feature's own honesty requirement that forecast
     # timing be an explicit, auditable setting.
     daily_forecast_hour_utc: int = 0
+    # Below this many graded observations, Agent Performance reports
+    # "insufficient sample" instead of a percentage -- official daily
+    # forecasts accumulate at most one per symbol per day, so this is
+    # deliberately smaller than calibration_min_sample_size (30) above,
+    # which grades against the much higher-volume intraday path.
+    agent_performance_min_sample_size: int = 10

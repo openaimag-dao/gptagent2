@@ -3,6 +3,8 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.database.models import AgentForecast, PriceForecastSnapshot
 from app.services.analysis.regime import MarketRegime
 from app.services.forecast.engine import (
@@ -11,6 +13,7 @@ from app.services.forecast.engine import (
     _distance_from_neutral,
     _onchain_confidence,
     _whale_confidence,
+    aggregate_agent_performance,
     check_and_invalidate_forecasts,
     check_target_reached,
     classify_direction_label,
@@ -1158,3 +1161,83 @@ async def test_persist_official_daily_inserts_and_stamps_official_fields_when_no
     added = session.add.call_args[0][0]
     assert added.is_official_daily is True
     assert added.official_forecast_date == datetime.now(UTC).date()
+
+
+# ---- Forecasting 2.0: Agent Performance (Part 26) --------------------------
+
+
+def test_aggregate_agent_performance_groups_by_agent_and_symbol():
+    graded = [
+        ("Technical Analysis", "BTC", True),
+        ("Technical Analysis", "BTC", True),
+        ("Technical Analysis", "BTC", False),
+        ("News", "BTC", True),
+    ]
+    results = aggregate_agent_performance(graded, min_sample_size=2)
+
+    by_agent = {(r["agent_name"], r["symbol"]): r for r in results}
+    technical = by_agent[("Technical Analysis", "BTC")]
+    assert technical["sample_size"] == 3
+    assert technical["accuracy_pct"] == pytest.approx(66.7, abs=0.1)
+    assert technical["insufficient_sample"] is False
+
+    news = by_agent[("News", "BTC")]
+    assert news["sample_size"] == 1
+    assert news["accuracy_pct"] is None
+    assert news["insufficient_sample"] is True
+
+
+def test_aggregate_agent_performance_empty_input():
+    assert aggregate_agent_performance([], min_sample_size=10) == []
+
+
+async def test_get_agent_performance_joins_agent_forecasts_to_graded_outcomes():
+    engine, deps, session = _build_engine()
+    session.execute = AsyncMock(
+        return_value=[
+            SimpleNamespace(agent_name="Technical Analysis", symbol="BTC", direction_correct=True),
+            SimpleNamespace(agent_name="Technical Analysis", symbol="BTC", direction_correct=False),
+        ]
+    )
+
+    with patch(
+        "app.services.forecast.engine.get_settings",
+        return_value=SimpleNamespace(agent_performance_min_sample_size=1),
+    ):
+        results = await engine.get_agent_performance(("BTC",))
+
+    assert results == [
+        {
+            "agent_name": "Technical Analysis",
+            "symbol": "BTC",
+            "sample_size": 2,
+            "accuracy_pct": 50.0,
+            "insufficient_sample": False,
+        }
+    ]
+
+
+# ---- Forecasting 2.0: Error Lab (Part 27/28) --------------------------------
+
+
+async def test_get_error_lab_returns_wrong_forecasts_with_linked_agent_evidence():
+    engine, deps, session = _build_engine()
+    wrong_forecast = SimpleNamespace(id=42, symbol="BTC", direction_correct=False)
+    agent_row = SimpleNamespace(forecast_id=42, agent_name="Technical Analysis", confidence_pct=70)
+    session.scalars = AsyncMock(side_effect=[[wrong_forecast], [agent_row]])
+
+    entries = await engine.get_error_lab(("BTC",), limit=20)
+
+    assert len(entries) == 1
+    assert entries[0]["forecast"] is wrong_forecast
+    assert entries[0]["agents"] == [agent_row]
+
+
+async def test_get_error_lab_returns_empty_without_a_second_query_when_nothing_wrong():
+    engine, deps, session = _build_engine()
+    session.scalars = AsyncMock(return_value=[])
+
+    entries = await engine.get_error_lab(("BTC",), limit=20)
+
+    assert entries == []
+    session.scalars.assert_awaited_once()  # no second (agent-evidence) query fired
