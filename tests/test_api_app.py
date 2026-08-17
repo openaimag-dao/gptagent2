@@ -121,6 +121,13 @@ _ADMIN_GATED_ROUTES = [
     ("/api/report/generate", "POST"),
     ("/api/research/notes/generate", "POST"),
     ("/api/brain/generate", "POST"),
+    # These persist a row (Hypothesis / KnowledgeRule) on every call --
+    # state-mutating by the same rule as the routes above, even though
+    # they were originally missed since their GET siblings stay public.
+    ("/api/hypothesis/test", "POST"),
+    ("/api/hypothesis/test-all", "POST"),
+    ("/api/knowledge/rules", "POST"),
+    ("/api/knowledge/rules/{rule_id}/backtest", "POST"),
 ]
 
 # Reads (even of gated resources) and pure-compute endpoints with no $
@@ -133,8 +140,6 @@ _UNGATED_ROUTES = [
     ("/api/alerts/history", "GET"),
     ("/api/backtest", "POST"),
     ("/api/strategy", "POST"),
-    ("/api/hypothesis/test", "POST"),
-    ("/api/hypothesis/test-all", "POST"),
 ]
 
 

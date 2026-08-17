@@ -123,8 +123,15 @@ class SentimentEngine:
             await session.refresh(snapshot)
         return snapshot
 
-    async def get_latest(self) -> SentimentSnapshot | None:
+    async def get_latest(self, as_of: datetime | None = None) -> SentimentSnapshot | None:
+        """`as_of` bounds this read to what was actually knowable at that
+        moment (e.g. a forecast's own reference_timestamp) -- Forecasting
+        2.0 needs this so a daily forecast's snapshot can never be
+        contaminated by sentiment computed after the fact. `None` (the
+        default) keeps every other caller's existing "give me the current
+        read" behavior unchanged."""
         async with self._session_factory() as session:
-            return await session.scalar(
-                select(SentimentSnapshot).order_by(SentimentSnapshot.computed_at.desc()).limit(1)
-            )
+            query = select(SentimentSnapshot).order_by(SentimentSnapshot.computed_at.desc())
+            if as_of is not None:
+                query = query.where(SentimentSnapshot.computed_at <= as_of)
+            return await session.scalar(query.limit(1))

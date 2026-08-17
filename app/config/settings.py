@@ -296,3 +296,37 @@ class Settings(BaseSettings):
     realtime_freshness_recent_seconds: float = 30.0
     realtime_freshness_delayed_seconds: float = 120.0
     realtime_freshness_stale_seconds: float = 300.0
+
+    # ---- Forecasting 2.0: official daily forecast (Part 1-4) ----
+    # Comma-separated, parsed with the same app.services.realtime.config.
+    # parse_watchlist() the realtime watchlist already uses. Exactly one
+    # official 24h forecast per symbol per UTC calendar day is generated
+    # for this roster -- distinct from the existing compute_forecast_job's
+    # intraday recomputes, which keep running for every symbol they
+    # already cover. LINK/UNI need app.services.history.registry's crypto
+    # history synced before a forecast is possible for them (see that
+    # registry's own docstring) -- until then compute() honestly returns
+    # None ("insufficient data") for those two, same as any other symbol
+    # without enough history, never a fabricated result.
+    official_forecast_symbols: str = "BTC,SOL,LINK,UNI"
+    # UTC hour (0-23) the daily job fires at -- configurable rather than
+    # hardcoded, per this feature's own honesty requirement that forecast
+    # timing be an explicit, auditable setting.
+    daily_forecast_hour_utc: int = 0
+    # Below this many graded observations, Agent Performance reports
+    # "insufficient sample" instead of a percentage -- official daily
+    # forecasts accumulate at most one per symbol per day, so this is
+    # deliberately smaller than calibration_min_sample_size (30) above,
+    # which grades against the much higher-volume intraday path.
+    agent_performance_min_sample_size: int = 10
+    # Learning Center (Part 33/Page 7): a regime-vs-regime accuracy
+    # comparison for one (agent, symbol) is only ever stated as "what the
+    # system learned" when BOTH regime buckets independently clear this
+    # sample size -- smaller than agent_performance_min_sample_size since
+    # splitting by regime on top of (agent, symbol) shrinks each bucket
+    # further, but still a real floor, never zero. min_gap_pct is the
+    # minimum accuracy-percentage-point difference between the two
+    # regimes before it's worth surfacing at all -- filters out noise
+    # from two buckets that are statistically indistinguishable.
+    learning_insight_min_sample_size: int = 5
+    learning_insight_min_gap_pct: float = 15.0

@@ -17,6 +17,8 @@ COINGECKO_SYMBOL_IDS: dict[str, str] = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
     "SOL": "solana",
+    "LINK": "chainlink",
+    "UNI": "uniswap",
 }
 
 # CoinGecko's free/demo API has no `interval` override (that's Enterprise-plan

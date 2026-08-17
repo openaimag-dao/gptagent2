@@ -25,13 +25,16 @@ Breakdown entirely out of numbers other engines already compute:
 
 import logging
 import math
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.config import get_settings
 from app.database.models import (
+    AgentForecast,
     EconomicCalendarEvent,
     MarketRegimeSnapshot,
     PriceForecastSnapshot,
@@ -62,6 +65,7 @@ from app.services.onchain.engine import OnChainIntelligenceEngine
 from app.services.patterns.engine import PatternEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.quality.engine import PredictionQualityEngine
+from app.services.quality.metrics import classify_calibration_reliability
 from app.services.sentiment.engine import SentimentEngine
 from app.services.technical.engine import TechnicalAnalysisEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
@@ -558,6 +562,281 @@ def check_target_reached(
     return any(float(row.low) <= target_price for row in window_rows)
 
 
+def compute_excursions(
+    direction: str, current_price: float, window_rows: list
+) -> tuple[float | None, float | None]:
+    """Pure function: Forecasting 2.0 (Part 20/21) -- path analysis, not
+    just the final-price error_pct: the best (MFE) and worst (MAE)
+    percentage excursion from current_price during the same window
+    check_target_reached already walks (real intrabar high/low, zero extra
+    I/O). Signed relative to `direction`, matching the exact convention
+    AlertPerformanceGrade's own max_favorable/adverse_excursion_pct already
+    use elsewhere in this codebase: for a Bullish call, MFE is the highest
+    % gain reached (positive) and MAE is the deepest % drawdown (negative);
+    for Bearish these invert (MFE negative -- price fell, as the call
+    implied -- MAE positive). Both None for a Neutral call or an empty
+    window -- there is no "favorable side" to measure."""
+    if _DIRECTION_SIGN.get(direction, 0) == 0 or not window_rows:
+        return None, None
+    max_up_pct = 100 * (max(float(r.high) for r in window_rows) - current_price) / current_price
+    max_down_pct = 100 * (min(float(r.low) for r in window_rows) - current_price) / current_price
+    if _DIRECTION_SIGN[direction] > 0:
+        return round(max_up_pct, 4), round(max_down_pct, 4)
+    return round(max_down_pct, 4), round(max_up_pct, 4)
+
+
+def classify_error_type(
+    direction_correct: bool | None,
+    target_reached: bool | None,
+    confidence_correct: bool | None,
+) -> str | None:
+    """Pure function: Forecasting 2.0 (Part 27) -- a coarse, honestly-
+    derivable classification of what kind of miss this was, using only
+    fields this same grading pass already computed. None for a correct or
+    ungradable-direction (Neutral) call -- there is nothing to classify.
+    Deliberately limited to what these three fields can actually
+    distinguish -- see PriceForecastSnapshot.error_type's own docstring for
+    why the full spec taxonomy (regime/event/model attribution, which would
+    need causal evidence this row doesn't have) isn't attempted here."""
+    if direction_correct is not False:
+        return None
+    if target_reached is True:
+        return "TIMING_ERROR"  # right call, price touched target, but reversed by horizon-elapse
+    if confidence_correct is False:
+        return "VOLATILITY_ERROR"  # missed by more than this call's own expected volatility band
+    return "DIRECTION_ERROR"
+
+
+def summarize_official_performance(
+    graded: list[tuple[bool, float | None, bool | None]],
+) -> dict:
+    """Pure function: Forecasting 2.0 (Page 4, Performance) -- the four-
+    number executive summary over every graded official daily forecast
+    (any symbol, any regime, whatever direction it called): how many
+    forecasts have resolved, overall direction accuracy, average
+    |error_pct|, and the target-reached rate. `graded` is
+    (direction_correct, error_pct, target_reached) triples already
+    filtered upstream to rows with a resolvable direction_correct (a
+    Neutral call is excluded before this function sees it, same as
+    aggregate_agent_performance). error_pct/target_reached are each
+    averaged only over the rows that actually have one -- a Neutral call
+    has no target_reached verdict, so it's excluded from that rate
+    rather than silently counted as a miss."""
+    if not graded:
+        return {
+            "graded_count": 0,
+            "direction_accuracy_pct": None,
+            "avg_abs_error_pct": None,
+            "target_reached_rate_pct": None,
+        }
+    correct_flags = [correct for correct, _, _ in graded]
+    errors = [abs(error) for _, error, _ in graded if error is not None]
+    reached_flags = [reached for _, _, reached in graded if reached is not None]
+    return {
+        "graded_count": len(graded),
+        "direction_accuracy_pct": round(100 * sum(correct_flags) / len(correct_flags), 2),
+        "avg_abs_error_pct": round(sum(errors) / len(errors), 2) if errors else None,
+        "target_reached_rate_pct": (
+            round(100 * sum(reached_flags) / len(reached_flags), 2) if reached_flags else None
+        ),
+    }
+
+
+def derive_official_calibration_curve(
+    graded: list[tuple[int, bool]],
+    bin_width: int = 20,
+) -> list[dict]:
+    """Pure function: Forecasting 2.0 (Page 4, Performance) -- buckets
+    official daily forecasts by their own stated probability_pct and
+    compares each bucket's average stated probability to its observed
+    direction_correct rate. `graded` is (probability_pct, direction_correct)
+    pairs, already filtered upstream to graded rows.
+
+    Deliberately a thin sibling of quality.metrics.compute_calibration
+    rather than a forced reuse: that function's bucketing expects the
+    older Probability Engine's three-way (prob_up/down/flat_pct) shape,
+    but an official forecast only ever persists one probability for
+    whichever single direction it called. `classify_calibration_reliability`
+    IS imported and reused as-is (not reimplemented) for the sample-
+    sufficiency label, so a bucket here carries the same trust semantics
+    (and the same insufficient/usable/reliable thresholds) as every other
+    calibration bucket already shown elsewhere in the app."""
+    buckets: dict[int, list[tuple[int, bool]]] = defaultdict(list)
+    for probability_pct, correct in graded:
+        bin_start = min(int(probability_pct // bin_width) * bin_width, 100 - bin_width)
+        buckets[bin_start].append((probability_pct, correct))
+
+    result = []
+    for bin_start in sorted(buckets):
+        entries = buckets[bin_start]
+        count = len(entries)
+        avg_probability = round(sum(p for p, _ in entries) / count, 2)
+        observed_accuracy = round(100 * sum(1 for _, c in entries if c) / count, 2)
+        result.append(
+            {
+                "probability_bucket": f"{bin_start}-{bin_start + bin_width}%",
+                "count": count,
+                "avg_stated_probability_pct": avg_probability,
+                "observed_accuracy_pct": observed_accuracy,
+                "calibration_gap_pct": round(avg_probability - observed_accuracy, 2),
+                "sample_sufficiency": classify_calibration_reliability(count),
+            }
+        )
+    return result
+
+
+def derive_regime_performance_breakdown(
+    graded: list[tuple[str, bool]], min_sample_size: int
+) -> list[dict]:
+    """Pure function: Forecasting 2.0 (Page 4, Performance) -- direction
+    accuracy grouped by regime_at_forecast ALONE, not per-agent (see
+    Agent Performance/Learning Center for that finer grouping). `graded`
+    is (regime, direction_correct) pairs, already filtered upstream to
+    graded rows with a known regime. Reuses the exact same statistical-
+    honesty gate as aggregate_agent_performance (a group below
+    min_sample_size reports accuracy_pct=None and insufficient_sample=True
+    rather than an unreliable percentage) -- same rule, coarser grouping
+    key, so this stays a separate small function rather than a forced
+    generalization of aggregate_agent_performance's tuple-keyed buckets."""
+    buckets: dict[str, list[bool]] = defaultdict(list)
+    for regime, correct in graded:
+        buckets[regime].append(correct)
+
+    results = []
+    for regime in sorted(buckets):
+        outcomes = buckets[regime]
+        sample_size = len(outcomes)
+        insufficient = sample_size < min_sample_size
+        results.append(
+            {
+                "regime": regime,
+                "sample_size": sample_size,
+                "accuracy_pct": None
+                if insufficient
+                else round(100 * sum(outcomes) / sample_size, 1),
+                "insufficient_sample": insufficient,
+            }
+        )
+    return results
+
+
+def aggregate_agent_performance(
+    graded: list[tuple[str, str, bool]], min_sample_size: int
+) -> list[dict]:
+    """Pure function: Forecasting 2.0 (Part 26) -- per (agent, symbol)
+    direction accuracy, conditioned on the agent actually having
+    participated (a real confidence_pct, not missing/unavailable data) in
+    graded official daily forecasts. `graded` is (agent_name, symbol,
+    direction_correct) triples, already filtered upstream to rows where
+    the agent had real data and the parent forecast graded a resolvable
+    direction (a Neutral call has direction_correct=None and is excluded
+    before this function ever sees it).
+
+    Every AgentForecast row mirrors its parent forecast's own direction
+    (see AgentForecast's own docstring -- there is no independent per-
+    agent direction call in this data model), so this reports realized
+    accuracy on the subset of graded days each agent actually had data
+    for, not a claim that the agent alone drove the outcome. Groups with
+    fewer than `min_sample_size` observations report accuracy_pct=None
+    and insufficient_sample=True rather than an unreliable percentage
+    from a handful of forecasts -- same statistical-honesty rule this
+    project's calibration engine already applies."""
+    buckets: dict[tuple[str, str], list[bool]] = defaultdict(list)
+    for agent_name, symbol, correct in graded:
+        buckets[(agent_name, symbol)].append(correct)
+
+    results = []
+    for (agent_name, symbol), outcomes in sorted(buckets.items()):
+        sample_size = len(outcomes)
+        insufficient = sample_size < min_sample_size
+        results.append(
+            {
+                "agent_name": agent_name,
+                "symbol": symbol,
+                "sample_size": sample_size,
+                "accuracy_pct": None
+                if insufficient
+                else round(100 * sum(outcomes) / sample_size, 1),
+                "insufficient_sample": insufficient,
+            }
+        )
+    return results
+
+
+def derive_learning_insights(
+    graded: list[tuple[str, str, str, bool]],
+    min_sample_size: int,
+    min_gap_pct: float,
+) -> list[dict]:
+    """Pure function: Forecasting 2.0 (Part 33 / Page 7, Learning Center)
+    -- the one honest, non-fabricated "what the system learned" signal
+    this data model can actually support: for a given (agent, symbol),
+    does its realized direction accuracy differ meaningfully between two
+    market regimes it's actually been graded in? `graded` is (agent_name,
+    symbol, regime_at_forecast, direction_correct) quadruples, same
+    upstream filtering as aggregate_agent_performance (agent had real
+    data, parent forecast graded a resolvable direction) plus a non-null
+    regime.
+
+    An insight is only ever emitted when BOTH regime buckets independently
+    clear `min_sample_size` (a comparison built on a 2-observation bucket
+    proves nothing) AND the accuracy gap between them is at least
+    `min_gap_pct` (two buckets a couple points apart are statistically
+    indistinguishable noise, not a real regime effect) -- this project's
+    same statistical-honesty rule as calibration/agent-performance,
+    applied here to a comparison instead of a single number. Symbols/
+    agents with fewer than two qualifying regimes produce no insight at
+    all rather than a guessed one. `statement` is a plain description of
+    the two observed rates, deliberately phrased as correlational
+    ("was right more often in X than Y"), never causal ("X works
+    because...") -- this data has no causal evidence to support that."""
+    buckets: dict[tuple[str, str, str], list[bool]] = defaultdict(list)
+    for agent_name, symbol, regime, correct in graded:
+        buckets[(agent_name, symbol, regime)].append(correct)
+
+    by_agent_symbol: dict[tuple[str, str], dict[str, list[bool]]] = defaultdict(dict)
+    for (agent_name, symbol, regime), outcomes in buckets.items():
+        by_agent_symbol[(agent_name, symbol)][regime] = outcomes
+
+    insights = []
+    for (agent_name, symbol), regimes in sorted(by_agent_symbol.items()):
+        qualifying = {
+            regime: outcomes
+            for regime, outcomes in regimes.items()
+            if len(outcomes) >= min_sample_size
+        }
+        if len(qualifying) < 2:
+            continue
+        accuracy_by_regime = {
+            regime: 100 * sum(outcomes) / len(outcomes) for regime, outcomes in qualifying.items()
+        }
+        better_regime = max(accuracy_by_regime, key=accuracy_by_regime.get)
+        worse_regime = min(accuracy_by_regime, key=accuracy_by_regime.get)
+        gap = accuracy_by_regime[better_regime] - accuracy_by_regime[worse_regime]
+        if gap < min_gap_pct:
+            continue
+        better_acc = round(accuracy_by_regime[better_regime], 1)
+        worse_acc = round(accuracy_by_regime[worse_regime], 1)
+        insights.append(
+            {
+                "agent_name": agent_name,
+                "symbol": symbol,
+                "better_regime": better_regime,
+                "better_accuracy_pct": better_acc,
+                "better_sample_size": len(qualifying[better_regime]),
+                "worse_regime": worse_regime,
+                "worse_accuracy_pct": worse_acc,
+                "worse_sample_size": len(qualifying[worse_regime]),
+                "statement": (
+                    f"{agent_name} was right more often in {better_regime} "
+                    f"({better_acc}%, n={len(qualifying[better_regime])}) than in "
+                    f"{worse_regime} ({worse_acc}%, n={len(qualifying[worse_regime])})."
+                ),
+            }
+        )
+    return insights
+
+
 def _realized_sign(current_price: float, realized_price: float) -> int:
     if realized_price > current_price:
         return 1
@@ -645,8 +924,13 @@ async def grade_price_forecasts(
     `historical_mean_baseline_error_pct` -- two naive-baseline comparisons
     computed entirely from the same `rows` already fetched for grading, no
     extra I/O -- so app.services.accuracy.engine can report whether the
-    forecast actually beats doing nothing clever. Returns how many rows
-    were graded this call."""
+    forecast actually beats doing nothing clever. Forecasting 2.0 (Part
+    20/21/27): also fills in `max_favorable_excursion_pct`/
+    `max_adverse_excursion_pct` (path analysis, not just the final-price
+    error) and `error_type` (a coarse, honestly-derivable classification of
+    wrong calls) -- both computed from the exact same already-fetched
+    grading window, still zero extra I/O. Returns how many rows were
+    graded this call."""
     async with session_factory() as session:
         ungraded = list(
             await session.scalars(
@@ -703,8 +987,15 @@ async def grade_price_forecasts(
                 snapshot.direction, current_price, realized_price
             )
             db_row.confidence_correct = grade_confidence(error_pct, expected_volatility_pct)
+            grading_window = rows[idx + 1 : target_idx + 1]
             db_row.target_reached = check_target_reached(
-                snapshot.direction, current_price, target_price, rows[idx + 1 : target_idx + 1]
+                snapshot.direction, current_price, target_price, grading_window
+            )
+            mfe_pct, mae_pct = compute_excursions(snapshot.direction, current_price, grading_window)
+            db_row.max_favorable_excursion_pct = mfe_pct
+            db_row.max_adverse_excursion_pct = mae_pct
+            db_row.error_type = classify_error_type(
+                db_row.direction_correct, db_row.target_reached, db_row.confidence_correct
             )
             db_row.momentum_baseline_correct = grade_momentum_baseline(
                 prior_return_pct, current_price, realized_price
@@ -845,8 +1136,14 @@ class ForecastEngine:
         technical_confidence: float | None,
         watchdog: WatchdogSnapshot | None,
         momentum_score: float | None,
+        as_of: datetime | None = None,
     ) -> list[ConfidenceRow]:
-        sentiment_snapshot = await self._sentiment_engine.get_latest()
+        # Forecasting 2.0 (Part 41): bounds the sentiment read to what was
+        # actually knowable at this forecast's own reference bar -- without
+        # this, a forecast computed "as of" an older reference_timestamp
+        # (e.g. a re-graded or backfilled read) could silently absorb
+        # sentiment published after the fact.
+        sentiment_snapshot = await self._sentiment_engine.get_latest(as_of=as_of)
         correlations = await self._correlation_engine.get_latest()
         whale_snapshot = await self._whale_engine.get_snapshot(symbol)
         onchain_snapshot = await self._onchain_engine.get_snapshot(symbol)
@@ -923,7 +1220,18 @@ class ForecastEngine:
 
         return items
 
-    async def compute(self, symbol: str, horizon_label: str = "24h") -> dict | None:
+    async def compute(
+        self, symbol: str, horizon_label: str = "24h", is_official_daily: bool = False
+    ) -> dict | None:
+        """`is_official_daily=True` (Forecasting 2.0, Part 2/3/4) is the
+        one published record of the day for this symbol/horizon --
+        `_persist()` enforces at most one such row per (symbol, horizon,
+        UTC calendar date) via the DB's own partial unique index, so a
+        duplicate call (e.g. a retried scheduler tick) is a graceful
+        no-op that returns the existing official row's payload rather
+        than a second row or a crash. Every other call site (the existing
+        intraday recompute, the live dashboard fetch) keeps calling this
+        with the default False, unaffected."""
         horizon_periods = HORIZONS.get(horizon_label)
         if horizon_periods is None:
             return None
@@ -1025,6 +1333,7 @@ class ForecastEngine:
             else None,
             watchdog,
             momentum_score,
+            latest.timestamp,
         )
         what_can_change = await self._what_can_change(watchdog, config.symbol)
 
@@ -1167,7 +1476,12 @@ class ForecastEngine:
 
         regime_at_forecast = regime.value if regime is not None else None
         forecast_version = await self._persist(
-            payload, latest.timestamp, conviction["tier"], regime_at_forecast
+            payload,
+            latest.timestamp,
+            conviction["tier"],
+            regime_at_forecast,
+            is_official_daily,
+            confidence_breakdown,
         )
         payload["forecast_version"] = forecast_version
         payload["forecast_status"] = ForecastStatus.ACTIVE.value
@@ -1179,6 +1493,8 @@ class ForecastEngine:
         reference_timestamp: datetime,
         confidence_tier: str,
         regime_at_forecast: str | None,
+        is_official_daily: bool,
+        confidence_breakdown: list[ConfidenceRow],
     ) -> int:
         """Always INSERTs a new row (this table is append-only by design --
         an existing forecast is never overwritten). `forecast_version` is
@@ -1188,8 +1504,32 @@ class ForecastEngine:
         same (symbol, horizon) that's still ACTIVE (status_after_superseded
         -- their own predicted values are untouched, only the lifecycle
         marker changes), so at most one ACTIVE forecast ever exists per
-        (symbol, horizon) at a time. Returns the version number assigned."""
+        (symbol, horizon) at a time. Returns the version number assigned.
+
+        Forecasting 2.0 (Part 2/4): when `is_official_daily`, checks first
+        whether today's (symbol, horizon) official row already exists --
+        the DB's own partial unique index (uq_official_daily_forecast) is
+        the real guarantee, this check just makes a retried/duplicate
+        scheduler tick a graceful no-op (return the existing version)
+        instead of an IntegrityError. Forecasting 2.0 (Part 10/11): every
+        persisted forecast (official or not) also gets one AgentForecast
+        row per confidence_breakdown entry -- the per-agent evidence table
+        the spec asks for, built from data ForecastEngine already computed
+        this cycle, not a new agent system."""
+        today = datetime.now(UTC).date()
         async with self._session_factory() as session:
+            if is_official_daily:
+                existing = await session.scalar(
+                    select(PriceForecastSnapshot).where(
+                        PriceForecastSnapshot.symbol == payload["symbol"],
+                        PriceForecastSnapshot.horizon == payload["horizon"],
+                        PriceForecastSnapshot.is_official_daily.is_(True),
+                        PriceForecastSnapshot.official_forecast_date == today,
+                    )
+                )
+                if existing is not None:
+                    return existing.forecast_version
+
             prior_version = await session.scalar(
                 select(func.max(PriceForecastSnapshot.forecast_version)).where(
                     PriceForecastSnapshot.symbol == payload["symbol"],
@@ -1210,24 +1550,39 @@ class ForecastEngine:
             for row in prior_active:
                 row.forecast_status = status_after_superseded(row.forecast_status)
 
-            session.add(
-                PriceForecastSnapshot(
-                    symbol=payload["symbol"],
-                    horizon=payload["horizon"],
-                    current_price=payload["current_price"],
-                    target_price=payload["target_price"],
-                    expected_change_pct=payload["expected_change_pct"],
-                    direction=payload["direction"],
-                    probability_pct=payload["probability_pct"],
-                    confidence_tier=confidence_tier,
-                    checkpoints=payload["price_path"],
-                    distribution=payload["probability_distribution"],
-                    key_levels=payload["key_levels"],
-                    reference_timestamp=reference_timestamp,
-                    forecast_version=next_version,
-                    regime_at_forecast=regime_at_forecast,
-                )
+            row = PriceForecastSnapshot(
+                symbol=payload["symbol"],
+                horizon=payload["horizon"],
+                current_price=payload["current_price"],
+                target_price=payload["target_price"],
+                expected_change_pct=payload["expected_change_pct"],
+                direction=payload["direction"],
+                probability_pct=payload["probability_pct"],
+                confidence_tier=confidence_tier,
+                checkpoints=payload["price_path"],
+                distribution=payload["probability_distribution"],
+                key_levels=payload["key_levels"],
+                reference_timestamp=reference_timestamp,
+                forecast_version=next_version,
+                regime_at_forecast=regime_at_forecast,
+                is_official_daily=is_official_daily,
+                official_forecast_date=today if is_official_daily else None,
             )
+            session.add(row)
+            await session.flush()  # assigns row.id, needed for AgentForecast FKs below
+
+            for source in confidence_breakdown:
+                session.add(
+                    AgentForecast(
+                        forecast_id=row.id,
+                        agent_name=source.name,
+                        direction=payload["direction"],
+                        confidence_pct=source.confidence_pct,
+                        key_factors=[],
+                        computed_at=datetime.now(UTC),
+                    )
+                )
+
             await session.commit()
         return next_version
 
@@ -1288,6 +1643,233 @@ class ForecastEngine:
 
     async def summarize_accuracy(self, symbol: str, horizon: str) -> dict | None:
         return await summarize_forecast_accuracy(self._session_factory, symbol.upper(), horizon)
+
+    async def get_official_daily(
+        self, symbols: tuple[str, ...]
+    ) -> dict[str, PriceForecastSnapshot]:
+        """Forecasting 2.0 (Part 34 Page 1): today's (UTC) official 24h
+        forecast for each of `symbols` that has one -- a symbol with no
+        row for today (e.g. insufficient data, or the daily job hasn't
+        fired yet) is simply absent from the result, never a placeholder.
+        One query for the whole roster, not one per symbol."""
+        today = datetime.now(UTC).date()
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(PriceForecastSnapshot).where(
+                    PriceForecastSnapshot.symbol.in_(symbols),
+                    PriceForecastSnapshot.horizon == "24h",
+                    PriceForecastSnapshot.is_official_daily.is_(True),
+                    PriceForecastSnapshot.official_forecast_date == today,
+                )
+            )
+            return {row.symbol: row for row in rows}
+
+    async def get_official_history(
+        self, symbol: str, limit: int = 30
+    ) -> list[PriceForecastSnapshot]:
+        """Forecasting 2.0 (Part 34 Page 2/3): past official daily 24h
+        forecasts for one symbol, most recent first -- includes graded
+        outcome fields (realized_price/error_pct/direction_correct/
+        target_reached/excursions/error_type) once grade_price_forecasts
+        has filled them in, still None until then."""
+        async with self._session_factory() as session:
+            result = await session.scalars(
+                select(PriceForecastSnapshot)
+                .where(
+                    PriceForecastSnapshot.symbol == symbol.upper(),
+                    PriceForecastSnapshot.horizon == "24h",
+                    PriceForecastSnapshot.is_official_daily.is_(True),
+                )
+                .order_by(PriceForecastSnapshot.official_forecast_date.desc())
+                .limit(limit)
+            )
+            return list(result)
+
+    async def get_agent_performance(self, symbols: tuple[str, ...]) -> list[dict]:
+        """Forecasting 2.0 (Part 26 / Page 5): per (agent, symbol)
+        direction accuracy across graded official daily forecasts. Joins
+        `agent_forecasts` to their parent `price_forecast_snapshots` --
+        reuses AgentForecast rows already persisted at forecast time
+        (Part 10/11), no new data collection, no second agent system."""
+        min_sample_size = get_settings().agent_performance_min_sample_size
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(
+                    AgentForecast.agent_name,
+                    PriceForecastSnapshot.symbol,
+                    PriceForecastSnapshot.direction_correct,
+                )
+                .join(
+                    PriceForecastSnapshot,
+                    AgentForecast.forecast_id == PriceForecastSnapshot.id,
+                )
+                .where(
+                    PriceForecastSnapshot.symbol.in_(symbols),
+                    PriceForecastSnapshot.is_official_daily.is_(True),
+                    PriceForecastSnapshot.direction_correct.is_not(None),
+                    AgentForecast.confidence_pct.is_not(None),
+                )
+            )
+            graded = [(r.agent_name, r.symbol, r.direction_correct) for r in rows]
+        return aggregate_agent_performance(graded, min_sample_size)
+
+    async def get_official_performance(self, symbols: tuple[str, ...]) -> dict:
+        """Forecasting 2.0 (Page 4, Performance): the overall (not
+        per-agent) scorecard across every graded official daily forecast
+        in `symbols` -- summary stats, a probability-calibration curve,
+        and accuracy broken down by the regime the forecast was made in.
+        Distinct from Agent Performance (Page 5, conditioned on
+        AgentForecast rows) and Learning Center (Page 7, needs TWO
+        regimes per agent before it says anything): this is the single
+        top-level "is the official forecast surface any good" view, one
+        query over price_forecast_snapshots, no new tables."""
+        async with self._session_factory() as session:
+            rows = list(
+                await session.execute(
+                    select(
+                        PriceForecastSnapshot.probability_pct,
+                        PriceForecastSnapshot.direction_correct,
+                        PriceForecastSnapshot.error_pct,
+                        PriceForecastSnapshot.target_reached,
+                        PriceForecastSnapshot.regime_at_forecast,
+                    ).where(
+                        PriceForecastSnapshot.symbol.in_(symbols),
+                        PriceForecastSnapshot.is_official_daily.is_(True),
+                        PriceForecastSnapshot.direction_correct.is_not(None),
+                    )
+                )
+            )
+
+        summary = summarize_official_performance(
+            [
+                (
+                    r.direction_correct,
+                    float(r.error_pct) if r.error_pct is not None else None,
+                    r.target_reached,
+                )
+                for r in rows
+            ]
+        )
+        calibration = derive_official_calibration_curve(
+            [(r.probability_pct, r.direction_correct) for r in rows]
+        )
+        regime_breakdown = derive_regime_performance_breakdown(
+            [(r.regime_at_forecast, r.direction_correct) for r in rows if r.regime_at_forecast],
+            get_settings().agent_performance_min_sample_size,
+        )
+        return {
+            "summary": summary,
+            "calibration": calibration,
+            "regime_breakdown": regime_breakdown,
+        }
+
+    async def get_learning_insights(self, symbols: tuple[str, ...]) -> list[dict]:
+        """Forecasting 2.0 (Part 33 / Page 7, Learning Center): regime-
+        conditioned accuracy comparisons per (agent, symbol) -- same join
+        as get_agent_performance, with regime_at_forecast (already
+        persisted on every forecast, see PriceForecastSnapshot's own
+        docstring) added to the grouping. No new data collection."""
+        settings = get_settings()
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(
+                    AgentForecast.agent_name,
+                    PriceForecastSnapshot.symbol,
+                    PriceForecastSnapshot.regime_at_forecast,
+                    PriceForecastSnapshot.direction_correct,
+                )
+                .join(
+                    PriceForecastSnapshot,
+                    AgentForecast.forecast_id == PriceForecastSnapshot.id,
+                )
+                .where(
+                    PriceForecastSnapshot.symbol.in_(symbols),
+                    PriceForecastSnapshot.is_official_daily.is_(True),
+                    PriceForecastSnapshot.direction_correct.is_not(None),
+                    PriceForecastSnapshot.regime_at_forecast.is_not(None),
+                    AgentForecast.confidence_pct.is_not(None),
+                )
+            )
+            graded = [
+                (r.agent_name, r.symbol, r.regime_at_forecast, r.direction_correct) for r in rows
+            ]
+        return derive_learning_insights(
+            graded,
+            settings.learning_insight_min_sample_size,
+            settings.learning_insight_min_gap_pct,
+        )
+
+    async def get_forecast_detail(self, forecast_id: int) -> dict | None:
+        """Forecasting 2.0 (Page 3, Forecast Details): the full input
+        snapshot and complete per-agent evidence for ONE official daily
+        forecast -- everything `_serialize_official` already exposes plus
+        the fields that only matter for a drill-down (checkpoints,
+        distribution, key_levels, reference_timestamp, forecast_version,
+        invalidation lineage, baseline comparisons). Unlike Error Lab
+        (which only surfaces agent evidence for WRONG calls), this returns
+        every AgentForecast row regardless of outcome, since a drill-down
+        is opt-in per forecast rather than a triage list. Only ever
+        resolves official daily rows (is_official_daily is True) -- the
+        much larger set of intraday recompute snapshots isn't part of the
+        Forecasting 2.0 surface and has no per-agent evidence persisted
+        for it anyway. None when the id doesn't match an official row."""
+        async with self._session_factory() as session:
+            snapshot = await session.scalar(
+                select(PriceForecastSnapshot).where(
+                    PriceForecastSnapshot.id == forecast_id,
+                    PriceForecastSnapshot.is_official_daily.is_(True),
+                )
+            )
+            if snapshot is None:
+                return None
+            agents = list(
+                await session.scalars(
+                    select(AgentForecast)
+                    .where(AgentForecast.forecast_id == forecast_id)
+                    .order_by(AgentForecast.agent_name)
+                )
+            )
+        return {"forecast": snapshot, "agents": agents}
+
+    async def get_error_lab(self, symbols: tuple[str, ...], limit: int = 20) -> list[dict]:
+        """Forecasting 2.0 (Part 27/28 / Page 6): the most recent official
+        daily forecasts that graded WRONG (direction_correct is False),
+        most recent first, each with its linked per-agent evidence
+        (AgentForecast rows) -- "what each source said when we got this
+        wrong," not a fabricated root-cause narrative beyond what
+        error_type (see classify_error_type) already honestly encodes."""
+        async with self._session_factory() as session:
+            wrong = list(
+                await session.scalars(
+                    select(PriceForecastSnapshot)
+                    .where(
+                        PriceForecastSnapshot.symbol.in_(symbols),
+                        PriceForecastSnapshot.is_official_daily.is_(True),
+                        PriceForecastSnapshot.direction_correct.is_(False),
+                    )
+                    .order_by(PriceForecastSnapshot.official_forecast_date.desc())
+                    .limit(limit)
+                )
+            )
+            if not wrong:
+                return []
+            forecast_ids = [row.id for row in wrong]
+            agent_rows = list(
+                await session.scalars(
+                    select(AgentForecast).where(AgentForecast.forecast_id.in_(forecast_ids))
+                )
+            )
+        agents_by_forecast: dict[int, list[AgentForecast]] = defaultdict(list)
+        for row in agent_rows:
+            agents_by_forecast[row.forecast_id].append(row)
+
+        return [
+            {
+                "forecast": snapshot,
+                "agents": agents_by_forecast.get(snapshot.id, []),
+            }
+            for snapshot in wrong
+        ]
 
 
 def build_forecast_engine() -> ForecastEngine:

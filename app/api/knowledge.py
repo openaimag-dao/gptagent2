@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from app.api.admin import require_admin_key
 from app.database.models import KnowledgeRule, RuleCategory
 from app.database.session import get_session_factory
 from app.services.backtest.conditions import Condition
@@ -57,7 +58,7 @@ def _serialize_rule(rule: KnowledgeRule) -> dict:
     }
 
 
-@router.post("/rules")
+@router.post("/rules", dependencies=[Depends(require_admin_key)])
 async def create_rule(request: CreateRuleRequest) -> dict:
     try:
         conditions = [
@@ -96,7 +97,7 @@ async def get_rule(rule_id: int) -> dict:
     return _serialize_rule(rule)
 
 
-@router.post("/rules/{rule_id}/backtest")
+@router.post("/rules/{rule_id}/backtest", dependencies=[Depends(require_admin_key)])
 async def rerun_rule_backtest(rule_id: int) -> dict:
     engine = RuleEngine(get_session_factory())
     rule = await engine.backtest_rule(rule_id)

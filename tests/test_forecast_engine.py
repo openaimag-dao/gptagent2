@@ -3,6 +3,9 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from app.database.models import AgentForecast, PriceForecastSnapshot
 from app.services.analysis.regime import MarketRegime
 from app.services.forecast.engine import (
     ForecastEngine,
@@ -10,9 +13,12 @@ from app.services.forecast.engine import (
     _distance_from_neutral,
     _onchain_confidence,
     _whale_confidence,
+    aggregate_agent_performance,
     check_and_invalidate_forecasts,
     check_target_reached,
     classify_direction_label,
+    classify_error_type,
+    compute_excursions,
     compute_expected_max_drawdown_pct,
     compute_historical_mean_baseline_error_pct,
     compute_horizon_consistency,
@@ -22,7 +28,10 @@ from app.services.forecast.engine import (
     compute_price_target,
     compute_probability_distribution,
     compute_scenario_cases,
+    derive_learning_insights,
+    derive_official_calibration_curve,
     derive_regime_label,
+    derive_regime_performance_breakdown,
     derive_risk_meter,
     grade_confidence,
     grade_direction,
@@ -30,6 +39,7 @@ from app.services.forecast.engine import (
     grade_price_forecasts,
     price_forecast_quality_multiplier,
     summarize_forecast_accuracy,
+    summarize_official_performance,
 )
 
 
@@ -491,7 +501,18 @@ async def test_compute_builds_full_payload_and_persists():
         "quality_multiplier": None,
         "adjusted_confidence_pct": None,
     }
-    session.add.assert_called_once()
+    # One PriceForecastSnapshot row plus one AgentForecast row per
+    # confidence_breakdown entry (Forecasting 2.0 Part 10/11's per-agent
+    # evidence table) -- confidence_breakdown has 10 rows (Technical/News/
+    # Sentiment/Macro/Whales/On-chain/Correlations/Momentum/Pattern/Risk).
+    assert session.add.call_count == 1 + len(payload["confidence_breakdown"])
+    added_snapshot = session.add.call_args_list[0][0][0]
+    assert isinstance(added_snapshot, PriceForecastSnapshot)
+    added_agent_rows = [c[0][0] for c in session.add.call_args_list[1:]]
+    assert all(isinstance(r, AgentForecast) for r in added_agent_rows)
+    assert {r.agent_name for r in added_agent_rows} == {
+        r["name"] for r in payload["confidence_breakdown"]
+    }
     session.commit.assert_awaited()
 
 
@@ -682,6 +703,53 @@ def test_check_target_reached_false_over_an_empty_window():
     # (never touched), not None, since the direction/target claim is
     # real and gradable, there just happened to be nothing between.
     assert check_target_reached("Bullish", 100.0, 103.0, []) is False
+
+
+# ---- Forecasting 2.0: MAE/MFE path analysis + error classification --------
+
+
+def test_compute_excursions_none_for_neutral_call():
+    window = [SimpleNamespace(high=110.0, low=95.0)]
+    assert compute_excursions("Neutral", 100.0, window) == (None, None)
+
+
+def test_compute_excursions_none_for_empty_window():
+    assert compute_excursions("Bullish", 100.0, []) == (None, None)
+
+
+def test_compute_excursions_bullish_mfe_is_the_high_mae_is_the_low():
+    # Ran up to 107 (favorable, +7%) then down to 96 (adverse, -4%).
+    window = [SimpleNamespace(high=107.0, low=101.0), SimpleNamespace(high=103.0, low=96.0)]
+    mfe, mae = compute_excursions("Bullish", 100.0, window)
+    assert mfe == 7.0
+    assert mae == -4.0
+
+
+def test_compute_excursions_bearish_mfe_is_negative_mae_is_positive():
+    # A "down" call's favorable excursion is itself negative (price fell,
+    # as the call implied) -- same signed convention as
+    # AlertPerformanceGrade's own max_favorable/adverse_excursion_pct.
+    window = [SimpleNamespace(high=107.0, low=101.0), SimpleNamespace(high=103.0, low=93.0)]
+    mfe, mae = compute_excursions("Bearish", 100.0, window)
+    assert mfe == -7.0
+    assert mae == 7.0
+
+
+def test_classify_error_type_none_when_direction_correct_or_ungraded():
+    assert classify_error_type(True, False, True) is None
+    assert classify_error_type(None, None, None) is None
+
+
+def test_classify_error_type_timing_error_when_target_was_touched():
+    assert classify_error_type(False, True, True) == "TIMING_ERROR"
+
+
+def test_classify_error_type_volatility_error_when_confidence_band_missed():
+    assert classify_error_type(False, False, False) == "VOLATILITY_ERROR"
+
+
+def test_classify_error_type_direction_error_as_the_default_miss():
+    assert classify_error_type(False, False, True) == "DIRECTION_ERROR"
 
 
 async def test_grade_price_forecasts_grades_an_elapsed_row():
@@ -956,7 +1024,12 @@ async def test_persist_assigns_incrementing_forecast_version():
         "key_levels": {},
     }
     version = await engine._persist(
-        payload, datetime(2026, 8, 2, tzinfo=UTC), "high", regime_at_forecast="bull"
+        payload,
+        datetime(2026, 8, 2, tzinfo=UTC),
+        "high",
+        regime_at_forecast="bull",
+        is_official_daily=False,
+        confidence_breakdown=[],
     )
 
     assert version == 4
@@ -982,7 +1055,12 @@ async def test_persist_starts_at_version_one_when_no_prior_forecast():
         "key_levels": {},
     }
     version = await engine._persist(
-        payload, datetime(2026, 8, 2, tzinfo=UTC), "low", regime_at_forecast=None
+        payload,
+        datetime(2026, 8, 2, tzinfo=UTC),
+        "low",
+        regime_at_forecast=None,
+        is_official_daily=False,
+        confidence_breakdown=[],
     )
 
     assert version == 1
@@ -1010,9 +1088,380 @@ async def test_persist_supersedes_prior_active_forecasts_for_same_symbol_horizon
         "key_levels": {},
     }
     version = await engine._persist(
-        payload, datetime(2026, 8, 2, tzinfo=UTC), "high", regime_at_forecast="bull"
+        payload,
+        datetime(2026, 8, 2, tzinfo=UTC),
+        "high",
+        regime_at_forecast="bull",
+        is_official_daily=False,
+        confidence_breakdown=[],
     )
 
     assert version == 3
     assert prior_active_row.forecast_status == "SUPERSEDED"
     session.add.assert_called_once()  # the new row -- the old one is UPDATEd, not re-inserted
+
+
+async def test_persist_official_daily_skips_insert_when_todays_row_already_exists():
+    # Forecasting 2.0 (Part 2/4): a retried/duplicate scheduler tick for
+    # the same (symbol, horizon, UTC date) must be a graceful no-op --
+    # returns the existing row's own version, never a second INSERT (the
+    # DB's own partial unique index is the real backstop; this is the
+    # engine-side check that avoids ever hitting it).
+    engine, deps, session = _build_engine()
+    existing_row = SimpleNamespace(forecast_version=5)
+    session.scalar = AsyncMock(return_value=existing_row)
+
+    payload = {
+        "symbol": "BTC",
+        "horizon": "24h",
+        "current_price": 100.0,
+        "target_price": 103.0,
+        "expected_change_pct": 3.0,
+        "direction": "Bullish",
+        "probability_pct": 70,
+        "price_path": [],
+        "probability_distribution": [],
+        "key_levels": {},
+    }
+    version = await engine._persist(
+        payload,
+        datetime(2026, 8, 2, tzinfo=UTC),
+        "high",
+        regime_at_forecast="bull",
+        is_official_daily=True,
+        confidence_breakdown=[],
+    )
+
+    assert version == 5
+    session.add.assert_not_called()
+
+
+async def test_persist_official_daily_inserts_and_stamps_official_fields_when_none_exists():
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(side_effect=[None, 2])  # no existing official row; prior_version=2
+
+    payload = {
+        "symbol": "SOL",
+        "horizon": "24h",
+        "current_price": 100.0,
+        "target_price": 103.0,
+        "expected_change_pct": 3.0,
+        "direction": "Bullish",
+        "probability_pct": 70,
+        "price_path": [],
+        "probability_distribution": [],
+        "key_levels": {},
+    }
+    version = await engine._persist(
+        payload,
+        datetime(2026, 8, 2, tzinfo=UTC),
+        "high",
+        regime_at_forecast="bull",
+        is_official_daily=True,
+        confidence_breakdown=[],
+    )
+
+    assert version == 3
+    added = session.add.call_args[0][0]
+    assert added.is_official_daily is True
+    assert added.official_forecast_date == datetime.now(UTC).date()
+
+
+# ---- Forecasting 2.0: Agent Performance (Part 26) --------------------------
+
+
+def test_aggregate_agent_performance_groups_by_agent_and_symbol():
+    graded = [
+        ("Technical Analysis", "BTC", True),
+        ("Technical Analysis", "BTC", True),
+        ("Technical Analysis", "BTC", False),
+        ("News", "BTC", True),
+    ]
+    results = aggregate_agent_performance(graded, min_sample_size=2)
+
+    by_agent = {(r["agent_name"], r["symbol"]): r for r in results}
+    technical = by_agent[("Technical Analysis", "BTC")]
+    assert technical["sample_size"] == 3
+    assert technical["accuracy_pct"] == pytest.approx(66.7, abs=0.1)
+    assert technical["insufficient_sample"] is False
+
+    news = by_agent[("News", "BTC")]
+    assert news["sample_size"] == 1
+    assert news["accuracy_pct"] is None
+    assert news["insufficient_sample"] is True
+
+
+def test_aggregate_agent_performance_empty_input():
+    assert aggregate_agent_performance([], min_sample_size=10) == []
+
+
+async def test_get_agent_performance_joins_agent_forecasts_to_graded_outcomes():
+    engine, deps, session = _build_engine()
+    session.execute = AsyncMock(
+        return_value=[
+            SimpleNamespace(agent_name="Technical Analysis", symbol="BTC", direction_correct=True),
+            SimpleNamespace(agent_name="Technical Analysis", symbol="BTC", direction_correct=False),
+        ]
+    )
+
+    with patch(
+        "app.services.forecast.engine.get_settings",
+        return_value=SimpleNamespace(agent_performance_min_sample_size=1),
+    ):
+        results = await engine.get_agent_performance(("BTC",))
+
+    assert results == [
+        {
+            "agent_name": "Technical Analysis",
+            "symbol": "BTC",
+            "sample_size": 2,
+            "accuracy_pct": 50.0,
+            "insufficient_sample": False,
+        }
+    ]
+
+
+# ---- Forecasting 2.0: Error Lab (Part 27/28) --------------------------------
+
+
+async def test_get_error_lab_returns_wrong_forecasts_with_linked_agent_evidence():
+    engine, deps, session = _build_engine()
+    wrong_forecast = SimpleNamespace(id=42, symbol="BTC", direction_correct=False)
+    agent_row = SimpleNamespace(forecast_id=42, agent_name="Technical Analysis", confidence_pct=70)
+    session.scalars = AsyncMock(side_effect=[[wrong_forecast], [agent_row]])
+
+    entries = await engine.get_error_lab(("BTC",), limit=20)
+
+    assert len(entries) == 1
+    assert entries[0]["forecast"] is wrong_forecast
+    assert entries[0]["agents"] == [agent_row]
+
+
+async def test_get_error_lab_returns_empty_without_a_second_query_when_nothing_wrong():
+    engine, deps, session = _build_engine()
+    session.scalars = AsyncMock(return_value=[])
+
+    entries = await engine.get_error_lab(("BTC",), limit=20)
+
+    assert entries == []
+    session.scalars.assert_awaited_once()  # no second (agent-evidence) query fired
+
+
+# ---- Forecasting 2.0: Learning Center (Part 33 / Page 7) --------------------
+
+
+def test_derive_learning_insights_none_with_only_one_qualifying_regime():
+    graded = [
+        ("Technical Analysis", "BTC", "risk_on", True),
+        ("Technical Analysis", "BTC", "risk_on", True),
+        ("Technical Analysis", "BTC", "risk_on", False),
+        ("Technical Analysis", "BTC", "risk_off", True),  # only 1 obs -- doesn't qualify
+    ]
+    assert derive_learning_insights(graded, min_sample_size=3, min_gap_pct=15.0) == []
+
+
+def test_derive_learning_insights_none_when_gap_too_small():
+    # Both regimes qualify (3 obs each) but accuracy is identical (66.7%
+    # vs 66.7%) -- no real gap to report.
+    graded = (
+        [("Technical Analysis", "BTC", "risk_on", True)] * 2
+        + [("Technical Analysis", "BTC", "risk_on", False)]
+        + [("Technical Analysis", "BTC", "risk_off", True)] * 2
+        + [("Technical Analysis", "BTC", "risk_off", False)]
+    )
+    assert derive_learning_insights(graded, min_sample_size=3, min_gap_pct=15.0) == []
+
+
+def test_derive_learning_insights_emits_statement_when_gap_and_samples_qualify():
+    graded = (
+        [("Technical Analysis", "BTC", "risk_on", True)] * 4  # 4/4 = 100%
+        + [("Technical Analysis", "BTC", "risk_off", True)]
+        + [("Technical Analysis", "BTC", "risk_off", False)] * 3  # 1/4 = 25%
+    )
+    insights = derive_learning_insights(graded, min_sample_size=4, min_gap_pct=15.0)
+
+    assert len(insights) == 1
+    insight = insights[0]
+    assert insight["agent_name"] == "Technical Analysis"
+    assert insight["symbol"] == "BTC"
+    assert insight["better_regime"] == "risk_on"
+    assert insight["better_accuracy_pct"] == 100.0
+    assert insight["better_sample_size"] == 4
+    assert insight["worse_regime"] == "risk_off"
+    assert insight["worse_accuracy_pct"] == 25.0
+    assert insight["worse_sample_size"] == 4
+    assert "risk_on" in insight["statement"]
+    assert "risk_off" in insight["statement"]
+
+
+def test_derive_learning_insights_empty_input():
+    assert derive_learning_insights([], min_sample_size=5, min_gap_pct=15.0) == []
+
+
+async def test_get_learning_insights_joins_agent_forecasts_regime_and_outcome():
+    engine, deps, session = _build_engine()
+    session.execute = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                agent_name="Technical Analysis",
+                symbol="BTC",
+                regime_at_forecast="risk_on",
+                direction_correct=True,
+            ),
+        ]
+    )
+
+    with patch(
+        "app.services.forecast.engine.get_settings",
+        return_value=SimpleNamespace(
+            learning_insight_min_sample_size=1, learning_insight_min_gap_pct=15.0
+        ),
+    ):
+        # Only one regime present -- no insight possible, but the join/
+        # unpacking itself must not raise.
+        insights = await engine.get_learning_insights(("BTC",))
+
+    assert insights == []
+
+
+# ---- Forecasting 2.0: Forecast Details (Page 3) -----------------------------
+
+
+async def test_get_forecast_detail_returns_snapshot_and_agents():
+    engine, deps, session = _build_engine()
+    snapshot = SimpleNamespace(id=7, symbol="BTC", is_official_daily=True)
+    agent_row = SimpleNamespace(forecast_id=7, agent_name="Technical Analysis")
+    session.scalar = AsyncMock(return_value=snapshot)
+    session.scalars = AsyncMock(return_value=[agent_row])
+
+    detail = await engine.get_forecast_detail(7)
+
+    assert detail == {"forecast": snapshot, "agents": [agent_row]}
+
+
+async def test_get_forecast_detail_none_when_id_not_found():
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(return_value=None)
+
+    detail = await engine.get_forecast_detail(999)
+
+    assert detail is None
+    session.scalars.assert_not_called()  # no wasted second query
+
+
+# ---- Forecasting 2.0: Performance (Page 4) ----------------------------------
+
+
+def test_summarize_official_performance_empty_input():
+    assert summarize_official_performance([]) == {
+        "graded_count": 0,
+        "direction_accuracy_pct": None,
+        "avg_abs_error_pct": None,
+        "target_reached_rate_pct": None,
+    }
+
+
+def test_summarize_official_performance_excludes_missing_error_and_target_fields():
+    # Two graded rows: one has error_pct/target_reached, the other (a
+    # Neutral call) has neither -- those None fields must not drag the
+    # averages/rates down or be silently counted as a miss.
+    graded = [
+        (True, 2.0, True),
+        (False, None, None),
+    ]
+    result = summarize_official_performance(graded)
+    assert result["graded_count"] == 2
+    assert result["direction_accuracy_pct"] == 50.0
+    assert result["avg_abs_error_pct"] == 2.0
+    assert result["target_reached_rate_pct"] == 100.0
+
+
+def test_summarize_official_performance_averages_absolute_error():
+    graded = [(True, -4.0, True), (True, 2.0, False)]
+    result = summarize_official_performance(graded)
+    assert result["avg_abs_error_pct"] == 3.0  # mean(|-4|, |2|)
+    assert result["target_reached_rate_pct"] == 50.0
+
+
+def test_derive_official_calibration_curve_buckets_by_stated_probability():
+    graded = [(65, True), (68, True), (72, False)]
+    curve = derive_official_calibration_curve(graded, bin_width=20)
+    assert len(curve) == 1
+    bucket = curve[0]
+    assert bucket["probability_bucket"] == "60-80%"
+    assert bucket["count"] == 3
+    assert bucket["avg_stated_probability_pct"] == round((65 + 68 + 72) / 3, 2)
+    assert bucket["observed_accuracy_pct"] == round(100 * 2 / 3, 2)
+    assert bucket["sample_sufficiency"] == "insufficient"  # far below the N=30 floor
+
+
+def test_derive_official_calibration_curve_empty_input():
+    assert derive_official_calibration_curve([], bin_width=20) == []
+
+
+def test_derive_official_calibration_curve_clamps_100_pct_into_last_bucket():
+    curve = derive_official_calibration_curve([(100, True)], bin_width=20)
+    assert curve[0]["probability_bucket"] == "80-100%"
+
+
+def test_derive_regime_performance_breakdown_gates_small_groups():
+    graded = [("risk_on", True)] * 2 + [("risk_off", True)] * 5 + [("risk_off", False)] * 3
+    result = derive_regime_performance_breakdown(graded, min_sample_size=5)
+    assert result == [
+        {
+            "regime": "risk_off",
+            "sample_size": 8,
+            "accuracy_pct": 62.5,
+            "insufficient_sample": False,
+        },
+        {
+            "regime": "risk_on",
+            "sample_size": 2,
+            "accuracy_pct": None,
+            "insufficient_sample": True,
+        },
+    ]
+
+
+def test_derive_regime_performance_breakdown_empty_input():
+    assert derive_regime_performance_breakdown([], min_sample_size=5) == []
+
+
+async def test_get_official_performance_combines_summary_calibration_and_regime():
+    engine, deps, session = _build_engine()
+    session.execute = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                probability_pct=70,
+                direction_correct=True,
+                error_pct=1.5,
+                target_reached=True,
+                regime_at_forecast="risk_on",
+            ),
+            SimpleNamespace(
+                probability_pct=72,
+                direction_correct=False,
+                error_pct=-3.0,
+                target_reached=False,
+                regime_at_forecast="risk_on",
+            ),
+        ]
+    )
+
+    with patch(
+        "app.services.forecast.engine.get_settings",
+        return_value=SimpleNamespace(agent_performance_min_sample_size=1),
+    ):
+        result = await engine.get_official_performance(("BTC",))
+
+    assert result["summary"]["graded_count"] == 2
+    assert result["summary"]["direction_accuracy_pct"] == 50.0
+    assert len(result["calibration"]) == 1
+    assert result["regime_breakdown"] == [
+        {
+            "regime": "risk_on",
+            "sample_size": 2,
+            "accuracy_pct": 50.0,
+            "insufficient_sample": False,
+        }
+    ]

@@ -1,9 +1,10 @@
 import enum
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import (
     JSON,
+    Date,
     DateTime,
     Enum,
     ForeignKey,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -1237,9 +1239,83 @@ class PriceForecastSnapshot(Base):
     # close). Nullable: honestly absent for a Neutral call or a target
     # that never differed from the forecast's own current_price.
     target_reached: Mapped[bool | None] = mapped_column(nullable=True)
+    # Forecasting 2.0 (Part 2/3/4): `is_official_daily` marks the ONE row
+    # per (symbol, horizon, official_forecast_date) that counts as the
+    # published daily record -- distinct from every other row this table
+    # already holds for the same symbol/horizon, which stay as intraday
+    # recomputes. The partial unique index below is the actual guarantee
+    # (not just application-level dedup) that at most one official row can
+    # ever exist per asset per day; `_persist()` still checks first so a
+    # duplicate attempt is a graceful skip, not a caught IntegrityError.
+    # `official_forecast_date` is a real Date, not a timestamp, so the
+    # uniqueness check is unambiguous regardless of what UTC second within
+    # the day this ran at.
+    is_official_daily: Mapped[bool] = mapped_column(default=False, index=True)
+    official_forecast_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # Forecasting 2.0 (Part 20/21): path analysis, not just the final-price
+    # error_pct above -- filled in by the same grade_price_forecasts() call,
+    # walking the identical intrabar-high/low window target_reached already
+    # uses, so this is zero extra I/O. Signed relative to `direction` (a
+    # Bullish call's MFE is how far price ran up in its favor, MAE is how
+    # far it ran against it) -- both None for a Neutral call, same as
+    # target_reached, since there's no "favorable side" to measure.
+    max_favorable_excursion_pct: Mapped[float | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
+    max_adverse_excursion_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # Forecasting 2.0 (Part 27): a coarse, honestly-derivable classification
+    # of what kind of miss this was -- filled in only for graded, wrong
+    # calls (direction_correct is False); None for correct calls or
+    # ungraded/Neutral rows. Deliberately limited to what this table can
+    # actually distinguish from data it already has (direction vs. target
+    # vs. confidence-band) rather than the full spec taxonomy (regime/
+    # event/model-attribution error types would require causal analysis
+    # this table has no evidence for -- see the Learning Center follow-up).
+    error_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
+
+    __table_args__ = (
+        Index(
+            "uq_official_daily_forecast",
+            "symbol",
+            "horizon",
+            "official_forecast_date",
+            unique=True,
+            postgresql_where=text("is_official_daily IS TRUE"),
+        ),
+    )
+
+
+class AgentForecast(Base):
+    """Forecasting 2.0 (Part 10/11): one row per contributing agent/data
+    source for a given PriceForecastSnapshot -- the per-agent evidence
+    table the spec asks for. Not a new agent system: `ForecastEngine`
+    already computes exactly this breakdown every cycle (Technical/News/
+    Sentiment/Macro/Whales/On-chain/Correlations/Momentum/Pattern/Risk,
+    see `_confidence_breakdown()`), it was just never persisted before --
+    only returned transiently in the live API payload. `direction` mirrors
+    the parent forecast's own call and `confidence_pct` is that source's
+    own confidence read (this project's existing per-source breakdown is a
+    confidence/agreement signal, not an independent per-source direction+
+    probability model -- so there is no separate per-agent probability to
+    store). `key_factors` is reserved for a future per-agent evidence
+    string (e.g. which specific indicator/headline drove this source's
+    read) -- honestly empty for now rather than fabricated, since no
+    current engine call site produces that granularity per source."""
+
+    __tablename__ = "agent_forecasts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    forecast_id: Mapped[int] = mapped_column(
+        ForeignKey("price_forecast_snapshots.id"), index=True
+    )
+    agent_name: Mapped[str] = mapped_column(String(40))
+    direction: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    confidence_pct: Mapped[int | None] = mapped_column(nullable=True)
+    key_factors: Mapped[list] = mapped_column(JSON, default=list)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 
 
 class AlertPerformanceGrade(Base):

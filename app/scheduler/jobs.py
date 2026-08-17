@@ -41,6 +41,7 @@ from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.ranking.engine import RankingEngine
+from app.services.realtime.config import parse_watchlist
 from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import MarketReplayEngine, get_replay_comparison
 from app.services.research.researcher import AIResearcherEngine
@@ -106,6 +107,7 @@ MONTHLY_PERFORMANCE_JOB_ID = "broadcast_monthly_performance"
 FORECAST_JOB_ID = "compute_forecast"
 FORECAST_GRADING_JOB_ID = "grade_forecasts"
 FORECAST_INVALIDATION_JOB_ID = "invalidate_forecasts"
+OFFICIAL_DAILY_FORECAST_JOB_ID = "generate_official_daily_forecast"
 ALERT_PERFORMANCE_GRADING_JOB_ID = "grade_alert_performance"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
@@ -528,40 +530,95 @@ async def compute_forecast_job() -> None:
             logger.exception("Forecast computation failed for BTC/%s", horizon)
 
 
+def official_forecast_symbols() -> tuple[str, ...]:
+    """Forecasting 2.0: the roster grade/invalidate/generate-daily all
+    share, read fresh from settings each call (not a module-level
+    constant) so a config change takes effect without a restart -- same
+    pattern realtime_watchlist already uses."""
+    return tuple(parse_watchlist(get_settings().official_forecast_symbols))
+
+
 async def grade_forecasts_job() -> None:
     """AI Forecast Center self-learning: fills in realized_price/error_pct
     on every PriceForecastSnapshot whose horizon has actually elapsed in
-    stored BTC history, so future ForecastEngine.compute() calls have a
-    real track record to fold into `track_record`. BTC only for now,
-    matching compute_forecast_job."""
-    config = find_symbol_config("BTC")
-    if config is None:
-        return
-    try:
-        graded = await grade_price_forecasts(get_session_factory(), "BTC", config.model)
-        if graded:
-            logger.info("Forecast grading: %d BTC forecast(s) graded", graded)
-    except Exception:
-        logger.exception("Forecast grading job failed")
+    stored history, so future ForecastEngine.compute() calls have a real
+    track record to fold into `track_record`. Loops over
+    official_forecast_symbols() (BTC/SOL/LINK/UNI by default) -- was BTC
+    only until Forecasting 2.0 added official daily forecasts for the
+    other three; a symbol with no rows yet (e.g. LINK/UNI before their
+    history has synced) simply grades zero, never an error."""
+    for symbol in official_forecast_symbols():
+        config = find_symbol_config(symbol)
+        if config is None:
+            continue
+        try:
+            graded = await grade_price_forecasts(get_session_factory(), symbol, config.model)
+            if graded:
+                logger.info("Forecast grading: %d %s forecast(s) graded", graded, symbol)
+        except Exception:
+            logger.exception("Forecast grading job failed for %s", symbol)
 
 
 async def invalidate_forecasts_job() -> None:
     """AI Forecast Center invalidation: fires structured, machine-checkable
     invalidation rules (see app.services.forecast.invalidation) against
-    every still-ACTIVE BTC forecast on each cycle -- independent of, and
-    can trigger well before, grade_forecasts_job's horizon-elapsed grading.
-    BTC only for now, matching compute_forecast_job/grade_forecasts_job."""
-    config = find_symbol_config("BTC")
-    if config is None:
-        return
+    every still-ACTIVE forecast on each cycle -- independent of, and can
+    trigger well before, grade_forecasts_job's horizon-elapsed grading.
+    Loops over official_forecast_symbols(), matching grade_forecasts_job."""
+    for symbol in official_forecast_symbols():
+        config = find_symbol_config(symbol)
+        if config is None:
+            continue
+        try:
+            invalidated = await check_and_invalidate_forecasts(
+                get_session_factory(), symbol, config.model
+            )
+            if invalidated:
+                logger.info(
+                    "Forecast invalidation: %d %s forecast(s) invalidated", invalidated, symbol
+                )
+        except Exception:
+            logger.exception("Forecast invalidation job failed for %s", symbol)
+
+
+async def generate_official_daily_forecast_job() -> None:
+    """Forecasting 2.0 (Part 1-4): the ONE official 24h forecast per
+    symbol per UTC calendar day, for official_forecast_symbols() (BTC/
+    SOL/LINK/UNI by default) -- distinct from compute_forecast_job's
+    BTC-only intraday recomputes above, which keep running independently
+    on their own cadence. Reuses the exact same ForecastEngine.compute();
+    is_official_daily=True is the only difference, which _persist() uses
+    to enforce the one-per-day guarantee (idempotent against a retried
+    tick -- see _persist's own docstring). A symbol with insufficient
+    synced history (LINK/UNI until their history backfills) honestly
+    computes nothing this cycle rather than fabricating a forecast.
+
+    Once every symbol has been attempted, broadcasts a Telegram digest of
+    whatever forecasts this cycle actually produced (see
+    format_official_daily_digest) -- the exact same payloads compute()
+    already returned, no re-fetch. broadcast_text() itself no-ops when
+    Telegram isn't configured, so this is a no-op deployment with no
+    broadcast chat ids configured."""
+    from app.telegram.broadcast import broadcast_text
+    from app.telegram.formatters import format_official_daily_digest
+
+    engine = build_forecast_engine()
+    payloads = []
+    for symbol in official_forecast_symbols():
+        try:
+            payload = await engine.compute(symbol, "24h", is_official_daily=True)
+            if payload is None:
+                logger.info("Official daily forecast %s/24h: insufficient data this cycle", symbol)
+            else:
+                payloads.append(payload)
+        except Exception:
+            logger.exception("Official daily forecast computation failed for %s/24h", symbol)
+
     try:
-        invalidated = await check_and_invalidate_forecasts(
-            get_session_factory(), "BTC", config.model
-        )
-        if invalidated:
-            logger.info("Forecast invalidation: %d BTC forecast(s) invalidated", invalidated)
+        digest = format_official_daily_digest(payloads, datetime.now(UTC).date().isoformat())
+        await broadcast_text(digest)
     except Exception:
-        logger.exception("Forecast invalidation job failed")
+        logger.exception("Official daily forecast digest broadcast failed")
 
 
 async def grade_alert_performance_job() -> None:
@@ -883,6 +940,13 @@ def start_scheduler() -> AsyncIOScheduler:
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=FORECAST_INVALIDATION_JOB_ID,
         next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _timed(generate_official_daily_forecast_job),
+        trigger=CronTrigger(hour=settings.daily_forecast_hour_utc, minute=0, timezone="UTC"),
+        id=OFFICIAL_DAILY_FORECAST_JOB_ID,
         max_instances=1,
         coalesce=True,
     )

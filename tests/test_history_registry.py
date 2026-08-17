@@ -29,6 +29,8 @@ def test_registry_covers_the_expected_symbol_universe():
         "BTC",
         "ETH",
         "SOL",
+        "LINK",
+        "UNI",
         # macro
         "DXY",
         "GOLD",
