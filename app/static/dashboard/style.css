@@ -130,7 +130,8 @@ h3 { font-size: 14px; margin: 20px 0 10px; color: var(--text); }
 .down { color: var(--red); }
 .neutral { color: var(--muted); }
 
-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13.5px; }
+.table-wrap { width: 100%; overflow-x: auto; margin-bottom: 20px; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
 th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; }
 

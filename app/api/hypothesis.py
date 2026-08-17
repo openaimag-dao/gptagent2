@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from app.api.admin import require_admin_key
 from app.database.session import get_session_factory
 from app.services.hypothesis.engine import HypothesisEngine
 from app.services.hypothesis.templates import HypothesisTemplate
@@ -36,7 +37,7 @@ class HypothesisRequest(BaseModel):
     event_b: str
 
 
-@router.post("/test")
+@router.post("/test", dependencies=[Depends(require_admin_key)])
 async def test_hypothesis(request: HypothesisRequest) -> dict:
     engine = HypothesisEngine(get_session_factory())
     hypothesis = HypothesisTemplate(
@@ -48,7 +49,7 @@ async def test_hypothesis(request: HypothesisRequest) -> dict:
     return _serialize(row)
 
 
-@router.post("/test-all")
+@router.post("/test-all", dependencies=[Depends(require_admin_key)])
 async def test_all_hypotheses() -> dict:
     engine = HypothesisEngine(get_session_factory())
     rows = await engine.test_all()

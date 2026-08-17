@@ -1,7 +1,13 @@
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from app.services.opportunities.engine import classify_opportunity_rating, rank_opportunities
+import pytest
+
+from app.services.opportunities.engine import (
+    classify_opportunity_rating,
+    compute_risk_adjusted_score,
+    rank_opportunities,
+)
 
 
 def test_classify_opportunity_rating_bullish_tiers():
@@ -20,18 +26,48 @@ def test_classify_opportunity_rating_none_probability_is_unrated():
     assert classify_opportunity_rating("bullish", None) == "Unrated"
 
 
-def _event(symbol, direction, probability_pct, price=100.0):
+def _event(symbol, direction, probability_pct, price=100.0, risk_score=30.0):
     return SimpleNamespace(
         symbol=symbol,
         direction=direction,
         price=price,
         probability_pct=probability_pct,
         confidence_pct=83,
-        risk_score=30.0,
+        risk_score=risk_score,
         expected_continuation="likely to continue",
         reasoning="Breakout (bullish). Confirmed by: Volume.",
         computed_at=datetime(2026, 8, 3, tzinfo=UTC),
     )
+
+
+def test_compute_risk_adjusted_score_discounts_by_risk():
+    # 90% probability sitting right on the level (risk_score 90) is more
+    # precarious than 70% probability with room to breathe (risk_score 10).
+    assert compute_risk_adjusted_score(90.0, 90.0) == pytest.approx(9.0)
+    assert compute_risk_adjusted_score(70.0, 10.0) == pytest.approx(63.0)
+
+
+def test_compute_risk_adjusted_score_missing_risk_leaves_probability_undiscounted():
+    assert compute_risk_adjusted_score(70.0, None) == 70.0
+
+
+def test_compute_risk_adjusted_score_missing_probability_is_none():
+    assert compute_risk_adjusted_score(None, 30.0) is None
+
+
+def test_rank_opportunities_risk_adjustment_can_flip_order():
+    events = [
+        _event("BTC", "bullish", 90.0, risk_score=90.0),  # risk-adjusted: 9.0
+        _event("ETH", "bullish", 70.0, risk_score=10.0),  # risk-adjusted: 63.0
+    ]
+
+    ranked = rank_opportunities(events)
+
+    assert [o["symbol"] for o in ranked] == ["ETH", "BTC"]
+    assert ranked[0]["risk_adjusted_score"] == 63.0
+    assert ranked[1]["risk_adjusted_score"] == 9.0
+    # Raw probability_pct is untouched -- only the sort order changes.
+    assert ranked[0]["probability_pct"] == 70.0
 
 
 def test_rank_opportunities_sorts_by_probability_descending():

@@ -73,10 +73,10 @@ function fmtNum(v, digits = 2) {
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
-function card(label, value, sub, cls) {
+function card(label, value, sub, cls, id) {
   return el("div", { class: "card" }, [
     el("div", { class: "label" }, label),
-    el("div", { class: `value ${cls || ""}` }, String(value)),
+    el("div", { class: `value ${cls || ""}`, ...(id ? { id } : {}) }, String(value)),
     sub ? el("div", { class: "sub" }, sub) : null,
   ]);
 }
@@ -106,11 +106,15 @@ function errorBox(err) {
   return el("p", { class: "error" }, `Error: ${err.message}`);
 }
 
+// Wrapped in a scrollable container (not a bare <table>) so a wide table
+// scrolls horizontally instead of overflowing the page on a narrow/mobile
+// viewport -- every call site just appends/returns this as one node, so
+// the wrapper is transparent to callers.
 function table(headers, rows) {
   const t = el("table");
   t.appendChild(el("tr", {}, headers.map((h) => el("th", {}, h))));
   for (const row of rows) t.appendChild(el("tr", {}, row.map((c) => el("td", {}, c))));
-  return t;
+  return el("div", { class: "table-wrap" }, [t]);
 }
 
 // ---- Live Dashboard Upgrade: realtime price components -------------------
@@ -196,6 +200,47 @@ function updateTickerCell(symbol) {
     void priceEl.offsetWidth; // restart the CSS animation on repeated ticks
     priceEl.classList.add(flashClass);
   }
+}
+
+// Forecast Center's "Current Price"/"Expected Change" must never go stale
+// while the live price keeps moving (the target price is a fixed $ figure
+// computed once server-side; only "how far away is it from here" changes).
+// Patches the two DOM nodes in place -- never refetches the forecast
+// itself just because the price ticked, and never recomputes anything
+// beyond simple arithmetic against the server's own target_price.
+let forecastLiveUnsubscribe = null;
+
+function updateForecastLivePrice(payload) {
+  const entry = RealtimeStore.get(payload.symbol);
+  if (!entry || entry.price == null) return;
+
+  const priceNode = document.getElementById("forecast-current-price");
+  if (priceNode) {
+    priceNode.textContent = fmtNum(entry.price);
+    const badgeHost = priceNode.parentElement;
+    const oldBadge = badgeHost ? badgeHost.querySelector(".freshness-badge") : null;
+    if (oldBadge) oldBadge.replaceWith(dataFreshnessBadge(entry.freshness, entry.ageSeconds));
+  }
+
+  if (payload.target_price != null && entry.price !== 0) {
+    const upsidePct = ((payload.target_price - entry.price) / entry.price) * 100;
+    const changeNode = document.getElementById("forecast-expected-change");
+    if (changeNode) {
+      changeNode.textContent = fmtPct(upsidePct);
+      changeNode.className = `value ${changeClass(upsidePct)}`;
+    }
+  }
+}
+
+function mountForecastLivePrice(payload) {
+  if (forecastLiveUnsubscribe) {
+    forecastLiveUnsubscribe();
+    forecastLiveUnsubscribe = null;
+  }
+  forecastLiveUnsubscribe = RealtimeStore.subscribe((dirtySymbols) => {
+    if (dirtySymbols.has(payload.symbol)) updateForecastLivePrice(payload);
+  });
+  updateForecastLivePrice(payload);
 }
 
 const _CONNECTION_STATUS_LABELS = {
@@ -761,10 +806,18 @@ function buildForecastCard(payload, onHorizonChange, historyNodes, history) {
     ),
   ]);
 
+  const liveCurrent = RealtimeStore.get(payload.symbol);
   const hero = el("div", { class: "forecast-hero" }, [
     el("div", { class: "forecast-hero-block" }, [
       el("div", { class: "forecast-stat-label" }, "Current Price"),
-      el("div", { class: "forecast-price" }, fmtNum(payload.current_price)),
+      el(
+        "div",
+        { class: "forecast-price", id: "forecast-current-price" },
+        fmtNum(liveCurrent ? liveCurrent.price : payload.current_price)
+      ),
+      liveCurrent
+        ? dataFreshnessBadge(liveCurrent.freshness, liveCurrent.ageSeconds)
+        : dataFreshnessBadge(null, null),
     ]),
     el("div", { class: `forecast-arrow ${style.cls}` }, style.arrow),
     el("div", { class: "forecast-hero-block" }, [
@@ -775,7 +828,13 @@ function buildForecastCard(payload, onHorizonChange, historyNodes, history) {
   ]);
 
   const heroStats = el("div", { class: "grid" }, [
-    card("Expected Change", fmtPct(payload.expected_change_pct), null, changeClass(payload.expected_change_pct)),
+    card(
+      "Expected Change",
+      fmtPct(payload.expected_change_pct),
+      null,
+      changeClass(payload.expected_change_pct),
+      "forecast-expected-change"
+    ),
     card("Probability", `${payload.probability_pct}%`),
     card("Confidence", confidenceLabel),
     card("Expected Range", payload.expected_range ? `${fmtNum(payload.expected_range.low)} - ${fmtNum(payload.expected_range.high)}` : "n/a"),
@@ -892,6 +951,7 @@ async function renderForecastCenter() {
       return;
     }
     container.appendChild(buildForecastCard(payload, load, forecastHistorySection(history), history));
+    mountForecastLivePrice(payload);
   }
 
   await load("24h");
@@ -1124,7 +1184,7 @@ function renderTopOpportunities(data) {
     el(
       "p",
       { class: "sub" },
-      "Ranked by Breakout Intelligence's own confirmation-weighted probability across the tracked symbol universe."
+      "Ranked by risk-adjusted score -- Breakout Intelligence's confirmation-weighted probability discounted by how close price sits to the breakout level."
     )
   );
   nodes.push(
@@ -2908,7 +2968,7 @@ async function renderResearch() {
   const hBtn = el("button", {}, "Test hypothesis");
   hBtn.addEventListener("click", async () => {
     try {
-      await fetchJSON("/api/hypothesis/test", {
+      await fetchJSONWithAdminKey("/api/hypothesis/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ symbol: hSymbol.value, event_a: hEventA.value, event_b: hEventB.value }),
