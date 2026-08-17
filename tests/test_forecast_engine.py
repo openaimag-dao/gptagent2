@@ -28,6 +28,7 @@ from app.services.forecast.engine import (
     compute_price_target,
     compute_probability_distribution,
     compute_scenario_cases,
+    derive_learning_insights,
     derive_regime_label,
     derive_risk_meter,
     grade_confidence,
@@ -1241,3 +1242,80 @@ async def test_get_error_lab_returns_empty_without_a_second_query_when_nothing_w
 
     assert entries == []
     session.scalars.assert_awaited_once()  # no second (agent-evidence) query fired
+
+
+# ---- Forecasting 2.0: Learning Center (Part 33 / Page 7) --------------------
+
+
+def test_derive_learning_insights_none_with_only_one_qualifying_regime():
+    graded = [
+        ("Technical Analysis", "BTC", "risk_on", True),
+        ("Technical Analysis", "BTC", "risk_on", True),
+        ("Technical Analysis", "BTC", "risk_on", False),
+        ("Technical Analysis", "BTC", "risk_off", True),  # only 1 obs -- doesn't qualify
+    ]
+    assert derive_learning_insights(graded, min_sample_size=3, min_gap_pct=15.0) == []
+
+
+def test_derive_learning_insights_none_when_gap_too_small():
+    # Both regimes qualify (3 obs each) but accuracy is identical (66.7%
+    # vs 66.7%) -- no real gap to report.
+    graded = (
+        [("Technical Analysis", "BTC", "risk_on", True)] * 2
+        + [("Technical Analysis", "BTC", "risk_on", False)]
+        + [("Technical Analysis", "BTC", "risk_off", True)] * 2
+        + [("Technical Analysis", "BTC", "risk_off", False)]
+    )
+    assert derive_learning_insights(graded, min_sample_size=3, min_gap_pct=15.0) == []
+
+
+def test_derive_learning_insights_emits_statement_when_gap_and_samples_qualify():
+    graded = (
+        [("Technical Analysis", "BTC", "risk_on", True)] * 4  # 4/4 = 100%
+        + [("Technical Analysis", "BTC", "risk_off", True)]
+        + [("Technical Analysis", "BTC", "risk_off", False)] * 3  # 1/4 = 25%
+    )
+    insights = derive_learning_insights(graded, min_sample_size=4, min_gap_pct=15.0)
+
+    assert len(insights) == 1
+    insight = insights[0]
+    assert insight["agent_name"] == "Technical Analysis"
+    assert insight["symbol"] == "BTC"
+    assert insight["better_regime"] == "risk_on"
+    assert insight["better_accuracy_pct"] == 100.0
+    assert insight["better_sample_size"] == 4
+    assert insight["worse_regime"] == "risk_off"
+    assert insight["worse_accuracy_pct"] == 25.0
+    assert insight["worse_sample_size"] == 4
+    assert "risk_on" in insight["statement"]
+    assert "risk_off" in insight["statement"]
+
+
+def test_derive_learning_insights_empty_input():
+    assert derive_learning_insights([], min_sample_size=5, min_gap_pct=15.0) == []
+
+
+async def test_get_learning_insights_joins_agent_forecasts_regime_and_outcome():
+    engine, deps, session = _build_engine()
+    session.execute = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                agent_name="Technical Analysis",
+                symbol="BTC",
+                regime_at_forecast="risk_on",
+                direction_correct=True,
+            ),
+        ]
+    )
+
+    with patch(
+        "app.services.forecast.engine.get_settings",
+        return_value=SimpleNamespace(
+            learning_insight_min_sample_size=1, learning_insight_min_gap_pct=15.0
+        ),
+    ):
+        # Only one regime present -- no insight possible, but the join/
+        # unpacking itself must not raise.
+        insights = await engine.get_learning_insights(("BTC",))
+
+    assert insights == []

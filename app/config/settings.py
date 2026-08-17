@@ -319,3 +319,14 @@ class Settings(BaseSettings):
     # deliberately smaller than calibration_min_sample_size (30) above,
     # which grades against the much higher-volume intraday path.
     agent_performance_min_sample_size: int = 10
+    # Learning Center (Part 33/Page 7): a regime-vs-regime accuracy
+    # comparison for one (agent, symbol) is only ever stated as "what the
+    # system learned" when BOTH regime buckets independently clear this
+    # sample size -- smaller than agent_performance_min_sample_size since
+    # splitting by regime on top of (agent, symbol) shrinks each bucket
+    # further, but still a real floor, never zero. min_gap_pct is the
+    # minimum accuracy-percentage-point difference between the two
+    # regimes before it's worth surfacing at all -- filters out noise
+    # from two buckets that are statistically indistinguishable.
+    learning_insight_min_sample_size: int = 5
+    learning_insight_min_gap_pct: float = 15.0

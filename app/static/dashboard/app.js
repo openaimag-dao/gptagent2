@@ -1568,6 +1568,8 @@ async function renderForecast2() {
       el("a", { href: "#forecast2agents" }, "Agent Performance"),
       " · ",
       el("a", { href: "#forecast2errors" }, "Error Lab"),
+      " · ",
+      el("a", { href: "#forecast2learning" }, "Learning Center"),
     ])
   );
 
@@ -1687,6 +1689,57 @@ async function renderForecastErrorLab() {
   } else {
     nodes.push(
       el("p", { class: "sub" }, "No wrong official daily forecasts recorded yet.")
+    );
+  }
+
+  return nodes;
+}
+
+// ---- Forecasting 2.0: Learning Center (Part 33 / Page 7) ----------------
+// The one insight this data model can honestly support: does an agent's
+// realized accuracy differ between two market regimes it's actually been
+// graded in? Every statement here is a plain description of two observed
+// rates (correlational, never causal) and only appears once both regimes
+// clear the server's own configured sample-size floor -- see
+// derive_learning_insights's docstring. No LLM narrative, no invented
+// insight: a symbol with nothing to show says so honestly.
+
+async function renderForecastLearningCenter() {
+  const nodes = [
+    el("h1", {}, "Learning Center"),
+    el(
+      "p",
+      { class: "sub" },
+      "What the system has learned so far, based only on accumulated statistics -- " +
+        "an insight only appears once both regimes being compared have enough graded " +
+        "forecasts, never a guess."
+    ),
+  ];
+
+  const data = await safe("/api/forecast/official/learning-center");
+  const symbols = data ? Object.keys(data.by_symbol).sort() : [];
+  if (symbols.length) {
+    for (const symbol of symbols) {
+      nodes.push(el("h2", {}, symbol));
+      nodes.push(
+        el(
+          "ul",
+          { class: "structured-list" },
+          data.by_symbol[symbol].map((i) => el("li", {}, i.statement))
+        )
+      );
+    }
+  } else {
+    const minSample = data ? data.min_sample_size : "?";
+    const minGap = data ? data.min_gap_pct : "?";
+    nodes.push(
+      el(
+        "p",
+        { class: "sub" },
+        `Not enough graded official forecasts yet across at least two regimes ` +
+          `(needs >= ${minSample} graded forecasts in each regime and a >= ${minGap} ` +
+          `percentage-point accuracy gap between them before anything is shown here).`
+      )
     );
   }
 
@@ -4563,7 +4616,7 @@ async function renderSettings() {
 }
 
 const PAGES = {
-  overview: renderOverview, forecast2: renderForecast2, forecast2agents: renderForecastAgents, forecast2errors: renderForecastErrorLab, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
+  overview: renderOverview, forecast2: renderForecast2, forecast2agents: renderForecastAgents, forecast2errors: renderForecastErrorLab, forecast2learning: renderForecastLearningCenter, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
   patterns: renderPatterns, breakout: renderBreakout, features: renderFeatures, liquidity: renderLiquidity, sentiment: renderSentiment,

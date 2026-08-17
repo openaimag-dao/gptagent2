@@ -649,6 +649,80 @@ def aggregate_agent_performance(
     return results
 
 
+def derive_learning_insights(
+    graded: list[tuple[str, str, str, bool]],
+    min_sample_size: int,
+    min_gap_pct: float,
+) -> list[dict]:
+    """Pure function: Forecasting 2.0 (Part 33 / Page 7, Learning Center)
+    -- the one honest, non-fabricated "what the system learned" signal
+    this data model can actually support: for a given (agent, symbol),
+    does its realized direction accuracy differ meaningfully between two
+    market regimes it's actually been graded in? `graded` is (agent_name,
+    symbol, regime_at_forecast, direction_correct) quadruples, same
+    upstream filtering as aggregate_agent_performance (agent had real
+    data, parent forecast graded a resolvable direction) plus a non-null
+    regime.
+
+    An insight is only ever emitted when BOTH regime buckets independently
+    clear `min_sample_size` (a comparison built on a 2-observation bucket
+    proves nothing) AND the accuracy gap between them is at least
+    `min_gap_pct` (two buckets a couple points apart are statistically
+    indistinguishable noise, not a real regime effect) -- this project's
+    same statistical-honesty rule as calibration/agent-performance,
+    applied here to a comparison instead of a single number. Symbols/
+    agents with fewer than two qualifying regimes produce no insight at
+    all rather than a guessed one. `statement` is a plain description of
+    the two observed rates, deliberately phrased as correlational
+    ("was right more often in X than Y"), never causal ("X works
+    because...") -- this data has no causal evidence to support that."""
+    buckets: dict[tuple[str, str, str], list[bool]] = defaultdict(list)
+    for agent_name, symbol, regime, correct in graded:
+        buckets[(agent_name, symbol, regime)].append(correct)
+
+    by_agent_symbol: dict[tuple[str, str], dict[str, list[bool]]] = defaultdict(dict)
+    for (agent_name, symbol, regime), outcomes in buckets.items():
+        by_agent_symbol[(agent_name, symbol)][regime] = outcomes
+
+    insights = []
+    for (agent_name, symbol), regimes in sorted(by_agent_symbol.items()):
+        qualifying = {
+            regime: outcomes
+            for regime, outcomes in regimes.items()
+            if len(outcomes) >= min_sample_size
+        }
+        if len(qualifying) < 2:
+            continue
+        accuracy_by_regime = {
+            regime: 100 * sum(outcomes) / len(outcomes) for regime, outcomes in qualifying.items()
+        }
+        better_regime = max(accuracy_by_regime, key=accuracy_by_regime.get)
+        worse_regime = min(accuracy_by_regime, key=accuracy_by_regime.get)
+        gap = accuracy_by_regime[better_regime] - accuracy_by_regime[worse_regime]
+        if gap < min_gap_pct:
+            continue
+        better_acc = round(accuracy_by_regime[better_regime], 1)
+        worse_acc = round(accuracy_by_regime[worse_regime], 1)
+        insights.append(
+            {
+                "agent_name": agent_name,
+                "symbol": symbol,
+                "better_regime": better_regime,
+                "better_accuracy_pct": better_acc,
+                "better_sample_size": len(qualifying[better_regime]),
+                "worse_regime": worse_regime,
+                "worse_accuracy_pct": worse_acc,
+                "worse_sample_size": len(qualifying[worse_regime]),
+                "statement": (
+                    f"{agent_name} was right more often in {better_regime} "
+                    f"({better_acc}%, n={len(qualifying[better_regime])}) than in "
+                    f"{worse_regime} ({worse_acc}%, n={len(qualifying[worse_regime])})."
+                ),
+            }
+        )
+    return insights
+
+
 def _realized_sign(current_price: float, realized_price: float) -> int:
     if realized_price > current_price:
         return 1
@@ -1524,6 +1598,42 @@ class ForecastEngine:
             )
             graded = [(r.agent_name, r.symbol, r.direction_correct) for r in rows]
         return aggregate_agent_performance(graded, min_sample_size)
+
+    async def get_learning_insights(self, symbols: tuple[str, ...]) -> list[dict]:
+        """Forecasting 2.0 (Part 33 / Page 7, Learning Center): regime-
+        conditioned accuracy comparisons per (agent, symbol) -- same join
+        as get_agent_performance, with regime_at_forecast (already
+        persisted on every forecast, see PriceForecastSnapshot's own
+        docstring) added to the grouping. No new data collection."""
+        settings = get_settings()
+        async with self._session_factory() as session:
+            rows = await session.execute(
+                select(
+                    AgentForecast.agent_name,
+                    PriceForecastSnapshot.symbol,
+                    PriceForecastSnapshot.regime_at_forecast,
+                    PriceForecastSnapshot.direction_correct,
+                )
+                .join(
+                    PriceForecastSnapshot,
+                    AgentForecast.forecast_id == PriceForecastSnapshot.id,
+                )
+                .where(
+                    PriceForecastSnapshot.symbol.in_(symbols),
+                    PriceForecastSnapshot.is_official_daily.is_(True),
+                    PriceForecastSnapshot.direction_correct.is_not(None),
+                    PriceForecastSnapshot.regime_at_forecast.is_not(None),
+                    AgentForecast.confidence_pct.is_not(None),
+                )
+            )
+            graded = [
+                (r.agent_name, r.symbol, r.regime_at_forecast, r.direction_correct) for r in rows
+            ]
+        return derive_learning_insights(
+            graded,
+            settings.learning_insight_min_sample_size,
+            settings.learning_insight_min_gap_pct,
+        )
 
     async def get_error_lab(self, symbols: tuple[str, ...], limit: int = 20) -> list[dict]:
         """Forecasting 2.0 (Part 27/28 / Page 6): the most recent official

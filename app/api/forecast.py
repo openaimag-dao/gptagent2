@@ -194,3 +194,24 @@ async def get_error_lab(limit: int = Query(20, le=100)) -> dict:
             for entry in entries
         ]
     }
+
+
+@router.get("/official/learning-center")
+async def get_learning_center() -> dict:
+    """Forecasting 2.0 (Part 33 / Page 7, Learning Center) -- regime-
+    conditioned accuracy comparisons per (agent, symbol), grouped by
+    symbol for display. Empty for a symbol/agent pair until enough graded
+    forecasts exist in at least two distinct regimes -- see
+    derive_learning_insights's own docstring for the exact sample-size and
+    gap-size gates that keep this from ever guessing an insight."""
+    engine = build_forecast_engine()
+    settings = get_settings()
+    insights = await engine.get_learning_insights(_official_forecast_symbols())
+    by_symbol: dict[str, list[dict]] = {}
+    for insight in insights:
+        by_symbol.setdefault(insight["symbol"], []).append(insight)
+    return {
+        "min_sample_size": settings.learning_insight_min_sample_size,
+        "min_gap_pct": settings.learning_insight_min_gap_pct,
+        "by_symbol": by_symbol,
+    }
