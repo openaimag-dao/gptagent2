@@ -4904,8 +4904,128 @@ async function renderSettings() {
   });
   await pollStatus();
 
+  nodes.push(el("h2", {}, "Browser Notifications"));
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      "Native browser notifications for newly broadcast Watchdog alerts -- the same ones shown " +
+        "in Live Alerts on Overview and Watchdog Hub's Alert History. Checked every 60s while " +
+        "this tab is open, regardless of which page you're on."
+    )
+  );
+  const notifStatus = el("p", { class: "sub" });
+  const notifBtn = el("button", {}, "");
+  function drawNotifState() {
+    if (!NotificationWatcher.isSupported()) {
+      notifStatus.textContent = "Not supported in this browser.";
+      notifBtn.style.display = "none";
+      return;
+    }
+    const perm = NotificationWatcher.permission();
+    if (perm === "denied") {
+      notifStatus.textContent =
+        "Blocked at the browser level -- re-enable notifications for this site in your browser settings.";
+      notifBtn.style.display = "none";
+      return;
+    }
+    notifBtn.style.display = "";
+    if (perm === "granted" && NotificationWatcher.isEnabled()) {
+      notifStatus.textContent = "Enabled.";
+      notifBtn.textContent = "Disable";
+    } else {
+      notifStatus.textContent =
+        perm === "granted" ? "Permission granted, not enabled." : "Not enabled.";
+      notifBtn.textContent = "Enable";
+    }
+  }
+  notifBtn.addEventListener("click", async () => {
+    if (NotificationWatcher.isEnabled()) {
+      NotificationWatcher.setEnabled(false);
+      drawNotifState();
+      return;
+    }
+    const perm = await NotificationWatcher.requestPermission();
+    if (perm === "granted") NotificationWatcher.setEnabled(true);
+    drawNotifState();
+  });
+  drawNotifState();
+  nodes.push(el("div", { class: "controls" }, [notifBtn]), notifStatus);
+
   return nodes;
 }
+
+// ---- Browser Notifications ------------------------------------------------
+// Frontend-only: polls the same /api/watchdog/events feed Live Alerts
+// (Overview) and Watchdog Hub's own Alert History table already show,
+// independent of which page is currently open -- same "persists across
+// navigation" pattern as RealtimeStore.subscribeStatus below. Only ever
+// fires a native Notification for entries with summary.broadcast === true
+// (the same "was this actually significant enough to send" flag the
+// Watchdog Hub table already displays as sent/suppressed), so enabling this
+// never turns into notification spam from suppressed low-tier detections.
+// Silently does nothing if the Notification API isn't available or
+// permission hasn't been granted -- Settings shows the real permission
+// state, never a fake "enabled" toggle.
+
+const _NOTIFICATIONS_ENABLED_KEY = "dashboard_notifications_enabled";
+const _NOTIFICATIONS_LAST_SEEN_KEY = "dashboard_notifications_last_seen";
+const _NOTIFICATIONS_POLL_MS = 60000;
+
+const NotificationWatcher = (() => {
+  let timer = null;
+
+  function isSupported() {
+    return typeof Notification !== "undefined";
+  }
+
+  function isEnabled() {
+    return localStorage.getItem(_NOTIFICATIONS_ENABLED_KEY) === "1";
+  }
+
+  function setEnabled(value) {
+    localStorage.setItem(_NOTIFICATIONS_ENABLED_KEY, value ? "1" : "0");
+  }
+
+  function permission() {
+    return isSupported() ? Notification.permission : "unsupported";
+  }
+
+  async function requestPermission() {
+    if (!isSupported()) return "unsupported";
+    return Notification.requestPermission();
+  }
+
+  async function poll() {
+    if (!isEnabled() || !isSupported() || Notification.permission !== "granted") return;
+    const data = await safe("/api/watchdog/events?limit=10");
+    if (!data || !data.entries || !data.entries.length) return;
+
+    const seenBefore = localStorage.getItem(_NOTIFICATIONS_LAST_SEEN_KEY);
+    if (!seenBefore) {
+      // First time notifications have ever run -- establish the watermark
+      // without notifying for everything already in history.
+      localStorage.setItem(_NOTIFICATIONS_LAST_SEEN_KEY, data.entries[0].timestamp);
+      return;
+    }
+
+    const newEntries = data.entries.filter((e) => e.summary.broadcast && e.timestamp > seenBefore);
+    for (const entry of newEntries.slice(0, 3)) {
+      new Notification(`${entry.summary.alert_type} (${entry.summary.conviction_tier})`, {
+        body: entry.summary.message,
+      });
+    }
+    localStorage.setItem(_NOTIFICATIONS_LAST_SEEN_KEY, data.entries[0].timestamp);
+  }
+
+  function start() {
+    if (timer) return;
+    poll();
+    timer = setInterval(poll, _NOTIFICATIONS_POLL_MS);
+  }
+
+  return { isSupported, isEnabled, setEnabled, permission, requestPermission, start };
+})();
 
 const PAGES = {
   overview: renderOverview, forecast2: renderForecast2, forecast2detail: renderForecastDetail, forecast2performance: renderForecastPerformance, forecast2agents: renderForecastAgents, forecast2errors: renderForecastErrorLab, forecast2learning: renderForecastLearningCenter, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
@@ -4947,6 +5067,11 @@ let refreshTimer = null;
 // subscription for the life of the tab, independent of liveTicker()'s
 // per-page mount (which only exists while Overview is the visible page).
 RealtimeStore.subscribeStatus(updateConnectionIndicator);
+
+// Always started (cheap no-op poll when disabled/not permitted) so
+// enabling notifications from Settings takes effect immediately without
+// a page reload -- same reasoning as RealtimeStore always connecting above.
+NotificationWatcher.start();
 
 function parseHash() {
   const raw = location.hash.replace(/^#/, "");
