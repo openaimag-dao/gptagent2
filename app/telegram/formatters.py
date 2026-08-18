@@ -525,6 +525,40 @@ def format_official_daily_digest(payloads: list[dict], date: str) -> str:
     return "\n".join(lines)
 
 
+def format_forecast_weekly_review(performance: dict, insights: list[dict], days: int = 7) -> str:
+    """Forecasting 2.0's "controlled learning-review loop": a periodic,
+    read-only digest of how the official-forecast surface actually did
+    over the last `days` days, plus any Learning Center insight the
+    accumulated history now supports. Deliberately does NOT adjust any
+    weight -- every AgentForecast row mirrors its parent forecast's own
+    direction (see AgentForecast's own docstring), so there is no
+    independent per-agent weight in this data model to honestly tune.
+    "Controlled" here means the review is scoped, sourced entirely from
+    already-graded outcomes, and never invents a trend from too small a
+    sample -- not that the system mutates itself."""
+    summary = performance["summary"]
+    lines = [f"*FORECAST WEEKLY REVIEW -- last {days} days*", ""]
+    if summary["graded_count"] == 0:
+        lines.append("No official forecasts graded in this window yet.")
+    else:
+        lines.append(f"Graded: {summary['graded_count']}")
+        lines.append(f"Direction accuracy: {summary['direction_accuracy_pct']}%")
+        if summary["avg_abs_error_pct"] is not None:
+            lines.append(f"Avg |error|: {summary['avg_abs_error_pct']}%")
+        if summary["target_reached_rate_pct"] is not None:
+            lines.append(f"Target reached rate: {summary['target_reached_rate_pct']}%")
+
+    if insights:
+        lines.append("")
+        lines.append("*Learning Center*")
+        for insight in insights[:5]:
+            lines.append(f"- {insight['statement']}")
+
+    lines.append("")
+    lines.append("Full detail: dashboard -> Forecasting 2.0 -> Performance / Learning Center")
+    return "\n".join(lines)
+
+
 def format_etf_proxy(data: dict) -> str:
     if not data.get("available"):
         return f"ETF flow proxy unavailable: {data.get('reason', 'no data')}"

@@ -1,7 +1,7 @@
 import functools
 import logging
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -108,6 +108,7 @@ FORECAST_JOB_ID = "compute_forecast"
 FORECAST_GRADING_JOB_ID = "grade_forecasts"
 FORECAST_INVALIDATION_JOB_ID = "invalidate_forecasts"
 OFFICIAL_DAILY_FORECAST_JOB_ID = "generate_official_daily_forecast"
+FORECAST_WEEKLY_REVIEW_JOB_ID = "broadcast_forecast_weekly_review"
 ALERT_PERFORMANCE_GRADING_JOB_ID = "grade_alert_performance"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
@@ -621,6 +622,32 @@ async def generate_official_daily_forecast_job() -> None:
         logger.exception("Official daily forecast digest broadcast failed")
 
 
+async def broadcast_forecast_weekly_review_job() -> None:
+    """Forecasting 2.0's "controlled learning-review loop": once a week,
+    summarizes how the official-forecast surface actually performed over
+    the last 7 days (get_official_performance's own since= window, see
+    its docstring for why that's evaluated_at not computed_at) plus
+    whatever Learning Center insight the accumulated history now
+    supports, and broadcasts it. Deliberately read-only -- there is no
+    independent per-agent weight anywhere in this data model to honestly
+    tune (see AgentForecast's own docstring), so "controlled" here means
+    the review is scoped to real graded outcomes and gated by the same
+    sample-size rules as every other Forecasting 2.0 page, not that the
+    system mutates its own weights."""
+    from app.telegram.broadcast import broadcast_text
+    from app.telegram.formatters import format_forecast_weekly_review
+
+    engine = build_forecast_engine()
+    symbols = official_forecast_symbols()
+    since = datetime.now(UTC) - timedelta(days=7)
+    try:
+        performance = await engine.get_official_performance(symbols, since=since)
+        insights = await engine.get_learning_insights(symbols)
+        await broadcast_text(format_forecast_weekly_review(performance, insights, days=7))
+    except Exception:
+        logger.exception("Forecast weekly review broadcast failed")
+
+
 async def grade_alert_performance_job() -> None:
     """V9 Increment 9: fills in AlertPerformanceGrade rows for every
     ungraded AlertLog entry whose resolvable symbol has real synced
@@ -985,6 +1012,13 @@ def start_scheduler() -> AsyncIOScheduler:
         _timed(broadcast_monthly_performance_job),
         trigger=CronTrigger(day=1, hour=6, minute=30, timezone="UTC"),
         id=MONTHLY_PERFORMANCE_JOB_ID,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _timed(broadcast_forecast_weekly_review_job),
+        trigger=CronTrigger(day_of_week="mon", hour=6, minute=45, timezone="UTC"),
+        id=FORECAST_WEEKLY_REVIEW_JOB_ID,
         max_instances=1,
         coalesce=True,
     )

@@ -31,6 +31,7 @@ from app.telegram.formatters import (
     format_data_quality,
     format_explanation,
     format_features,
+    format_forecast_weekly_review,
     format_global_score,
     format_historical_comparison,
     format_knowledge,
@@ -751,6 +752,42 @@ def test_format_official_daily_digest_one_line_per_symbol():
     assert "+2.31%" in text
     assert "SOL: Bearish 55%" in text
     assert "-3.33%" in text
+
+
+def test_format_forecast_weekly_review_no_graded_forecasts():
+    performance = {
+        "summary": {
+            "graded_count": 0,
+            "direction_accuracy_pct": None,
+            "avg_abs_error_pct": None,
+            "target_reached_rate_pct": None,
+        },
+        "calibration": [],
+        "regime_breakdown": [],
+    }
+    text = format_forecast_weekly_review(performance, [], days=7)
+    assert "last 7 days" in text
+    assert "No official forecasts graded in this window yet." in text
+
+
+def test_format_forecast_weekly_review_includes_summary_and_insights():
+    performance = {
+        "summary": {
+            "graded_count": 12,
+            "direction_accuracy_pct": 58.3,
+            "avg_abs_error_pct": 2.1,
+            "target_reached_rate_pct": 41.7,
+        },
+        "calibration": [],
+        "regime_breakdown": [],
+    }
+    insights = [{"statement": "Technical Analysis was right more often in risk_on than risk_off."}]
+    text = format_forecast_weekly_review(performance, insights, days=7)
+    assert "Graded: 12" in text
+    assert "Direction accuracy: 58.3%" in text
+    assert "Avg |error|: 2.1%" in text
+    assert "Target reached rate: 41.7%" in text
+    assert "Technical Analysis was right more often" in text
 
 
 def test_format_committee_none():

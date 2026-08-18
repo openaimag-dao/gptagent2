@@ -1465,3 +1465,24 @@ async def test_get_official_performance_combines_summary_calibration_and_regime(
             "insufficient_sample": False,
         }
     ]
+
+
+async def test_get_official_performance_since_filters_by_evaluated_at():
+    # Forecast weekly review digest: since= must add an evaluated_at
+    # filter to the query (not computed_at -- see the docstring), and
+    # omitting it must leave the query exactly as before.
+    engine, deps, session = _build_engine()
+    session.execute = AsyncMock(return_value=[])
+
+    with patch(
+        "app.services.forecast.engine.get_settings",
+        return_value=SimpleNamespace(agent_performance_min_sample_size=1),
+    ):
+        await engine.get_official_performance(("BTC",))
+        query_without_since = str(session.execute.call_args.args[0])
+
+        await engine.get_official_performance(("BTC",), since=datetime(2026, 8, 10, tzinfo=UTC))
+        query_with_since = str(session.execute.call_args.args[0])
+
+    assert "evaluated_at" not in query_without_since
+    assert "evaluated_at" in query_with_since
