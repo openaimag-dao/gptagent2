@@ -1211,6 +1211,17 @@ class PriceForecastSnapshot(Base):
     # are filled in by check_and_invalidate_forecasts(), independent of
     # (and can fire before) the horizon-elapsed grading job above.
     forecast_version: Mapped[int] = mapped_column(default=1)
+    # Final Audit (Phase 22): a human-bumped tag for which version of
+    # ForecastEngine's deterministic compute() formula produced this row
+    # -- see FORECAST_MODEL_VERSION's own docstring in
+    # app/services/forecast/engine.py for why this is the one honest
+    # "model version" concept this codebase can support (ForecastEngine
+    # is a fixed formula, not a periodically-retrained model, so there is
+    # no real separate feature_version/config_version/data_version to
+    # track without inventing numbers that would never change). Nullable
+    # because every row persisted before this column existed has no real
+    # version to backfill -- reported as None, never guessed.
+    model_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
     regime_at_forecast: Mapped[str | None] = mapped_column(String(30), nullable=True)
     forecast_status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
     invalidation_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)

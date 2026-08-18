@@ -145,20 +145,27 @@ class CorrelationEngine:
 
         return stored
 
-    async def get_latest(self) -> list[Correlation]:
+    async def get_latest(self, as_of: datetime | None = None) -> list[Correlation]:
+        """`as_of` (Data Leakage Protection, Phase 23) bounds every pair/
+        window read to what was actually calculated at or before that
+        timestamp -- same reasoning and pattern as
+        SentimentEngine.get_latest(as_of=...). None (the default) keeps
+        the existing "always the true latest" behavior every other
+        caller of this method (Committee, executive summary, What-If,
+        explainability, reports) already relies on."""
         async with self._session_factory() as session:
             latest: list[Correlation] = []
             for symbol_a, symbol_b in self._pairs:
                 for window_days in self._windows_days:
+                    query = select(Correlation).where(
+                        Correlation.symbol_a == symbol_a,
+                        Correlation.symbol_b == symbol_b,
+                        Correlation.window_days == window_days,
+                    )
+                    if as_of is not None:
+                        query = query.where(Correlation.calculated_at <= as_of)
                     row = await session.scalar(
-                        select(Correlation)
-                        .where(
-                            Correlation.symbol_a == symbol_a,
-                            Correlation.symbol_b == symbol_b,
-                            Correlation.window_days == window_days,
-                        )
-                        .order_by(Correlation.calculated_at.desc())
-                        .limit(1)
+                        query.order_by(Correlation.calculated_at.desc()).limit(1)
                     )
                     if row is not None:
                         latest.append(row)

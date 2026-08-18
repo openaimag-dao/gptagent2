@@ -8,6 +8,7 @@ import pytest
 from app.database.models import AgentForecast, PriceForecastSnapshot
 from app.services.analysis.regime import MarketRegime
 from app.services.forecast.engine import (
+    FORECAST_MODEL_VERSION,
     ForecastEngine,
     _correlation_confidence,
     _distance_from_neutral,
@@ -1167,6 +1168,38 @@ async def test_persist_official_daily_inserts_and_stamps_official_fields_when_no
     assert added.official_forecast_date == datetime.now(UTC).date()
 
 
+async def test_persist_stamps_the_current_forecast_model_version():
+    # Final audit (Phase 22): every persisted row must carry the module's
+    # current FORECAST_MODEL_VERSION tag, not leave it None -- None is
+    # reserved for rows persisted before this column existed.
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(return_value=None)
+
+    payload = {
+        "symbol": "BTC",
+        "horizon": "24h",
+        "current_price": 100.0,
+        "target_price": 103.0,
+        "expected_change_pct": 3.0,
+        "direction": "Bullish",
+        "probability_pct": 70,
+        "price_path": [],
+        "probability_distribution": [],
+        "key_levels": {},
+    }
+    await engine._persist(
+        payload,
+        datetime(2026, 8, 2, tzinfo=UTC),
+        "high",
+        regime_at_forecast=None,
+        is_official_daily=False,
+        confidence_breakdown=[],
+    )
+
+    added = session.add.call_args[0][0]
+    assert added.model_version == FORECAST_MODEL_VERSION
+
+
 # ---- Forecasting 2.0: Agent Performance (Part 26) --------------------------
 
 
@@ -1322,6 +1355,36 @@ async def test_get_learning_insights_joins_agent_forecasts_regime_and_outcome():
         insights = await engine.get_learning_insights(("BTC",))
 
     assert insights == []
+
+
+# ---- Data Leakage Protection (Phase 23): watchdog as_of bounding -----------
+
+
+async def test_latest_watchdog_snapshot_bounds_the_query_when_as_of_is_given():
+    # Same reasoning/pattern as SentimentEngine.get_latest(as_of=...): a
+    # forecast computed for an older reference_timestamp must not silently
+    # pull in a WatchdogSnapshot cycle produced after that timestamp.
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(return_value=None)
+
+    cutoff = datetime(2026, 8, 1, tzinfo=UTC)
+    await engine._latest_watchdog_snapshot(cutoff)
+
+    query = session.scalar.call_args[0][0]
+    compiled = str(query.compile(compile_kwargs={"literal_binds": True}))
+    assert "computed_at <=" in compiled
+    assert "2026-08-01" in compiled
+
+
+async def test_latest_watchdog_snapshot_unbounded_when_as_of_is_none():
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(return_value=None)
+
+    await engine._latest_watchdog_snapshot()
+
+    query = session.scalar.call_args[0][0]
+    compiled = str(query.compile())
+    assert "computed_at <=" not in compiled
 
 
 # ---- Forecasting 2.0: Forecast Details (Page 3) -----------------------------
