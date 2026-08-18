@@ -1713,7 +1713,9 @@ class ForecastEngine:
             graded = [(r.agent_name, r.symbol, r.direction_correct) for r in rows]
         return aggregate_agent_performance(graded, min_sample_size)
 
-    async def get_official_performance(self, symbols: tuple[str, ...]) -> dict:
+    async def get_official_performance(
+        self, symbols: tuple[str, ...], since: datetime | None = None
+    ) -> dict:
         """Forecasting 2.0 (Page 4, Performance): the overall (not
         per-agent) scorecard across every graded official daily forecast
         in `symbols` -- summary stats, a probability-calibration curve,
@@ -1722,7 +1724,24 @@ class ForecastEngine:
         AgentForecast rows) and Learning Center (Page 7, needs TWO
         regimes per agent before it says anything): this is the single
         top-level "is the official forecast surface any good" view, one
-        query over price_forecast_snapshots, no new tables."""
+        query over price_forecast_snapshots, no new tables.
+
+        `since` (Forecasting 2.0 weekly review digest): when given,
+        restricts to forecasts GRADED at or after `since` --
+        evaluated_at, not computed_at, since "how did we do this week"
+        means "which calls resolved this week," not "which calls were
+        made this week" (a forecast made near the end of a window won't
+        have resolved yet, and excluding it here isn't a gap -- it's
+        just not gradeable yet, same as every other None-until-graded
+        field in this table). None (the default) keeps the existing
+        all-time behavior the Performance page uses."""
+        filters = [
+            PriceForecastSnapshot.symbol.in_(symbols),
+            PriceForecastSnapshot.is_official_daily.is_(True),
+            PriceForecastSnapshot.direction_correct.is_not(None),
+        ]
+        if since is not None:
+            filters.append(PriceForecastSnapshot.evaluated_at >= since)
         async with self._session_factory() as session:
             rows = list(
                 await session.execute(
@@ -1732,11 +1751,7 @@ class ForecastEngine:
                         PriceForecastSnapshot.error_pct,
                         PriceForecastSnapshot.target_reached,
                         PriceForecastSnapshot.regime_at_forecast,
-                    ).where(
-                        PriceForecastSnapshot.symbol.in_(symbols),
-                        PriceForecastSnapshot.is_official_daily.is_(True),
-                        PriceForecastSnapshot.direction_correct.is_not(None),
-                    )
+                    ).where(*filters)
                 )
             )
 
