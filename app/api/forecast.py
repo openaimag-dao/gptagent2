@@ -52,9 +52,11 @@ def _serialize_official_detail(row) -> dict:
     exposes plus the full input snapshot and lineage a drill-down needs --
     checkpoints/distribution/key_levels (the actual model output that
     produced target_price/direction), reference_timestamp (which history
-    candle this was computed from), forecast_version/invalidation fields
-    (is this still the live call for its day, or superseded), and the two
-    baseline comparisons already graded alongside it."""
+    candle this was computed from), forecast_version/model_version/
+    invalidation fields (is this still the live call for its day, or
+    superseded, and which revision of the forecast formula produced it --
+    see FORECAST_MODEL_VERSION's own docstring), and the two baseline
+    comparisons already graded alongside it."""
     payload = _serialize_official(row)
     payload.update(
         {
@@ -65,6 +67,7 @@ def _serialize_official_detail(row) -> dict:
             if row.reference_timestamp is not None
             else None,
             "forecast_version": row.forecast_version,
+            "model_version": row.model_version,
             "invalidation_reason": row.invalidation_reason,
             "invalidated_at": row.invalidated_at.isoformat()
             if row.invalidated_at is not None

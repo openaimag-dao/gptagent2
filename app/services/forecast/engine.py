@@ -77,6 +77,23 @@ logger = logging.getLogger(__name__)
 # distinct `horizon` values on the same ProbabilityEngine.
 HORIZONS: dict[str, int] = {"24h": 1, "3d": 3, "7d": 7, "30d": 30}
 
+# Final Audit (Phase 22, model versioning): ForecastEngine.compute() is a
+# fixed deterministic formula (price target from ProbabilityEngine's
+# empirical avg_forward_return_pct + ATR, confidence from the fixed
+# _confidence_breakdown() sources above) -- not a periodically-retrained
+# ML model. There is therefore exactly one honest "version" concept this
+# codebase can support: a human-bumped tag for which revision of that
+# formula produced a given PriceForecastSnapshot row, persisted as
+# `model_version` at forecast-creation time. Bump this string by hand
+# whenever a change to compute()/_confidence_breakdown()/the price-target
+# math actually changes forecast OUTPUTS for the same inputs -- never on
+# an unrelated refactor. Do NOT add separate feature_version/
+# config_version/data_version constants alongside this: none of those are
+# independently versioned anywhere in this codebase today, so they would
+# always read "1" and carry zero real information -- exactly the kind of
+# fabricated instrumentation this project's own rules forbid.
+FORECAST_MODEL_VERSION = "1.0"
+
 
 def compute_price_target(current_price: float, avg_forward_return_pct: float) -> float:
     """Pure function: the one real empirical mean forward return this
@@ -1124,11 +1141,22 @@ class ForecastEngine:
         self._onchain_engine = onchain_engine
         self._pattern_engine = pattern_engine
 
-    async def _latest_watchdog_snapshot(self) -> WatchdogSnapshot | None:
+    async def _latest_watchdog_snapshot(
+        self, as_of: datetime | None = None
+    ) -> WatchdogSnapshot | None:
+        """`as_of` (Data Leakage Protection, Phase 23) bounds this read to
+        what was actually knowable at that timestamp -- same reasoning and
+        same pattern as SentimentEngine.get_latest(as_of=...). Without
+        this, a forecast computed for an older reference_timestamp (a
+        re-graded or backfilled read) could silently pull in a regime/
+        risk/macro reading a WatchdogSnapshot cycle only produced after
+        the forecast's own reference bar."""
+        query = select(WatchdogSnapshot)
+        if as_of is not None:
+            query = query.where(WatchdogSnapshot.computed_at <= as_of)
+        query = query.order_by(WatchdogSnapshot.computed_at.desc()).limit(1)
         async with self._session_factory() as session:
-            return await session.scalar(
-                select(WatchdogSnapshot).order_by(WatchdogSnapshot.computed_at.desc()).limit(1)
-            )
+            return await session.scalar(query)
 
     async def _confidence_breakdown(
         self,
@@ -1144,7 +1172,7 @@ class ForecastEngine:
         # (e.g. a re-graded or backfilled read) could silently absorb
         # sentiment published after the fact.
         sentiment_snapshot = await self._sentiment_engine.get_latest(as_of=as_of)
-        correlations = await self._correlation_engine.get_latest()
+        correlations = await self._correlation_engine.get_latest(as_of=as_of)
         whale_snapshot = await self._whale_engine.get_snapshot(symbol)
         onchain_snapshot = await self._onchain_engine.get_snapshot(symbol)
         pattern_signals = await self._pattern_engine.get_latest(
@@ -1324,7 +1352,7 @@ class ForecastEngine:
             if technical_snapshot is not None and technical_snapshot.momentum is not None
             else None
         )
-        watchdog = await self._latest_watchdog_snapshot()
+        watchdog = await self._latest_watchdog_snapshot(latest.timestamp)
         explanation = await self._explanation_engine.build(config.symbol)
         confidence_breakdown = await self._confidence_breakdown(
             config.symbol,
@@ -1564,6 +1592,7 @@ class ForecastEngine:
                 key_levels=payload["key_levels"],
                 reference_timestamp=reference_timestamp,
                 forecast_version=next_version,
+                model_version=FORECAST_MODEL_VERSION,
                 regime_at_forecast=regime_at_forecast,
                 is_official_daily=is_official_daily,
                 official_forecast_date=today if is_official_daily else None,

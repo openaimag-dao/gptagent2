@@ -1681,6 +1681,7 @@ async function renderForecastDetail(params) {
       el("li", {}, `Reference candle: ${f.reference_timestamp || "n/a"}`),
       el("li", {}, `Computed at: ${f.computed_at}`),
       el("li", {}, `Forecast version: ${f.forecast_version}`),
+      el("li", {}, `Model version: ${f.model_version || "n/a (predates model_version tracking)"}`),
       el(
         "li",
         {},

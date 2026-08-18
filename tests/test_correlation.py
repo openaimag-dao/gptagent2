@@ -1,6 +1,12 @@
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
-from app.services.analysis.correlation import compute_correlation, compute_correlation_strength
+from app.services.analysis.correlation import (
+    CorrelationEngine,
+    compute_correlation,
+    compute_correlation_strength,
+)
 
 
 def test_perfectly_correlated_series():
@@ -63,3 +69,39 @@ def test_correlation_strength_averages_absolute_values_at_30d():
         _corr("BTC", "GOLD", 7, 0.9),  # different window, excluded
     ]
     assert compute_correlation_strength(correlations) == 50  # avg(0.6, 0.4) * 100
+
+
+# ---- Data Leakage Protection (Phase 23): as_of bounding ---------------------
+
+
+def _build_correlation_engine():
+    session = AsyncMock()
+    session.scalar = AsyncMock(return_value=None)
+    session.__aenter__.return_value = session
+    session_factory = MagicMock(return_value=session)
+    return CorrelationEngine(session_factory, pairs=(("BTC", "DXY"),), windows_days=(30,)), session
+
+
+async def test_get_latest_bounds_every_pair_query_when_as_of_is_given():
+    # Forecasting 2.0: a forecast's own reference_timestamp must bound
+    # every pair/window read so nothing calculated after the fact can
+    # leak into a re-graded or backfilled forecast's confidence breakdown.
+    engine, session = _build_correlation_engine()
+    cutoff = datetime(2026, 8, 1, tzinfo=UTC)
+
+    await engine.get_latest(as_of=cutoff)
+
+    query = session.scalar.call_args[0][0]
+    compiled = str(query.compile(compile_kwargs={"literal_binds": True}))
+    assert "calculated_at <=" in compiled
+    assert "2026-08-01" in compiled
+
+
+async def test_get_latest_unbounded_when_as_of_is_none():
+    engine, session = _build_correlation_engine()
+
+    await engine.get_latest()
+
+    query = session.scalar.call_args[0][0]
+    compiled = str(query.compile())
+    assert "calculated_at <=" not in compiled
