@@ -1205,6 +1205,34 @@ function renderTopOpportunities(data) {
   return nodes;
 }
 
+// Live Alerts feed (Overview): the same alert-history entries Watchdog Hub's
+// own "Alert History" table already shows (WatchdogEngine.get_alert_history(),
+// the Memory Engine's "alerts" category over AlertLog) -- just the most
+// recent handful, surfaced on Overview so a user doesn't have to leave the
+// landing page to see what's fired lately. No new data source, no new query.
+function renderLiveAlertsFeed(data) {
+  if (!data || !data.entries || !data.entries.length) return [];
+  const nodes = [el("h2", {}, "Live Alerts")];
+  nodes.push(
+    table(
+      ["Time", "Alert Type", "Tier", "Message"],
+      data.entries.map((e) => [
+        e.timestamp.slice(0, 16).replace("T", " "),
+        e.summary.alert_type,
+        e.summary.conviction_tier,
+        e.summary.message,
+      ])
+    )
+  );
+  nodes.push(
+    el("p", { class: "sub nav-pointer" }, [
+      "See also: ",
+      el("a", { href: "#watchdog" }, "Watchdog Hub"),
+    ])
+  );
+  return nodes;
+}
+
 async function renderOverview() {
   const [
     forecastCenter,
@@ -1220,6 +1248,7 @@ async function renderOverview() {
     whales,
     alertPerformance,
     alertPerformanceByType,
+    liveAlerts,
   ] = await Promise.all([
     renderForecastCenter(),
     renderExecutiveSummary(),
@@ -1234,6 +1263,7 @@ async function renderOverview() {
     safe("/api/whales"),
     safe("/api/alert-performance"),
     safe("/api/alert-performance/by-type"),
+    safe("/api/watchdog/events?limit=5"),
   ]);
 
   const nodes = [];
@@ -1273,6 +1303,7 @@ async function renderOverview() {
   nodes.push(...renderMarketMovers(marketMovers));
   nodes.push(...renderWhalePositioning(whales));
   nodes.push(...renderTopOpportunities(opportunities));
+  nodes.push(...renderLiveAlertsFeed(liveAlerts));
   nodes.push(...renderAlertPerformance(alertPerformance, alertPerformanceByType));
 
   return nodes;
