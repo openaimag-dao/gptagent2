@@ -142,6 +142,21 @@ class Settings(BaseSettings):
     scanner_interval_minutes: int = 15
     scanner_universe_refresh_hours: int = 24
     http_timeout_seconds: float = 15.0
+    # Root cause of the "AI Forecast Center shows a wildly stale target
+    # price" bug: ForecastEngine/ProbabilityEngine compute a forecast's
+    # current_price/ATR basis from CryptoHistory's DAILY rows
+    # (app/services/forecast/engine.py's compute()), but until this
+    # setting's job existed nothing ever refreshed that table
+    # automatically -- history sync only ran on a manual admin trigger.
+    # 60 minutes: HistorySyncEngine.sync_symbol_timeframe is incremental
+    # (only asks the provider for candles after the latest stored
+    # timestamp, see its own docstring), so this is cheap to run this
+    # often; scoped to crypto+DAILY only (5 symbols, 1 CoinGecko call
+    # each) -- NOT the full ~25-symbol/4-provider registry, which stays
+    # manual-trigger-only so this fix doesn't add load to yfinance
+    # (already unreliable from this deployment's egress IP) or other
+    # providers this bug has nothing to do with.
+    crypto_history_sync_interval_minutes: int = 60
 
     # ---- Forecast / Prediction Quality (V9) ----
     # Width in percentage points of each Prediction Quality Lab calibration
