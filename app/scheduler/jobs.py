@@ -1,6 +1,7 @@
 import functools
 import logging
 import time
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -30,7 +31,8 @@ from app.services.forecast.engine import (
     grade_price_forecasts,
 )
 from app.services.global_score.engine import GlobalScoreEngine
-from app.services.history.registry import find_symbol_config
+from app.services.history.pipeline import run_sync
+from app.services.history.registry import build_registry, find_symbol_config
 from app.services.history.schemas import Timeframe
 from app.services.hypothesis.engine import HypothesisEngine
 from app.services.market.aggregator import MarketDataAggregator
@@ -64,6 +66,7 @@ logger = logging.getLogger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 
 MARKET_DATA_JOB_ID = "collect_market_data"
+CRYPTO_HISTORY_SYNC_JOB_ID = "sync_crypto_daily_history"
 NEWS_JOB_ID = "collect_news"
 CORRELATION_JOB_ID = "compute_correlations"
 REGIME_JOB_ID = "detect_regime"
@@ -316,6 +319,42 @@ async def collect_market_data_job() -> None:
             await record_provider_failure(redis, provider_name)
     except Exception:
         logger.exception("Market data collection job failed")
+
+
+async def sync_crypto_daily_history_job() -> None:
+    """Root-cause fix for a real production bug: ForecastEngine.compute()
+    and ProbabilityEngine both source their current_price/ATR/indicator
+    basis from CryptoHistory's DAILY rows (see compute()'s own docstring
+    on why `latest` is read from get_series(..., Timeframe.DAILY)), but
+    until this job existed nothing ever refreshed that table
+    automatically -- history sync only ran when someone manually hit
+    "Sync now" on Settings or the sync_history.py CLI. A forecast
+    computed off a days-old daily close, sitting next to the dashboard's
+    live realtime ticker showing the true current price on top of it,
+    produces exactly the "AI Forecast target frozen far from the live
+    price" divergence users were seeing -- not a model quality problem,
+    a stale-data problem.
+
+    Reuses run_sync/HistorySyncEngine.sync_all() verbatim
+    (HistorySyncEngine.sync_symbol_timeframe's own docstring: each call
+    only asks the provider for candles after the latest stored
+    timestamp, so this is cheap and safe on a schedule, never a repeated
+    full backfill). Deliberately scoped to just the crypto DAILY rows
+    ForecastEngine actually reads -- build_registry()'s ~25-symbol/
+    4-provider registry (stocks/macro/forex/FRED) stays manual-trigger-
+    only, so this fix adds no load to yfinance (already confirmed
+    unreliable from this deployment's egress IP, see registry.py's own
+    comment) or other providers this bug has nothing to do with."""
+    session_factory = get_session_factory()
+    crypto_daily_registry = [
+        replace(config, timeframes=(Timeframe.DAILY,))
+        for config in build_registry()
+        if config.market == "crypto"
+    ]
+    try:
+        await run_sync(session_factory, crypto_daily_registry, years=1)
+    except Exception:
+        logger.exception("Crypto daily history sync job failed")
 
 
 async def compute_watchdog_snapshot_job() -> None:
@@ -784,6 +823,14 @@ def start_scheduler() -> AsyncIOScheduler:
         _timed(collect_market_data_job),
         trigger=IntervalTrigger(minutes=settings.market_data_interval_minutes, jitter=60),
         id=MARKET_DATA_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _timed(sync_crypto_daily_history_job),
+        trigger=IntervalTrigger(minutes=settings.crypto_history_sync_interval_minutes, jitter=90),
+        id=CRYPTO_HISTORY_SYNC_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,
