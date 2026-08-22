@@ -185,6 +185,100 @@ def test_compute_rsi_probability_falls_back_when_regime_sample_too_small():
     assert result["sample_size"] == 10
 
 
+# ---- Volatility conditioning (accuracy increment: reuses the same
+# z-score approach app.services.knowledge.analysis.find_similar_episodes
+# already validated, as one more opportunistic narrowing layer) ----
+
+
+def test_compute_rsi_probability_volatility_conditioning_narrows_the_sample():
+    # 10 RSI-matching points: 6 with volatility close to today's (20-ish),
+    # 4 with wildly different volatility (200). Narrowing to the
+    # similarly-volatile 6 should isolate their (all-positive) returns.
+    rsi_series = [50.0] * 10 + [90.0]
+    returns_series = [0.0] + [0.02] * 6 + [-0.02] * 4
+    volatility_series = [20.0, 21.0, 19.0, 22.0, 18.0, 20.5] + [200.0] * 4 + [20.0]
+
+    result = compute_rsi_probability(
+        rsi_series,
+        returns_series,
+        reference_rsi=50.0,
+        bucket_width=10.0,
+        min_sample_size=5,
+        volatility_series=volatility_series,
+        reference_volatility=20.0,
+    )
+
+    assert result is not None
+    assert result["volatility_conditioned"] is True
+    assert result["reference_volatility"] == pytest.approx(20.0)
+    assert result["sample_size"] == 6
+    assert result["prob_up_pct"] == 100
+
+
+def test_compute_rsi_probability_falls_back_when_volatility_sample_too_small():
+    # Only 2 points share today's volatility band -- below min_sample_size=5
+    # -- must fall back to the full 10-point RSI-only sample.
+    rsi_series = [50.0] * 10 + [90.0]
+    returns_series = [0.01, -0.01] * 5 + [0.0]
+    volatility_series = [20.0, 21.0] + [200.0] * 8 + [20.0]
+
+    result = compute_rsi_probability(
+        rsi_series,
+        returns_series,
+        reference_rsi=50.0,
+        bucket_width=10.0,
+        min_sample_size=5,
+        volatility_series=volatility_series,
+        reference_volatility=20.0,
+    )
+
+    assert result is not None
+    assert result["volatility_conditioned"] is False
+    assert result["reference_volatility"] is None
+    assert result["sample_size"] == 10
+
+
+def test_compute_rsi_probability_regime_and_volatility_conditioning_stack():
+    # 6 "bull"-tagged matches; within those, 4 share today's volatility band
+    # and 2 don't. Both conditions should apply in sequence: regime narrows
+    # 10 -> 6, then volatility narrows 6 -> 4.
+    rsi_series = [50.0] * 10 + [90.0]
+    returns_series = [0.0] + [0.02] * 6 + [-0.02] * 4
+    regime_series = ["bull"] * 6 + ["bear"] * 4 + [None]
+    volatility_series = [20.0, 21.0, 19.0, 22.0, 200.0, 200.0] + [30.0] * 4 + [20.0]
+
+    result = compute_rsi_probability(
+        rsi_series,
+        returns_series,
+        reference_rsi=50.0,
+        bucket_width=10.0,
+        min_sample_size=4,
+        regime_series=regime_series,
+        reference_regime="bull",
+        volatility_series=volatility_series,
+        reference_volatility=20.0,
+    )
+
+    assert result is not None
+    assert result["regime_conditioned"] is True
+    assert result["volatility_conditioned"] is True
+    assert result["sample_size"] == 4
+
+
+def test_compute_rsi_probability_volatility_series_ignored_when_none():
+    # No volatility_series/reference_volatility given -> identical to the
+    # existing RSI-only behavior, never activated implicitly.
+    rsi_series = [50.0] * 10 + [90.0]
+    returns_series = [0.01, -0.01] * 5 + [0.0]
+
+    result = compute_rsi_probability(
+        rsi_series, returns_series, reference_rsi=50.0, bucket_width=10.0, min_sample_size=5
+    )
+
+    assert result["volatility_conditioned"] is False
+    assert result["reference_volatility"] is None
+
+
 # ---- POST-V9 Phase 4: compute_quantile_coverage ----
 
 

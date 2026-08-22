@@ -8,7 +8,10 @@ nearest-neighbor lookup over already-computed data, never a guess.
 from datetime import datetime
 
 
-def _mean_std(values: list[float | None]) -> tuple[float | None, float | None]:
+def mean_std(values: list[float | None]) -> tuple[float | None, float | None]:
+    """Sample mean/stddev over the non-None values -- shared with
+    app.services.probability.engine's volatility-conditioning (same
+    z-score-normalization need, reused rather than duplicated)."""
     present = [v for v in values if v is not None]
     if len(present) < 2:
         return None, None
@@ -40,8 +43,8 @@ def find_similar_episodes(
     effect.
     """
     n = len(timestamps)
-    rsi_mean, rsi_std = _mean_std(rsi_series)
-    vol_mean, vol_std = _mean_std(volatility_series)
+    rsi_mean, rsi_std = mean_std(rsi_series)
+    vol_mean, vol_std = mean_std(volatility_series)
     if rsi_std in (None, 0):
         return []
 

@@ -7,12 +7,25 @@ from app.database.models import ProbabilitySnapshot
 from app.services.analysis.regime import reconstruct_regime_at
 from app.services.history.repository import get_series
 from app.services.history.schemas import Timeframe
+from app.services.knowledge.analysis import mean_std
 from app.services.quality.metrics import classify_calibration_reliability
 
 logger = logging.getLogger(__name__)
 
 _MIN_SAMPLE_SIZE = 8
 _DEFAULT_BUCKET_WIDTH = 10.0
+# How close (in z-scored standard deviations of the symbol's own historical
+# volatility) a candidate day's volatility must be to today's to additionally
+# narrow the RSI/regime match set -- "similar RSI, and it also happened in a
+# similarly-volatile period" rather than RSI alone. Reuses the exact
+# z-score-normalization app.services.knowledge.analysis.find_similar_episodes
+# already validated for its own (richer, k-nearest) RSI+volatility search;
+# this applies the same idea as one more opportunistic, honest-fallback
+# narrowing layer on top of the existing RSI-window/regime bucketing, not a
+# second model. 0.75 std is a deliberately loose band (roughly the middle
+# ~55% of a normal distribution) since this stacks on top of the RSI window
+# and optional regime filter, which already do the bulk of the narrowing.
+_DEFAULT_VOLATILITY_Z_THRESHOLD = 0.75
 _QUANTILE_LEVELS: tuple[tuple[str, float], ...] = (
     ("p10_pct", 0.10),
     ("p25_pct", 0.25),
@@ -172,6 +185,9 @@ def compute_rsi_probability(
     min_sample_size: int = _MIN_SAMPLE_SIZE,
     regime_series: list[str | None] | None = None,
     reference_regime: str | None = None,
+    volatility_series: list[float | None] | None = None,
+    reference_volatility: float | None = None,
+    volatility_z_threshold: float = _DEFAULT_VOLATILITY_Z_THRESHOLD,
 ) -> dict | None:
     """Empirical probability of an up/down/flat forward move, conditioned on
     RSI having previously been within `bucket_width` of `reference_rsi`.
@@ -185,6 +201,18 @@ def compute_rsi_probability(
     and reports `regime_conditioned=False` so callers can tell the
     conditioning didn't actually take effect -- never silently claims
     regime-awareness it didn't have enough data to back up.
+
+    When `volatility_series` and `reference_volatility` are also given, the
+    (possibly already regime-narrowed) match set is further restricted to
+    periods whose own volatility z-score was within `volatility_z_threshold`
+    standard deviations of today's -- "similar RSI (and regime), and it also
+    happened in a similarly-volatile stretch", reusing the exact z-score
+    approach app.services.knowledge.analysis.find_similar_episodes already
+    validated for its own richer analog search, so this bucketing draws on
+    the same already-computed volatility column the Historical Similarity
+    page does instead of only ever looking at RSI. Same honest-fallback
+    rule as regime: too few volatility-matched candidates and this keeps
+    the prior (RSI/regime-only) sample, reporting `volatility_conditioned=False`.
 
     Pure function over already-computed history -- returns None (never a
     guessed number) if there isn't enough matching history to be meaningful.
@@ -211,6 +239,23 @@ def compute_rsi_probability(
             match_idx = regime_matches_idx
             regime_conditioned = True
 
+    volatility_conditioned = False
+    if volatility_series is not None and reference_volatility is not None:
+        vol_mean, vol_std = mean_std(volatility_series)
+        if vol_std not in (None, 0):
+            reference_vol_z = (reference_volatility - vol_mean) / vol_std
+            volatility_matches_idx = [
+                i
+                for i in match_idx
+                if i < len(volatility_series)
+                and volatility_series[i] is not None
+                and abs((volatility_series[i] - vol_mean) / vol_std - reference_vol_z)
+                <= volatility_z_threshold
+            ]
+            if len(volatility_matches_idx) >= min_sample_size:
+                match_idx = volatility_matches_idx
+                volatility_conditioned = True
+
     matches = [forward[i] for i in match_idx]
     if len(matches) < min_sample_size:
         return None
@@ -228,6 +273,10 @@ def compute_rsi_probability(
         "avg_forward_return_pct": round(100 * sum(matches) / sample_size, 4),
         "regime_conditioned": regime_conditioned,
         "reference_regime": reference_regime if regime_conditioned else None,
+        "volatility_conditioned": volatility_conditioned,
+        "reference_volatility": round(reference_volatility, 4)
+        if volatility_conditioned and reference_volatility is not None
+        else None,
     }
     quantiles = compute_forward_return_quantiles(matches)
     if quantiles is not None:
@@ -264,10 +313,14 @@ class ProbabilityEngine:
 
         rsi_series = [float(r.rsi) if r.rsi is not None else None for r in rows]
         returns_series = [float(r.return_pct) if r.return_pct is not None else None for r in rows]
+        volatility_series = [
+            float(r.volatility) if r.volatility is not None else None for r in rows
+        ]
 
         reference_rsi = rsi_series[-1]
         if reference_rsi is None:
             return None
+        reference_volatility = volatility_series[-1]
 
         regime_series: list[str | None] | None = None
         reference_regime: str | None = None
@@ -283,6 +336,8 @@ class ProbabilityEngine:
             horizon=horizon,
             regime_series=regime_series,
             reference_regime=reference_regime,
+            volatility_series=volatility_series,
+            reference_volatility=reference_volatility,
         )
         if result is None:
             return None

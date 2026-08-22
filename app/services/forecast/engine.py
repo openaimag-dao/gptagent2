@@ -1483,6 +1483,9 @@ class ForecastEngine:
             },
             "regime_conditioned": getattr(probability_snapshot, "regime_conditioned", False),
             "reference_regime": getattr(probability_snapshot, "reference_regime", None),
+            "volatility_conditioned": getattr(
+                probability_snapshot, "volatility_conditioned", False
+            ),
             # POST-V9 Phase 8 (F-3): the same Prediction Quality Lab
             # calibration buckets `quality_multiplier` above was already
             # derived from, exposed in full so a consumer (NO_TRADE) can

@@ -42,5 +42,11 @@ async def get_probability(
         "prob_down_pct": snapshot.prob_down_pct,
         "prob_flat_pct": snapshot.prob_flat_pct,
         "avg_forward_return_pct": float(snapshot.avg_forward_return_pct),
+        "regime_conditioned": snapshot.regime_conditioned,
+        "reference_regime": snapshot.reference_regime,
+        "volatility_conditioned": snapshot.volatility_conditioned,
+        "reference_volatility": float(snapshot.reference_volatility)
+        if snapshot.reference_volatility is not None
+        else None,
         "computed_at": snapshot.computed_at.isoformat(),
     }

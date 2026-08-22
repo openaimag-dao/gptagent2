@@ -697,6 +697,15 @@ function forecastQuantileBands(payload) {
         : "Not regime-conditioned this cycle -- too few same-regime samples, using the full history instead."
     )
   );
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      payload.volatility_conditioned
+        ? "Also conditioned on similarly-volatile historical periods."
+        : "Not volatility-conditioned this cycle -- too few similarly-volatile samples."
+    )
+  );
   return nodes;
 }
 
@@ -3887,6 +3896,24 @@ async function renderProbability() {
         ])
       );
       results.appendChild(el("p", { class: "sub" }, `Reference RSI ${p.reference_rsi.toFixed(1)}, avg forward return ${fmtPct(p.avg_forward_return_pct, 4)}`));
+      results.appendChild(
+        el(
+          "p",
+          { class: "sub" },
+          p.regime_conditioned
+            ? `Conditioned on the current market regime (${p.reference_regime || "n/a"}).`
+            : "Not regime-conditioned this cycle -- too few same-regime samples."
+        )
+      );
+      results.appendChild(
+        el(
+          "p",
+          { class: "sub" },
+          p.volatility_conditioned
+            ? "Also conditioned on similarly-volatile historical periods."
+            : "Not volatility-conditioned this cycle -- too few similarly-volatile samples."
+        )
+      );
     } catch (err) {
       results.appendChild(errorBox(err));
     }
