@@ -450,6 +450,15 @@ class ProbabilitySnapshot(Base):
     # and it fell back to the RSI-only sample.
     regime_conditioned: Mapped[bool] = mapped_column(default=False)
     reference_regime: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # Same honesty pattern as regime_conditioned/reference_regime above, one
+    # more opportunistic conditioning dimension: whether the match sample
+    # was additionally narrowed to periods with similar historical
+    # volatility (see compute_rsi_probability's volatility_series/
+    # reference_volatility/volatility_z_threshold params), reusing the same
+    # already-stored `volatility` history column and z-score approach
+    # app.services.knowledge.analysis.find_similar_episodes already uses.
+    volatility_conditioned: Mapped[bool] = mapped_column(default=False)
+    reference_volatility: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )

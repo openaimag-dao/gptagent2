@@ -499,6 +499,8 @@ async def test_compute_builds_full_payload_and_persists():
     assert payload["track_record"] == {
         "evaluated_count": 0,
         "avg_abs_error_pct": None,
+        "win_rate_pct": None,
+        "win_rate_sample_size": 0,
         "quality_multiplier": None,
         "adjusted_confidence_pct": None,
     }
@@ -919,12 +921,44 @@ async def test_summarize_forecast_accuracy_none_without_graded_rows():
 
 async def test_summarize_forecast_accuracy_averages_absolute_error():
     graded_rows = [
-        SimpleNamespace(error_pct=1.0),
-        SimpleNamespace(error_pct=-3.0),
+        SimpleNamespace(error_pct=1.0, direction_correct=True),
+        SimpleNamespace(error_pct=-3.0, direction_correct=False),
     ]
     session_factory, _ = _forecast_session(graded_rows)
     summary = await summarize_forecast_accuracy(session_factory, "BTC", "24h")
-    assert summary == {"evaluated_count": 2, "avg_abs_error_pct": 2.0}
+    assert summary == {
+        "evaluated_count": 2,
+        "avg_abs_error_pct": 2.0,
+        "win_rate_pct": 50.0,
+        "win_rate_sample_size": 2,
+    }
+
+
+# Win Rate (accuracy increment, per user request "чтобы мне посмотреть
+# прогноза винрейт"): direction_correct-based rate over this symbol/
+# horizon's own graded forecasts, same convention summarize_official_
+# performance already uses -- a Neutral call (direction_correct=None)
+# has no direction to grade, so it's excluded from both the numerator
+# and the denominator rather than counted as a loss.
+async def test_summarize_forecast_accuracy_win_rate_excludes_neutral_calls():
+    graded_rows = [
+        SimpleNamespace(error_pct=1.0, direction_correct=True),
+        SimpleNamespace(error_pct=2.0, direction_correct=True),
+        SimpleNamespace(error_pct=3.0, direction_correct=False),
+        SimpleNamespace(error_pct=0.5, direction_correct=None),  # Neutral call
+    ]
+    session_factory, _ = _forecast_session(graded_rows)
+    summary = await summarize_forecast_accuracy(session_factory, "BTC", "24h")
+    assert summary["win_rate_pct"] == pytest.approx(66.7)
+    assert summary["win_rate_sample_size"] == 3
+
+
+async def test_summarize_forecast_accuracy_win_rate_none_when_all_neutral():
+    graded_rows = [SimpleNamespace(error_pct=1.0, direction_correct=None)]
+    session_factory, _ = _forecast_session(graded_rows)
+    summary = await summarize_forecast_accuracy(session_factory, "BTC", "24h")
+    assert summary["win_rate_pct"] is None
+    assert summary["win_rate_sample_size"] == 0
 
 
 def _invalidation_session(active_rows, regime_row, db_row=None):

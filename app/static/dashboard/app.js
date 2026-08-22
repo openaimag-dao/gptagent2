@@ -697,6 +697,15 @@ function forecastQuantileBands(payload) {
         : "Not regime-conditioned this cycle -- too few same-regime samples, using the full history instead."
     )
   );
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      payload.volatility_conditioned
+        ? "Also conditioned on similarly-volatile historical periods."
+        : "Not volatility-conditioned this cycle -- too few similarly-volatile samples."
+    )
+  );
   return nodes;
 }
 
@@ -732,6 +741,18 @@ function forecastHorizonConsistency(consistency) {
   ]);
 }
 
+// Win Rate: % of this symbol/horizon's own graded forecasts whose
+// direction call matched the real outcome (direction_correct), excluding
+// Neutral calls which have no direction to grade -- see
+// ForecastEngine.summarize_forecast_accuracy's own docstring. Every
+// forecast this engine persists is automatically graded once its horizon
+// elapses (grade_forecasts_job, scheduled), so this is a real recorded
+// track record, never a fabricated number.
+function winRateFragment(trackRecord) {
+  if (trackRecord.win_rate_pct == null) return "";
+  return ` -- win rate ${trackRecord.win_rate_pct}% (${trackRecord.win_rate_sample_size} directional calls)`;
+}
+
 function forecastTrackRecordLine(trackRecord) {
   if (!trackRecord || trackRecord.evaluated_count === 0) {
     return el(
@@ -744,13 +765,13 @@ function forecastTrackRecordLine(trackRecord) {
     return el(
       "p",
       { class: "sub" },
-      `Track record: ${trackRecord.evaluated_count} graded (avg error ${trackRecord.avg_abs_error_pct}%) -- not yet enough to adjust confidence.`
+      `Track record: ${trackRecord.evaluated_count} graded (avg error ${trackRecord.avg_abs_error_pct}%)${winRateFragment(trackRecord)} -- not yet enough to adjust confidence.`
     );
   }
   return el(
     "p",
     { class: "sub" },
-    `Track record: ${trackRecord.evaluated_count} graded, avg error ${trackRecord.avg_abs_error_pct}% -- ` +
+    `Track record: ${trackRecord.evaluated_count} graded, avg error ${trackRecord.avg_abs_error_pct}%${winRateFragment(trackRecord)} -- ` +
       `self-learning discount x${trackRecord.quality_multiplier} (adjusted confidence ${trackRecord.adjusted_confidence_pct}%)`
   );
 }
@@ -766,13 +787,21 @@ function forecastHistorySection(history) {
     el(
       "div",
       { class: "grid" },
-      Object.entries(history.accuracy_by_horizon || {}).map(([horizon, summary]) =>
+      Object.entries(history.accuracy_by_horizon || {}).flatMap(([horizon, summary]) => [
         card(
           `${horizon} Accuracy`,
           summary.evaluated_count > 0 ? `${summary.avg_abs_error_pct}% avg error` : "n/a",
           summary.evaluated_count > 0 ? `${summary.evaluated_count} graded` : "not enough history yet"
-        )
-      )
+        ),
+        card(
+          `${horizon} Win Rate`,
+          summary.win_rate_pct != null ? `${summary.win_rate_pct}%` : "n/a",
+          summary.win_rate_pct != null
+            ? `${summary.win_rate_sample_size} directional calls`
+            : "no graded directional calls yet",
+          summary.win_rate_pct != null ? changeClass(summary.win_rate_pct - 50) : null
+        ),
+      ])
     )
   );
 
@@ -3887,6 +3916,24 @@ async function renderProbability() {
         ])
       );
       results.appendChild(el("p", { class: "sub" }, `Reference RSI ${p.reference_rsi.toFixed(1)}, avg forward return ${fmtPct(p.avg_forward_return_pct, 4)}`));
+      results.appendChild(
+        el(
+          "p",
+          { class: "sub" },
+          p.regime_conditioned
+            ? `Conditioned on the current market regime (${p.reference_regime || "n/a"}).`
+            : "Not regime-conditioned this cycle -- too few same-regime samples."
+        )
+      );
+      results.appendChild(
+        el(
+          "p",
+          { class: "sub" },
+          p.volatility_conditioned
+            ? "Also conditioned on similarly-volatile historical periods."
+            : "Not volatility-conditioned this cycle -- too few similarly-volatile samples."
+        )
+      );
     } catch (err) {
       results.appendChild(errorBox(err));
     }
@@ -5140,6 +5187,7 @@ function assetForecastCard(symbol, forecast, horizon) {
       ])
     );
   }
+  nodes.push(forecastTrackRecordLine(forecast.track_record));
   if (forecast.ai_explanation) {
     nodes.push(el("h3", {}, "Why AI Thinks This"));
     nodes.push(whyFinalPrediction(forecast.ai_explanation.final_prediction));

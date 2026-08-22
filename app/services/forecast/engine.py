@@ -1089,7 +1089,19 @@ async def summarize_forecast_accuracy(
 ) -> dict | None:
     """Real, measured accuracy over this symbol/horizon's own graded
     forecast history -- never a simulated number. None (not zero) when
-    nothing has been graded yet."""
+    nothing has been graded yet.
+
+    `win_rate_pct` is the same direction_correct-based rate
+    summarize_official_performance already reports in aggregate (Forecasting
+    2.0's Performance page), scoped to this one symbol/horizon instead of
+    pooled across every official symbol -- every PriceForecastSnapshot this
+    engine ever persists is graded by grade_price_forecasts() once its
+    horizon elapses (see that function), so this reads real recorded
+    outcomes, not a fabricated number. A "Neutral" call has no direction to
+    grade (grade_direction returns None for it, same convention as
+    summarize_official_performance), so it's excluded from both the
+    numerator and denominator -- never counted as a loss. None (not 0%)
+    when nothing gradeable has resolved yet."""
     async with session_factory() as session:
         graded = list(
             await session.scalars(
@@ -1108,9 +1120,14 @@ async def summarize_forecast_accuracy(
     errors = [abs(float(g.error_pct)) for g in graded if g.error_pct is not None]
     if not errors:
         return None
+    direction_flags = [g.direction_correct for g in graded if g.direction_correct is not None]
     return {
         "evaluated_count": len(errors),
         "avg_abs_error_pct": round(sum(errors) / len(errors), 4),
+        "win_rate_pct": (
+            round(100 * sum(direction_flags) / len(direction_flags), 1) if direction_flags else None
+        ),
+        "win_rate_sample_size": len(direction_flags),
     }
 
 
@@ -1425,6 +1442,8 @@ class ForecastEngine:
         track_record = {
             "evaluated_count": accuracy["evaluated_count"] if accuracy else 0,
             "avg_abs_error_pct": accuracy["avg_abs_error_pct"] if accuracy else None,
+            "win_rate_pct": accuracy["win_rate_pct"] if accuracy else None,
+            "win_rate_sample_size": accuracy["win_rate_sample_size"] if accuracy else 0,
             "quality_multiplier": track_record_multiplier,
             "adjusted_confidence_pct": (
                 round(conviction["effective_confidence_pct"] * track_record_multiplier)
@@ -1483,6 +1502,9 @@ class ForecastEngine:
             },
             "regime_conditioned": getattr(probability_snapshot, "regime_conditioned", False),
             "reference_regime": getattr(probability_snapshot, "reference_regime", None),
+            "volatility_conditioned": getattr(
+                probability_snapshot, "volatility_conditioned", False
+            ),
             # POST-V9 Phase 8 (F-3): the same Prediction Quality Lab
             # calibration buckets `quality_multiplier` above was already
             # derived from, exposed in full so a consumer (NO_TRADE) can
