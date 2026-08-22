@@ -93,7 +93,10 @@ function scoreBar(label, value) {
 function quoteGrid(quotes) {
   const grid = el("div", { class: "grid" });
   for (const q of quotes) {
-    grid.appendChild(card(q.symbol, fmtNum(q.price), fmtPct(q.change_pct_24h), changeClass(q.change_pct_24h)));
+    const c = card(q.symbol, fmtNum(q.price), fmtPct(q.change_pct_24h), changeClass(q.change_pct_24h));
+    c.classList.add("card-clickable");
+    c.addEventListener("click", () => navigate("assetdetail", new URLSearchParams({ symbol: q.symbol })));
+    grid.appendChild(c);
   }
   return grid;
 }
@@ -146,12 +149,14 @@ function tickerItem(symbol, fallbackQuote) {
     : fallbackQuote
       ? dataFreshnessBadge(fallbackQuote.freshness, fallbackQuote.age_seconds)
       : dataFreshnessBadge(null, null);
-  return el("div", { class: "ticker-item", "data-symbol": symbol }, [
+  const item = el("div", { class: "ticker-item card-clickable", "data-symbol": symbol }, [
     el("div", { class: "ticker-symbol" }, symbol),
     el("div", { class: "ticker-price" }, price != null ? fmtNum(price) : "n/a"),
     el("div", { class: `ticker-change ${changeClass(changePct)}` }, fmtPct(changePct)),
     badge,
   ]);
+  item.addEventListener("click", () => navigate("assetdetail", new URLSearchParams({ symbol })));
+  return item;
 }
 
 // `fallbackQuotes` is the already-fetched /api/market snapshot for this
@@ -5028,8 +5033,338 @@ const NotificationWatcher = (() => {
   return { isSupported, isEnabled, setEnabled, permission, requestPermission, start };
 })();
 
+// ---- Asset Detail (Live Dashboard Upgrade Phase 2) -----------------------
+// One unified per-symbol page composed entirely from existing engines' own
+// endpoints -- no new backend computation, no duplicated forecast/trade
+// logic. Every section below is independently optional: a symbol with no
+// on-chain/whale/pattern data for its asset class (e.g. a stock) simply
+// omits that section instead of showing a fabricated placeholder, the same
+// honesty convention every other page already follows.
+
+const ASSET_DETAIL_HORIZONS = ["24h", "3d", "7d", "30d"];
+
+function assetPriceHeader(symbol, quote) {
+  return el("div", { class: "ticker" }, [tickerItem(symbol, quote)]);
+}
+
+function assetForecastCard(symbol, forecast, horizon) {
+  if (!forecast) {
+    return el(
+      "p",
+      { class: "error" },
+      `AI Forecast: not enough data yet for ${symbol} (${horizon}).`
+    );
+  }
+  const dirCls = changeClass(forecast.expected_change_pct);
+  const nodes = [
+    el("div", { class: "grid" }, [
+      card("Current Price", fmtNum(forecast.current_price)),
+      card("Target Price", fmtNum(forecast.target_price), fmtPct(forecast.expected_change_pct), dirCls),
+      card("Direction", forecast.direction, `${forecast.probability_pct}% probability`, dirCls),
+      card(
+        "Conviction",
+        forecast.confidence ? forecast.confidence.tier : "n/a",
+        forecast.confidence ? `${forecast.confidence.effective_confidence_pct}% effective` : null
+      ),
+      card("Risk Meter", forecast.risk_meter || "n/a"),
+      card(
+        "Expected Range",
+        forecast.expected_range && forecast.expected_range.low != null
+          ? `${fmtNum(forecast.expected_range.low)} - ${fmtNum(forecast.expected_range.high)}`
+          : "n/a"
+      ),
+    ]),
+  ];
+  if (forecast.key_levels) {
+    const kl = forecast.key_levels;
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Support", kl.support_1 != null ? fmtNum(kl.support_1) : "n/a"),
+        card("Resistance", kl.resistance_1 != null ? fmtNum(kl.resistance_1) : "n/a"),
+        card("Invalidation", kl.invalidation_level != null ? fmtNum(kl.invalidation_level) : "n/a"),
+        card("Breakout Level", kl.breakout_level != null ? fmtNum(kl.breakout_level) : "n/a"),
+      ])
+    );
+  }
+  if (forecast.ai_explanation) {
+    nodes.push(el("h3", {}, "Why AI Thinks This"));
+    nodes.push(whyFinalPrediction(forecast.ai_explanation.final_prediction));
+    nodes.push(whyEngineBreakdown(forecast.ai_explanation.engine_breakdown));
+  }
+  return el("div", {}, nodes);
+}
+
+function assetTradeSetupCard(setup) {
+  if (!setup) return null;
+  if (setup.recommendation === "NO_TRADE") {
+    const nodes = [el("p", {}, [pill(false), " ", el("strong", {}, "NO TRADE")])];
+    if (setup.reasons && setup.reasons.length) {
+      nodes.push(
+        table(
+          ["Reason", "Description"],
+          setup.reasons.map((r) => [r.code.replace(/_/g, " "), r.description])
+        )
+      );
+    }
+    return el("div", {}, nodes);
+  }
+  const nodes = [
+    el("p", {}, [
+      pill(true),
+      " ",
+      el("strong", { class: setup.side === "BUY" ? "up" : "down" }, `${setup.side} setup`),
+    ]),
+    el("div", { class: "grid" }, [
+      card("Entry", fmtNum(setup.entry_price)),
+      card("Stop Loss", fmtNum(setup.stop_loss_price), null, "down"),
+      card("Take Profit", fmtNum(setup.take_profit_price), null, "up"),
+      card("Risk/Reward", setup.risk_reward_ratio != null ? setup.risk_reward_ratio.toFixed(2) : "n/a"),
+      card("Conviction", setup.conviction_tier || "n/a"),
+    ]),
+  ];
+  if (setup.trade_economics) {
+    const te = setup.trade_economics;
+    nodes.push(
+      el(
+        "p",
+        { class: "sub" },
+        `Historical expectancy (${te.sample_count} trades, ${te.sample_sufficiency}): ` +
+          `win rate ${fmtPct(te.win_rate_pct)}, expectancy ${fmtPct(te.expectancy_pct)}`
+      )
+    );
+  }
+  return el("div", {}, nodes);
+}
+
+async function renderAssetDetail(params) {
+  const symbol = ((params && params.get("symbol")) || "BTC").toUpperCase();
+  const horizon = ASSET_DETAIL_HORIZONS.includes(params && params.get("horizon"))
+    ? params.get("horizon")
+    : "24h";
+
+  const nodes = [el("h2", {}, `Asset Detail: ${symbol}`)];
+
+  const symbolInput = el("input", { type: "text", value: symbol, placeholder: "Symbol" });
+  const horizonSelect = el(
+    "select",
+    {},
+    ASSET_DETAIL_HORIZONS.map((h) => el("option", { value: h, ...(h === horizon ? { selected: "selected" } : {}) }, h))
+  );
+  const loadBtn = el("button", {}, "Load");
+  loadBtn.addEventListener("click", () => {
+    const nextSymbol = symbolInput.value.trim().toUpperCase();
+    if (!nextSymbol) return;
+    navigate("assetdetail", new URLSearchParams({ symbol: nextSymbol, horizon: horizonSelect.value }));
+  });
+  nodes.push(el("div", { class: "controls" }, [symbolInput, horizonSelect, loadBtn]));
+
+  const [
+    market,
+    forecast,
+    tradeSetup,
+    technical,
+    probability,
+    patterns,
+    breakout,
+    onchain,
+    whales,
+    similar,
+    knowledge,
+    quality,
+    learning,
+    correlations,
+  ] = await Promise.all([
+    safe("/api/market"),
+    safe(`/api/forecast/${encodeURIComponent(symbol)}?horizon=${horizon}`),
+    safe(`/api/trade-setup/${encodeURIComponent(symbol)}?horizon=${horizon}`),
+    safe(`/api/technical/${encodeURIComponent(symbol)}`),
+    safe(`/api/probability/${encodeURIComponent(symbol)}`),
+    safe(`/api/patterns/${encodeURIComponent(symbol)}?timeframe=1d&limit=10`),
+    safe(`/api/breakout/${encodeURIComponent(symbol)}?timeframe=1d&limit=5`),
+    safe(`/api/onchain/${encodeURIComponent(symbol)}`),
+    safe(`/api/whales?symbol=${encodeURIComponent(symbol)}`),
+    safe(`/api/similar/${encodeURIComponent(symbol)}`),
+    safe(`/api/knowledge/${encodeURIComponent(symbol)}`),
+    safe(`/api/quality/${encodeURIComponent(symbol)}?timeframe=1d`),
+    safe(`/api/learning/${encodeURIComponent(symbol)}?timeframe=1d`),
+    safe("/api/correlations"),
+  ]);
+
+  const quote = market && market.quotes ? market.quotes.find((q) => q.symbol === symbol) : null;
+  nodes.push(assetPriceHeader(symbol, quote));
+
+  nodes.push(el("h2", {}, `AI Forecast (${horizon})`));
+  nodes.push(assetForecastCard(symbol, forecast, horizon));
+
+  const setupCard = assetTradeSetupCard(tradeSetup);
+  if (setupCard) {
+    nodes.push(el("h2", {}, "Trade Setup"));
+    nodes.push(setupCard);
+  }
+
+  if (technical) {
+    nodes.push(el("h2", {}, "Technical Snapshot"));
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Bullish Score", technical.bullish_score != null ? technical.bullish_score.toFixed(0) : "n/a"),
+        card("Bearish Score", technical.bearish_score != null ? technical.bearish_score.toFixed(0) : "n/a"),
+        card("Trend Strength", technical.trend_strength != null ? technical.trend_strength.toFixed(0) : "n/a"),
+        card("Momentum", technical.momentum != null ? technical.momentum.toFixed(1) : "n/a"),
+        card("Volatility", technical.volatility != null ? technical.volatility.toFixed(0) : "n/a"),
+        card("Support", technical.support != null ? fmtNum(technical.support) : "n/a"),
+        card("Resistance", technical.resistance != null ? fmtNum(technical.resistance) : "n/a"),
+      ])
+    );
+  }
+
+  if (probability) {
+    nodes.push(el("h2", {}, "Probability"));
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Bullish", `${probability.prob_up_pct}%`, null, "up"),
+        card("Bearish", `${probability.prob_down_pct}%`, null, "down"),
+        card("Neutral", `${probability.prob_flat_pct}%`),
+        card("Sample size", probability.sample_size),
+      ])
+    );
+    nodes.push(
+      el(
+        "p",
+        { class: "sub" },
+        `Reference RSI ${probability.reference_rsi.toFixed(1)}, avg forward return ${fmtPct(probability.avg_forward_return_pct, 4)}`
+      )
+    );
+  }
+
+  if (patterns && patterns.patterns && patterns.patterns.length) {
+    nodes.push(el("h2", {}, "Recent Patterns"));
+    nodes.push(
+      table(
+        ["Date", "Pattern", "Direction"],
+        patterns.patterns.slice(0, 8).map((p) => [
+          p.timestamp.slice(0, 10),
+          p.pattern_name.replace(/_/g, " "),
+          el(
+            "span",
+            { class: p.direction === "bullish" ? "up" : p.direction === "bearish" ? "down" : "neutral" },
+            p.direction
+          ),
+        ])
+      )
+    );
+  }
+
+  if (breakout && breakout.events && breakout.events.length) {
+    const latest = breakout.events[0];
+    nodes.push(el("h2", {}, "Breakout Intelligence"));
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Event", latest.event_type.replace(/_/g, " "), null, latest.direction === "bullish" ? "up" : "down"),
+        card("Probability", latest.probability_pct !== null ? `${latest.probability_pct}%` : "unavailable"),
+        card("Confidence", `${latest.confidence_pct}%`),
+        card("Risk", latest.risk_score !== null ? `${latest.risk_score}/100` : "n/a"),
+      ])
+    );
+    nodes.push(el("p", { class: "sub" }, latest.expected_continuation));
+  }
+
+  if (onchain && onchain.available) {
+    nodes.push(el("h2", {}, "On-Chain Intelligence"));
+    nodes.push(
+      table(
+        ["Metric", "Value"],
+        Object.entries(onchain.metrics).map(([k, v]) => [k.replace(/_/g, " "), v == null ? "unavailable" : String(v)])
+      )
+    );
+  }
+
+  if (whales && whales.available) {
+    nodes.push(el("h2", {}, "Whale Intelligence"));
+    nodes.push(
+      table(
+        ["Field", "Value"],
+        Object.entries(whales)
+          .filter(([k]) => k !== "available" && k !== "symbol")
+          .map(([k, v]) => [k.replace(/_/g, " "), v == null ? "n/a" : String(v)])
+      )
+    );
+  }
+
+  if (similar && similar.matches && similar.matches.length) {
+    nodes.push(el("h2", {}, "Historical Similarity"));
+    if (similar.lesson) {
+      nodes.push(el("p", { class: "sub" }, similar.lesson.main_lesson));
+    }
+    nodes.push(
+      table(
+        ["Date", "Similarity", "Regime", "7d"],
+        similar.matches.slice(0, 8).map((m) => [
+          m.date.slice(0, 10),
+          String(m.similarity),
+          m.market_regime || "unknown",
+          fmtPct(m.forward_returns_pct["7d"]),
+        ])
+      )
+    );
+  }
+  if (knowledge && knowledge.analogs && knowledge.analogs.length) {
+    nodes.push(el("h2", {}, "Nearest Historical Analogs"));
+    nodes.push(
+      table(
+        ["Date", "RSI", "7d forward", "Nearby event(s)"],
+        knowledge.analogs.slice(0, 8).map((a) => [
+          a.timestamp.slice(0, 10),
+          a.rsi.toFixed(1),
+          fmtPct(a.forward_returns_pct["7d"]),
+          a.nearby_events.length ? a.nearby_events.map((e) => e.title).join(", ") : "-",
+        ])
+      )
+    );
+  }
+
+  if (quality && quality.evaluated_predictions) {
+    nodes.push(el("h2", {}, "Prediction Quality"));
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Evaluated predictions", quality.evaluated_predictions),
+        card("Accuracy", `${quality.accuracy_pct}%`),
+        card("Brier score", quality.brier_score),
+        card("Avg calibration error", `${quality.average_error_pct}%`),
+      ])
+    );
+  }
+
+  if (learning && learning.evaluated_predictions) {
+    nodes.push(el("h2", {}, "Self-Learning Accuracy"));
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("Evaluated predictions", learning.evaluated_predictions),
+        card("Accuracy", `${learning.accuracy_pct}%`),
+      ])
+    );
+  }
+
+  if (correlations && correlations.correlations && correlations.correlations.length) {
+    const related = correlations.correlations
+      .filter((c) => c.symbol_a === symbol || c.symbol_b === symbol)
+      .sort((a, b) => Math.abs(b.correlation) - Math.abs(a.correlation))
+      .slice(0, 8);
+    if (related.length) {
+      nodes.push(el("h2", {}, "Correlations"));
+      nodes.push(
+        table(
+          ["Pair", "Window", "Correlation"],
+          related.map((c) => [`${c.symbol_a}/${c.symbol_b}`, `${c.window_days}d`, heatCell(c.correlation, c.correlation.toFixed(2))])
+        )
+      );
+    }
+  }
+
+  return nodes;
+}
+
 const PAGES = {
-  overview: renderOverview, forecast2: renderForecast2, forecast2detail: renderForecastDetail, forecast2performance: renderForecastPerformance, forecast2agents: renderForecastAgents, forecast2errors: renderForecastErrorLab, forecast2learning: renderForecastLearningCenter, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
+  overview: renderOverview, forecast2: renderForecast2, forecast2detail: renderForecastDetail, forecast2performance: renderForecastPerformance, forecast2agents: renderForecastAgents, forecast2errors: renderForecastErrorLab, forecast2learning: renderForecastLearningCenter, assetdetail: renderAssetDetail, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
   correlations: renderCorrelations, news: renderNews, history: renderHistory, events: renderEvents,
   patterns: renderPatterns, breakout: renderBreakout, features: renderFeatures, liquidity: renderLiquidity, sentiment: renderSentiment,
@@ -5128,7 +5463,7 @@ document.getElementById("nav-toggle").addEventListener("click", () => {
 const symbolSearch = document.getElementById("symbol-search");
 symbolSearch.addEventListener("keydown", (e) => {
   if (e.key !== "Enter" || !symbolSearch.value.trim()) return;
-  navigate("history", new URLSearchParams({ symbol: symbolSearch.value.trim().toUpperCase() }));
+  navigate("assetdetail", new URLSearchParams({ symbol: symbolSearch.value.trim().toUpperCase() }));
   symbolSearch.value = "";
 });
 

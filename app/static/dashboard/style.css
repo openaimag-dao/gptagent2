@@ -130,6 +130,12 @@ h3 { font-size: 14px; margin: 20px 0 10px; color: var(--text); }
 .down { color: var(--red); }
 .neutral { color: var(--muted); }
 
+/* Quote/ticker cards that jump to the Asset Detail page on click (Live
+   Dashboard Upgrade Phase 2) -- same --panel/--border card styling, just
+   an affordance that this one is a link, not a static stat. */
+.card-clickable { cursor: pointer; transition: border-color 0.12s ease, transform 0.12s ease; }
+.card-clickable:hover { border-color: var(--accent); transform: translateY(-1px); }
+
 .table-wrap { width: 100%; overflow-x: auto; margin-bottom: 20px; }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }
@@ -472,6 +478,76 @@ ul.structured-list { margin: 3px 0 0; padding-left: 18px; }
 .freshness-stale { background: #3a2210; color: #e0883a; }
 .freshness-offline { background: #331313; color: var(--red); }
 .freshness-unknown { background: var(--panel-2); color: var(--muted); }
+
+/* Cmd+K command palette (Live Dashboard Upgrade Phase 2). Highest z-index
+   layer on the page by a wide margin -- prior highest was nav's 20 on
+   mobile, so 100 leaves headroom with no existing element to conflict
+   with. Hidden via display:none until .open is toggled, not just
+   opacity, so it never intercepts clicks/keys while closed. */
+#topbar { justify-content: space-between; }
+.cmdk-hint {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cmdk-hint:hover { color: var(--text); border-color: var(--accent); }
+
+.cmdk-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(6, 9, 14, 0.6);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.cmdk-overlay.open { display: flex; }
+
+.cmdk-panel {
+  width: 100%;
+  max-width: 560px;
+  max-height: 60vh;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.cmdk-input {
+  width: 100%;
+  background: var(--panel-2);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  padding: 14px 16px;
+  font-size: 15px;
+  outline: none;
+}
+
+.cmdk-results { overflow-y: auto; }
+.cmdk-empty { padding: 16px; color: var(--muted); font-size: 13px; }
+
+.cmdk-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 16px;
+  font-size: 13.5px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.cmdk-item.active { background: var(--panel-2); border-left-color: var(--accent); color: var(--text); }
+.cmdk-item-type { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 
 @media (max-width: 800px) {
   #nav-toggle { display: block; }
