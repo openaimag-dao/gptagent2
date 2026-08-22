@@ -2,6 +2,7 @@ from app.database.models import AssetClass, AssetPrice
 from app.services.analysis.regime import (
     MarketRegime,
     compute_regime_confidence,
+    describe_regime,
     detect_regime,
     regime_confidence_label,
 )
@@ -293,3 +294,51 @@ def test_regime_confidence_label_tiers():
     assert regime_confidence_label(70) == "medium"
     assert regime_confidence_label(10) == "low"
     assert regime_confidence_label(None) == "unavailable"
+
+
+def test_describe_regime_cites_the_real_driving_inputs():
+    assets = [
+        asset("SPX", change_pct_24h=1.2),
+        asset("BTC", change_pct_24h=3.0),
+        asset("VIX", change_pct_24h=-5.0),
+        asset("DXY", change_pct_24h=-0.3),
+    ]
+    regime, inputs = detect_regime(assets)
+
+    description = describe_regime(regime, inputs)
+
+    assert regime is MarketRegime.RISK_ON
+    assert "+1.2%" in description
+    assert "+3.0%" in description
+    assert "-5.0%" in description
+
+
+def test_describe_regime_accepts_the_enum_or_its_string_value():
+    regime, inputs = detect_regime(
+        [
+            asset("SPX", change_pct_24h=1.2),
+            asset("BTC", change_pct_24h=3.0),
+            asset("VIX", change_pct_24h=-5.0),
+            asset("DXY", change_pct_24h=-0.3),
+        ]
+    )
+
+    assert describe_regime(regime, inputs) == describe_regime(regime.value, inputs)
+
+
+def test_describe_regime_never_fabricates_a_missing_input():
+    description = describe_regime(MarketRegime.RISK_ON, {})
+
+    assert "an unavailable input" in description
+    assert "None" not in description
+
+
+def test_describe_regime_covers_every_regime_value():
+    for regime in MarketRegime:
+        description = describe_regime(regime, {})
+        assert description
+        assert description != "No description available for this regime."
+
+
+def test_describe_regime_unknown_value_is_honest_not_a_crash():
+    assert describe_regime("not_a_real_regime", {}) == "No description available for this regime."

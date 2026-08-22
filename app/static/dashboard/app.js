@@ -1254,6 +1254,41 @@ function renderTopOpportunities(data) {
   return nodes;
 }
 
+// Market Regime card (Overview): the regime label alone ("risk_on") told a
+// user nothing about how confident that read is, how long it's held, or
+// why detect_regime() picked it -- all three were already computed and
+// stored (MarketRegimeSnapshot.confidence_pct, RegimeDetector.get_regime_streak(),
+// describe_regime()) but never surfaced. This composes them into one
+// prominent block instead of the bare card that used to sit in the top grid.
+function regimeConfidenceTone(label) {
+  if (label === "high") return "good";
+  if (label === "low") return "bad";
+  return "neutral";
+}
+
+function fmtRegimeDuration(hours, isLowerBound) {
+  if (hours == null) return null;
+  const text = hours >= 24 ? `${(hours / 24).toFixed(1)}d` : `${hours.toFixed(1)}h`;
+  return isLowerBound ? `at least ${text}` : text;
+}
+
+function renderMarketRegimeCard(regime) {
+  if (!regime) return null;
+  const confidenceLabel = regime.confidence_label || "unavailable";
+  const duration = fmtRegimeDuration(regime.duration_hours, regime.duration_is_lower_bound);
+  return el("div", { class: "card regime-card" }, [
+    el("div", { class: "regime-card-head" }, [
+      el("div", {}, [
+        el("div", { class: "label" }, "Market Regime"),
+        el("div", { class: "value" }, regime.regime.replace(/_/g, " ")),
+      ]),
+      decisionPill(`${confidenceLabel.toUpperCase()} CONFIDENCE`, regimeConfidenceTone(confidenceLabel)),
+    ]),
+    duration ? el("div", { class: "sub" }, `In this regime for ${duration}`) : null,
+    regime.explanation ? el("div", { class: "sub regime-explanation" }, regime.explanation) : null,
+  ]);
+}
+
 // Live Alerts feed (Overview): the same alert-history entries Watchdog Hub's
 // own "Alert History" table already shows (WatchdogEngine.get_alert_history(),
 // the Memory Engine's "alerts" category over AlertLog) -- just the most
@@ -1320,8 +1355,9 @@ async function renderOverview() {
     nodes.push(liveTicker(realtimeStatus.watchlist, market ? market.quotes : null));
   }
   nodes.push(forecastCenter, execSummary, el("h2", {}, "Overview"));
+  const regimeCard = renderMarketRegimeCard(regime);
+  if (regimeCard) nodes.push(regimeCard);
   const top = el("div", { class: "grid" });
-  if (regime) top.appendChild(card("Regime", regime.regime.replace(/_/g, " ")));
   if (signals) top.appendChild(card("Bull / Bear", `${signals.bull_score} / ${signals.bear_score}`, `net ${signals.net_score}, ${signals.confidence_pct}% confidence`));
   if (score) top.appendChild(card("Global Score", `${score.global_score}/100`));
   nodes.push(top);
