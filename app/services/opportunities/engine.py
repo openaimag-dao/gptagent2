@@ -77,7 +77,9 @@ def rank_opportunities(events: list[BreakoutEvent], limit: int = 10) -> list[dic
             ),
             "confidence_pct": event.confidence_pct,
             "risk_score": float(event.risk_score) if event.risk_score is not None else None,
-            "risk_adjusted_score": round(risk_adjusted, 1) if risk_adjusted is not None else None,
+            "risk_adjusted_score": (
+                round(float(risk_adjusted), 1) if risk_adjusted is not None else None
+            ),
             "rating": classify_opportunity_rating(event.direction, event.probability_pct),
             "expected_continuation": event.expected_continuation,
             "reasoning": event.reasoning,
