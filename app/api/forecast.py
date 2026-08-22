@@ -170,7 +170,12 @@ async def get_forecast_history(symbol: str, limit: int = Query(20, le=100)) -> d
     accuracy_by_horizon = {}
     for horizon in HORIZONS:
         summary = await engine.summarize_accuracy(symbol, horizon)
-        accuracy_by_horizon[horizon] = summary or {"evaluated_count": 0, "avg_abs_error_pct": None}
+        accuracy_by_horizon[horizon] = summary or {
+            "evaluated_count": 0,
+            "avg_abs_error_pct": None,
+            "win_rate_pct": None,
+            "win_rate_sample_size": 0,
+        }
 
     return {
         "symbol": symbol,

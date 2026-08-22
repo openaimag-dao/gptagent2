@@ -134,6 +134,8 @@ async def test_history_endpoint_serializes_snapshots():
     assert result["accuracy_by_horizon"]["24h"] == {
         "evaluated_count": 0,
         "avg_abs_error_pct": None,
+        "win_rate_pct": None,
+        "win_rate_sample_size": 0,
     }
 
 
