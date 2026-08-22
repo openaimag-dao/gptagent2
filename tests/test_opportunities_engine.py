@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -99,3 +100,20 @@ def test_rank_opportunities_respects_limit():
     ranked = rank_opportunities(events, limit=2)
 
     assert len(ranked) == 2
+
+
+# Root-cause regression: BreakoutEvent.probability_pct/risk_score are
+# SQLAlchemy Numeric columns -- asyncpg hands them back as Decimal, not
+# float. risk_adjusted_score was computed straight from those raw Decimals
+# and never cast back to float, so the API's implicit `-> dict` response
+# model (Pydantic, JSON mode) silently serialized it as a *string*
+# ("63.0") instead of a number, breaking any numeric consumer. Real
+# Decimal inputs here (not the plain-float SimpleNamespace fixtures
+# above) are what actually catch this.
+def test_rank_opportunities_risk_adjusted_score_is_float_not_decimal():
+    events = [_event("BTC", "bullish", Decimal("90.0"), risk_score=Decimal("90.0"))]
+
+    ranked = rank_opportunities(events)
+
+    assert type(ranked[0]["risk_adjusted_score"]) is float
+    assert ranked[0]["risk_adjusted_score"] == pytest.approx(9.0)
