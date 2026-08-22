@@ -328,6 +328,22 @@ class Settings(BaseSettings):
     # hardcoded, per this feature's own honesty requirement that forecast
     # timing be an explicit, auditable setting.
     daily_forecast_hour_utc: int = 0
+    # Freshness bands for an official daily forecast's age (seconds), fed
+    # into the same app.services.realtime.freshness.classify_freshness()
+    # the realtime price path uses (app/api/forecast.py's
+    # _with_official_freshness) -- reused, not duplicated. A completely
+    # different scale from realtime_freshness_* above: a forecast that's
+    # meant to stay valid for a full UTC day is not "stale" the way a
+    # 30-second-old price tick would be. Root cause of the "24H Forecast
+    # looks stale" report this fixes: the official daily forecast card
+    # showed no computed-at/freshness signal at all, so a working
+    # once-per-day design (see is_official_daily's own docstring) looked
+    # indistinguishable from a broken/frozen one.
+    official_forecast_freshness_live_seconds: float = 3600.0  # 1h
+    official_forecast_freshness_recent_seconds: float = 21600.0  # 6h
+    official_forecast_freshness_delayed_seconds: float = 72000.0  # 20h
+    # 26h -- slack past the 24h day boundary
+    official_forecast_freshness_stale_seconds: float = 93600.0
     # Below this many graded observations, Agent Performance reports
     # "insufficient sample" instead of a percentage -- official daily
     # forecasts accumulate at most one per symbol per day, so this is

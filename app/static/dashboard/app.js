@@ -130,6 +130,21 @@ function fmtAge(ageSeconds) {
   return `${Math.round(ageSeconds / 60)}m`;
 }
 
+// Sibling to fmtAge() above rather than an extension of it: fmtAge is
+// tuned for realtime-price-tick ages (sub-minute/minute scale, and every
+// existing call site relies on that), while an official daily forecast's
+// age spans up to ~24h+ and reads much better as "Xh Ym" than "1439m".
+function fmtAgeLong(ageSeconds) {
+  if (ageSeconds == null) return "n/a";
+  const s = Math.max(0, Math.round(ageSeconds));
+  if (s < 60) return `${s}s`;
+  const minutes = Math.round(s / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remMinutes = minutes % 60;
+  return `${hours}h ${remMinutes}m`;
+}
+
 function dataFreshnessBadge(freshness, ageSeconds) {
   if (!freshness) return el("span", { class: "freshness-badge freshness-unknown" }, "...");
   const label = freshness.toUpperCase();
@@ -1523,6 +1538,29 @@ function forecastOutcomeTone(label) {
   return "neutral";
 }
 
+// Root-cause fix for the "24H Forecast looks stale" bug report: this card
+// used to show no computed-at/freshness signal at all, so a working
+// once-per-UTC-day forecast (frozen by design, see is_official_daily's
+// docstring) was visually indistinguishable from a genuinely broken/frozen
+// one. `age_seconds`/`freshness`/`is_stale` come from the API's
+// _with_official_freshness (same classify_freshness() the realtime price
+// path uses, just with an official-forecast-scaled threshold config) --
+// labels remapped here since "LIVE" would misleadingly imply a
+// continuously-updating price rather than a deliberately frozen forecast.
+const OFFICIAL_FRESHNESS_LABEL = {
+  live: "FRESH",
+  recent: "RECENT",
+  delayed: "AGING",
+  stale: "STALE",
+  offline: "EXPIRED",
+};
+
+function officialFreshnessBadge(freshness, ageSeconds) {
+  if (!freshness) return null;
+  const label = OFFICIAL_FRESHNESS_LABEL[freshness] || freshness.toUpperCase();
+  return el("span", { class: `freshness-badge freshness-${freshness}` }, `${label} · ${fmtAgeLong(ageSeconds)}`);
+}
+
 function forecastDailyCard(f) {
   if (!f.available) {
     return el("div", { class: "card" }, [
@@ -1532,6 +1570,7 @@ function forecastDailyCard(f) {
   }
   const d = (f.direction || "").toLowerCase();
   const cls = d.includes("bullish") ? "up" : d.includes("bearish") ? "down" : "neutral";
+  const isActive = !f.forecast_status || f.forecast_status.toLowerCase() === "active";
   return el("div", { class: "card" }, [
     el("div", { class: "label" }, f.symbol),
     el("div", { class: `value ${cls}` }, `${f.direction} ${f.probability_pct}%`),
@@ -1540,6 +1579,12 @@ function forecastDailyCard(f) {
       { class: "sub" },
       `${fmtNum(f.current_price)} -> ${fmtNum(f.target_price)} (${fmtPct(f.expected_change_pct)})`
     ),
+    el("div", { class: "sub" }, [
+      `Computed ${fmtAgeLong(f.age_seconds)} ago`,
+      " ",
+      officialFreshnessBadge(f.freshness, f.age_seconds),
+    ]),
+    isActive ? null : el("div", { class: "sub error" }, `Status: ${f.forecast_status}`),
   ]);
 }
 
@@ -1557,6 +1602,15 @@ async function renderForecast2() {
 
   const daily = await safe("/api/forecast/official/daily");
   nodes.push(el("h2", {}, `Daily Forecast -- ${daily ? daily.date : "..."}`));
+  if (daily && daily.next_refresh_at) {
+    nodes.push(
+      el(
+        "p",
+        { class: "sub" },
+        `Next official forecast run: ${new Date(daily.next_refresh_at).toLocaleString()}`
+      )
+    );
+  }
   if (daily && daily.forecasts.length) {
     const grid = el("div", { class: "grid" });
     for (const f of daily.forecasts) grid.appendChild(forecastDailyCard(f));

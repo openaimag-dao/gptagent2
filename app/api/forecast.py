@@ -3,10 +3,12 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, HTTPException, Query
 
 from app.config import get_settings
-from app.scheduler.jobs import FORECAST_JOB_ID, get_job_next_run
+from app.scheduler.jobs import FORECAST_JOB_ID, OFFICIAL_DAILY_FORECAST_JOB_ID, get_job_next_run
 from app.services.explainability.engine import build_explainability_engine
 from app.services.forecast.engine import HORIZONS, build_forecast_engine
 from app.services.realtime.config import parse_watchlist
+from app.services.realtime.freshness import age_seconds as compute_age_seconds
+from app.services.realtime.freshness import classify_freshness
 
 router = APIRouter(prefix="/api/forecast", tags=["forecast"])
 
@@ -47,6 +49,36 @@ def _serialize_official(row) -> dict:
     }
 
 
+def _with_official_freshness(payload: dict, computed_at: datetime) -> dict:
+    """Attaches an honest freshness read to an already-serialized official
+    forecast: `age_seconds`/`freshness`/`is_stale` computed from
+    `computed_at`, reusing the exact same `classify_freshness` pure
+    function the realtime price path already uses (app/services/realtime/
+    freshness.py) -- not a second freshness concept. The thresholds passed
+    in are the `official_forecast_freshness_*` settings, a completely
+    different scale from `realtime_freshness_*` (a once-per-day forecast
+    valid for ~24h is not "stale" after 30 seconds the way a price tick
+    would be) -- see that settings block's own comment for why these are
+    configurable rather than hardcoded, per the user's explicit rule.
+    Root-cause context: the official daily forecast card previously showed
+    no timestamp or freshness signal at all, which is what made a working
+    once-per-day design look like a stale/broken forecast to a user
+    watching the live price move underneath it."""
+    settings = get_settings()
+    age = compute_age_seconds(computed_at)
+    freshness = classify_freshness(
+        age,
+        live_seconds=settings.official_forecast_freshness_live_seconds,
+        recent_seconds=settings.official_forecast_freshness_recent_seconds,
+        delayed_seconds=settings.official_forecast_freshness_delayed_seconds,
+        stale_seconds=settings.official_forecast_freshness_stale_seconds,
+    )
+    payload["age_seconds"] = round(age)
+    payload["freshness"] = freshness
+    payload["is_stale"] = freshness in ("stale", "offline")
+    return payload
+
+
 def _serialize_official_detail(row) -> dict:
     """Page 3 (Forecast Details): every field `_serialize_official`
     exposes plus the full input snapshot and lineage a drill-down needs --
@@ -83,6 +115,11 @@ def _serialize_official_detail(row) -> dict:
 
 def _next_refresh() -> str | None:
     next_run = get_job_next_run(FORECAST_JOB_ID)
+    return next_run.isoformat() if next_run is not None else None
+
+
+def _next_official_refresh() -> str | None:
+    next_run = get_job_next_run(OFFICIAL_DAILY_FORECAST_JOB_ID)
     return next_run.isoformat() if next_run is not None else None
 
 
@@ -174,8 +211,11 @@ async def get_official_daily_forecasts() -> dict:
     by_symbol = await engine.get_official_daily(symbols)
     return {
         "date": datetime.now(UTC).date().isoformat(),
+        "next_refresh_at": _next_official_refresh(),
         "forecasts": [
-            _serialize_official(by_symbol[symbol])
+            _with_official_freshness(
+                _serialize_official(by_symbol[symbol]), by_symbol[symbol].computed_at
+            )
             if symbol in by_symbol
             else {"symbol": symbol, "available": False}
             for symbol in symbols
