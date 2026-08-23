@@ -1263,6 +1263,19 @@ class PriceForecastSnapshot(Base):
     zero_return_baseline_error_pct: Mapped[float | None] = mapped_column(
         Numeric(10, 4), nullable=True
     )
+    # Forecasting 3.0: the fourth of the spec's 5-baseline challenge --
+    # "assume the future equals this SAME REGIME's own historical average
+    # forward return" (a tighter naive comparison than the unconditional
+    # historical-mean baseline above). Computed the same
+    # naive-target-error way as the other baseline error columns, from a
+    # naive return that's itself conditioned on `regime_at_forecast` --
+    # see compute_regime_mean_baseline_return_pct in
+    # app.services.forecast.engine. Nullable: honestly absent when this
+    # row has no recorded regime, or no regime-matched window exists yet
+    # in stored history.
+    regime_mean_baseline_error_pct: Mapped[float | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
     # Forecast Intelligence Upgrade: filled in alongside the grading fields
     # above, by the same grade_price_forecasts() call, walking the real
     # intrabar high/low of every bar between the forecast and its grading

@@ -1938,6 +1938,15 @@ async function renderForecastDetail(params) {
             : "not graded yet"
         }`
       ),
+      el(
+        "li",
+        {},
+        `Regime-mean baseline (naive "same regime, historical average") error: ${
+          f.regime_mean_baseline_error_pct != null
+            ? fmtPct(f.regime_mean_baseline_error_pct)
+            : "not graded yet"
+        }`
+      ),
     ])
   );
 

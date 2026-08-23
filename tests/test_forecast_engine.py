@@ -29,6 +29,7 @@ from app.services.forecast.engine import (
     compute_price_path,
     compute_price_target,
     compute_probability_distribution,
+    compute_regime_mean_baseline_return_pct,
     compute_scenario_cases,
     compute_zero_return_baseline_error_pct,
     derive_learning_insights,
@@ -586,7 +587,10 @@ async def test_grade_price_forecasts_skips_a_horizon_that_hasnt_elapsed_yet():
     db_row = SimpleNamespace(realized_price=None, error_pct=None, evaluated_at=None)
     session_factory, session = _forecast_session([ungraded], db_row)
 
-    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+    with (
+        patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)),
+        patch("app.services.forecast.engine.build_regime_index", AsyncMock(return_value={})),
+    ):
         graded = await grade_price_forecasts(session_factory, "BTC", object())
 
     assert graded == 0
@@ -681,6 +685,35 @@ def test_compute_zero_return_baseline_error_pct_computes_signed_error():
     assert compute_zero_return_baseline_error_pct(100.0, 105.0) == 5.0
     # a down move produces a negative error
     assert compute_zero_return_baseline_error_pct(100.0, 95.0) == -5.0
+
+
+def test_compute_regime_mean_baseline_return_pct_none_without_regime():
+    # no regime recorded for this forecast -- nothing honest to condition on
+    returns = [0.01, 0.02, 0.03]
+    regimes = ["risk_on", "risk_on", "risk_on"]
+    assert compute_regime_mean_baseline_return_pct(returns, regimes, 2, 1, None) is None
+
+
+def test_compute_regime_mean_baseline_return_pct_none_without_a_matching_window():
+    # history exists but none of it is tagged with this forecast's own regime
+    returns = [0.01, 0.02, 0.03]
+    regimes = ["risk_off", "risk_off", "risk_off"]
+    assert compute_regime_mean_baseline_return_pct(returns, regimes, 2, 1, "risk_on") is None
+
+
+def test_compute_regime_mean_baseline_return_pct_averages_only_regime_matched_windows():
+    # index:      0      1      2      3
+    # return:    None   0.05   0.02   None (reference candle, idx=3)
+    # regime:  risk_on  risk_off  risk_on  risk_on
+    # horizon=1 forward windows knowable at-or-before idx=3: forward[0]
+    # (uses returns[1]=0.05, start candle 0 is "risk_on"), forward[1]
+    # (uses returns[2]=0.02, start candle 1 is "risk_off" -- excluded),
+    # forward[2] would need returns[3] which is None -- excluded anyway.
+    # Only forward[0] is both leakage-safe AND regime-matched -> 5.0%.
+    returns = [None, 0.05, 0.02, None]
+    regimes = ["risk_on", "risk_off", "risk_on", "risk_on"]
+    result = compute_regime_mean_baseline_return_pct(returns, regimes, 3, 1, "risk_on")
+    assert result == 5.0
 
 
 # ---- Forecast Intelligence Upgrade: target_reached (intrabar touch) --------
@@ -790,6 +823,7 @@ async def test_grade_price_forecasts_grades_an_elapsed_row():
         target_price=103.0,
         current_price=100.0,
         direction="Bullish",
+        regime_at_forecast=None,
     )
     db_row = SimpleNamespace(
         realized_price=None,
@@ -801,7 +835,10 @@ async def test_grade_price_forecasts_grades_an_elapsed_row():
     )
     session_factory, session = _forecast_session([ungraded], db_row)
 
-    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+    with (
+        patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)),
+        patch("app.services.forecast.engine.build_regime_index", AsyncMock(return_value={})),
+    ):
         graded = await grade_price_forecasts(session_factory, "BTC", object())
 
     assert graded == 1
@@ -819,6 +856,8 @@ async def test_grade_price_forecasts_grades_an_elapsed_row():
     # Forecasting 3.0: the zero-return baseline never needs history to
     # average -- current_price is always known, so it's always graded.
     assert db_row.zero_return_baseline_error_pct == round(100 * (105.0 - 100.0) / 100.0, 4)
+    # this forecast has no recorded regime -- honestly None, not fabricated.
+    assert db_row.regime_mean_baseline_error_pct is None
     # Forecast Intelligence Upgrade: price actually touched the target
     # (high 105.0 >= target 103.0) during the window, not just ended up
     # past it at horizon-elapse.
@@ -848,6 +887,7 @@ async def test_grade_price_forecasts_computes_baseline_comparisons():
         target_price=103.0,
         current_price=100.0,
         direction="Bullish",
+        regime_at_forecast="risk_on",
     )
     db_row = SimpleNamespace(
         realized_price=None,
@@ -859,7 +899,18 @@ async def test_grade_price_forecasts_computes_baseline_comparisons():
     )
     session_factory, session = _forecast_session([ungraded], db_row)
 
-    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+    # The one forward-return window that feeds the historical-mean baseline
+    # (see below) starts at rows[0] (ts0 - 2 days) -- tagging that candle's
+    # reconstructed regime as the SAME "risk_on" this forecast was made in
+    # means the regime-mean baseline picks up the exact same window.
+    def fake_reconstruct(_regime_index, timestamp):
+        return SimpleNamespace(value="risk_on") if timestamp == rows[0].timestamp else None
+
+    with (
+        patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)),
+        patch("app.services.forecast.engine.build_regime_index", AsyncMock(return_value={})),
+        patch("app.services.forecast.engine.reconstruct_regime_at", side_effect=fake_reconstruct),
+    ):
         graded = await grade_price_forecasts(session_factory, "BTC", object())
 
     assert graded == 1
@@ -873,6 +924,10 @@ async def test_grade_price_forecasts_computes_baseline_comparisons():
     # zero-return baseline's naive target is just current_price (100.0),
     # so its error is the full realized move: (105-100)/100 = 5%
     assert db_row.zero_return_baseline_error_pct == 5.0
+    # regime-mean baseline picks up the same single window (its start
+    # candle is tagged "risk_on", matching this forecast's own regime) --
+    # same naive target 105.0, so the same zero error
+    assert db_row.regime_mean_baseline_error_pct == 0.0
 
 
 async def test_grade_price_forecasts_preserves_invalidated_status():
@@ -895,6 +950,7 @@ async def test_grade_price_forecasts_preserves_invalidated_status():
         target_price=103.0,
         current_price=100.0,
         direction="Bullish",
+        regime_at_forecast=None,
     )
     db_row = SimpleNamespace(
         realized_price=None,
@@ -906,7 +962,10 @@ async def test_grade_price_forecasts_preserves_invalidated_status():
     )
     session_factory, session = _forecast_session([ungraded], db_row)
 
-    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+    with (
+        patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)),
+        patch("app.services.forecast.engine.build_regime_index", AsyncMock(return_value={})),
+    ):
         graded = await grade_price_forecasts(session_factory, "BTC", object())
 
     assert graded == 1
@@ -928,7 +987,10 @@ async def test_grade_price_forecasts_skips_an_unmatched_reference_timestamp():
     )
     session_factory, session = _forecast_session([ungraded])
 
-    with patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)):
+    with (
+        patch("app.services.forecast.engine.get_series", AsyncMock(return_value=rows)),
+        patch("app.services.forecast.engine.build_regime_index", AsyncMock(return_value={})),
+    ):
         graded = await grade_price_forecasts(session_factory, "BTC", object())
 
     assert graded == 0
