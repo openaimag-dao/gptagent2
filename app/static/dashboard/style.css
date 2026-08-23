@@ -62,6 +62,28 @@ nav button.active {
   background: var(--panel-2);
 }
 
+.nav-group { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+.nav-group summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+.nav-group summary::-webkit-details-marker { display: none; }
+.nav-group summary::after { content: "\25B8"; font-size: 10px; transition: transform 0.15s; }
+.nav-group[open] summary::after { transform: rotate(90deg); }
+.nav-group summary:hover { color: var(--text); }
+.nav-group[open] summary { color: var(--text); }
+.nav-group button { padding-left: 24px; font-size: 13px; }
+
 .nav-search { padding: 0 16px 12px; }
 .nav-search input {
   width: 100%;

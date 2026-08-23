@@ -14,56 +14,81 @@
     <input id="symbol-search" type="text" placeholder="Jump to symbol (e.g. AAPL)">
   </div>
   <button data-page="overview" class="active">Overview</button>
-  <button data-page="forecast2">Forecasting 2.0</button>
-  <button data-page="forecast2performance">Performance</button>
-  <button data-page="forecast2agents">Agent Performance</button>
-  <button data-page="forecast2errors">Error Lab</button>
-  <button data-page="forecast2learning">Learning Center</button>
-  <button data-page="watchlist">Watchlist</button>
-  <button data-page="consensus">Consensus</button>
-  <button data-page="committee">Committee</button>
-  <button data-page="terminal">Terminal</button>
-  <button data-page="macro">Macro</button>
-  <button data-page="crypto">Crypto</button>
-  <button data-page="stocks">Stocks</button>
-  <button data-page="correlations">Correlations</button>
-  <button data-page="news">News</button>
-  <button data-page="history">History</button>
-  <button data-page="events">Events</button>
-  <button data-page="patterns">Patterns</button>
-  <button data-page="breakout">Breakout</button>
-  <button data-page="features">Feature Signals</button>
-  <button data-page="liquidity">Liquidity</button>
-  <button data-page="risk">Risk</button>
-  <button data-page="why">Why AI Thinks This</button>
-  <button data-page="watchdog">Watchdog Hub</button>
-  <button data-page="scanner">Market Scanner</button>
-  <button data-page="status">Status</button>
-  <button data-page="replay">Replay</button>
-  <button data-page="shocks">Critical Alerts</button>
-  <button data-page="technical">Technical Analysis</button>
-  <button data-page="sentiment">Sentiment</button>
-  <button data-page="calendar">Calendar</button>
-  <button data-page="similarity">Historical Similarity</button>
-  <button data-page="brain">AI Brain</button>
-  <button data-page="research">Research Lab</button>
-  <button data-page="strategies">Strategies</button>
-  <button data-page="backtest">Backtest</button>
-  <button data-page="probability">Probability</button>
-  <button data-page="learning">Learning</button>
-  <button data-page="quality">Quality Lab</button>
-  <button data-page="accuracy">Prediction Accuracy</button>
-  <button data-page="scenarios">Scenarios</button>
-  <button data-page="whatif">What-If</button>
-  <button data-page="whales">Whales</button>
-  <button data-page="etf">ETF</button>
-  <button data-page="onchain">On-Chain</button>
-  <button data-page="signals">Signals</button>
-  <button data-page="reports">Reports</button>
-  <button data-page="portfolio">Portfolio</button>
-  <button data-page="advice">Advice</button>
-  <button data-page="alerts">Alerts</button>
-  <button data-page="memory">Market Memory</button>
+
+  <details class="nav-group" data-group="forecasting">
+    <summary>Forecasting</summary>
+    <button data-page="forecast2">Forecasting 2.0</button>
+    <button data-page="forecast2performance">Performance</button>
+    <button data-page="forecast2agents">Agent Performance</button>
+    <button data-page="forecast2errors">Error Lab</button>
+    <button data-page="forecast2learning">Learning Center</button>
+    <button data-page="probability">Probability</button>
+    <button data-page="learning">Learning</button>
+    <button data-page="quality">Quality Lab</button>
+    <button data-page="accuracy">Prediction Accuracy</button>
+  </details>
+
+  <details class="nav-group" data-group="markets">
+    <summary>Markets</summary>
+    <button data-page="watchlist">Watchlist</button>
+    <button data-page="macro">Macro</button>
+    <button data-page="crypto">Crypto</button>
+    <button data-page="stocks">Stocks</button>
+    <button data-page="correlations">Correlations</button>
+    <button data-page="technical">Technical Analysis</button>
+    <button data-page="terminal">Terminal</button>
+  </details>
+
+  <details class="nav-group" data-group="ai-analysis">
+    <summary>AI Analysis</summary>
+    <button data-page="consensus">Consensus</button>
+    <button data-page="committee">Committee</button>
+    <button data-page="why">Why AI Thinks This</button>
+    <button data-page="scenarios">Scenarios</button>
+    <button data-page="whatif">What-If</button>
+    <button data-page="brain">AI Brain</button>
+    <button data-page="replay">Replay</button>
+    <button data-page="similarity">Historical Similarity</button>
+  </details>
+
+  <details class="nav-group" data-group="alerts-monitoring">
+    <summary>Alerts &amp; Monitoring</summary>
+    <button data-page="signals">Signals</button>
+    <button data-page="alerts">Alerts</button>
+    <button data-page="shocks">Critical Alerts</button>
+    <button data-page="watchdog">Watchdog Hub</button>
+    <button data-page="scanner">Market Scanner</button>
+    <button data-page="status">Status</button>
+    <button data-page="breakout">Breakout</button>
+    <button data-page="patterns">Patterns</button>
+    <button data-page="features">Feature Signals</button>
+    <button data-page="liquidity">Liquidity</button>
+    <button data-page="sentiment">Sentiment</button>
+  </details>
+
+  <details class="nav-group" data-group="research">
+    <summary>Research</summary>
+    <button data-page="research">Research Lab</button>
+    <button data-page="strategies">Strategies</button>
+    <button data-page="backtest">Backtest</button>
+    <button data-page="calendar">Calendar</button>
+    <button data-page="news">News</button>
+    <button data-page="history">History</button>
+    <button data-page="events">Events</button>
+  </details>
+
+  <details class="nav-group" data-group="portfolio-risk">
+    <summary>Portfolio &amp; Risk</summary>
+    <button data-page="portfolio">Portfolio</button>
+    <button data-page="advice">Advice</button>
+    <button data-page="reports">Reports</button>
+    <button data-page="whales">Whales</button>
+    <button data-page="etf">ETF</button>
+    <button data-page="onchain">On-Chain</button>
+    <button data-page="risk">Risk</button>
+    <button data-page="memory">Market Memory</button>
+  </details>
+
   <button data-page="settings">Settings</button>
 </nav>
 <main>
