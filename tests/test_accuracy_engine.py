@@ -27,6 +27,7 @@ def _row(
     momentum_baseline_correct=None,
     historical_mean_baseline_error_pct=None,
     zero_return_baseline_error_pct=None,
+    regime_mean_baseline_error_pct=None,
     regime_at_forecast=None,
     target_reached=None,
 ):
@@ -44,6 +45,7 @@ def _row(
         momentum_baseline_correct=momentum_baseline_correct,
         historical_mean_baseline_error_pct=historical_mean_baseline_error_pct,
         zero_return_baseline_error_pct=zero_return_baseline_error_pct,
+        regime_mean_baseline_error_pct=regime_mean_baseline_error_pct,
         regime_at_forecast=regime_at_forecast,
         target_reached=target_reached,
     )
@@ -78,6 +80,8 @@ def test_aggregate_stats_real_averages():
     assert stats["beats_historical_mean_baseline"] is None
     assert stats["zero_return_baseline_avg_abs_error_pct"] is None
     assert stats["beats_zero_return_baseline"] is None
+    assert stats["regime_mean_baseline_avg_abs_error_pct"] is None
+    assert stats["beats_regime_mean_baseline"] is None
 
 
 def test_aggregate_stats_honest_none_when_nothing_graded():
@@ -155,6 +159,28 @@ def test_aggregate_stats_does_not_beat_zero_return_baseline_when_worse():
     ]
     stats = _aggregate_stats(rows)
     assert stats["beats_zero_return_baseline"] is False
+
+
+def test_aggregate_stats_regime_mean_baseline_comparison():
+    rows = [
+        _row(error_pct=1.0, regime_mean_baseline_error_pct=6.0),
+        _row(error_pct=-1.0, regime_mean_baseline_error_pct=-6.0),
+    ]
+    stats = _aggregate_stats(rows)
+    assert stats["avg_abs_error_pct"] == 1.0
+    assert stats["regime_mean_baseline_avg_abs_error_pct"] == 6.0
+    # smaller absolute error is better -- the forecast's own 1.0% beats the
+    # naive "same regime, historical average" baseline's 6.0%
+    assert stats["beats_regime_mean_baseline"] is True
+
+
+def test_aggregate_stats_does_not_beat_regime_mean_baseline_when_worse():
+    rows = [
+        _row(error_pct=9.0, regime_mean_baseline_error_pct=2.0),
+        _row(error_pct=-9.0, regime_mean_baseline_error_pct=-2.0),
+    ]
+    stats = _aggregate_stats(rows)
+    assert stats["beats_regime_mean_baseline"] is False
 
 
 # ---- Forecast Intelligence Upgrade: target_reached (intrabar touch) --------

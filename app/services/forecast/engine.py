@@ -43,7 +43,12 @@ from app.database.models import (
 from app.services.agents.pattern_agent import _recency_weighted_direction
 from app.services.alert_performance.engine import compute_baseline_return_pct
 from app.services.analysis.correlation import CorrelationEngine
-from app.services.analysis.regime import MarketRegime, RegimeDetector, build_regime_index
+from app.services.analysis.regime import (
+    MarketRegime,
+    RegimeDetector,
+    build_regime_index,
+    reconstruct_regime_at,
+)
 from app.services.analysis.report import derive_risk_level
 from app.services.backtest.metrics import compute_max_drawdown_pct
 from app.services.calendar.engine import EconomicCalendarEngine
@@ -64,7 +69,7 @@ from app.services.history.schemas import Timeframe
 from app.services.market.repository import MarketRepository
 from app.services.onchain.engine import OnChainIntelligenceEngine
 from app.services.patterns.engine import PatternEngine
-from app.services.probability.engine import ProbabilityEngine
+from app.services.probability.engine import ProbabilityEngine, compute_forward_returns
 from app.services.quality.engine import PredictionQualityEngine
 from app.services.quality.metrics import classify_calibration_reliability
 from app.services.realtime.freshness import age_seconds, classify_freshness
@@ -944,7 +949,12 @@ def compute_historical_mean_baseline_error_pct(
     `error_pct` is computed for the real forecast (both are
     100*(realized-target)/target), so the two are directly comparable
     magnitude-for-magnitude. None when there's no historical baseline
-    return to build a naive target from."""
+    return to build a naive target from.
+
+    Forecasting 3.0: this naive-target-error math is generic to any naive
+    return, not specific to the historical-mean baseline -- also reused
+    (with a regime-conditioned return instead) for the regime-mean
+    baseline below, rather than duplicating the same three lines."""
     if historical_mean_baseline_return_pct is None:
         return None
     naive_target_price = current_price * (1 + historical_mean_baseline_return_pct / 100)
@@ -964,6 +974,40 @@ def compute_zero_return_baseline_error_pct(current_price: float, realized_price:
     never needs history to average -- current_price is always known, so
     this is never None for a gradable row."""
     return round(100 * (realized_price - current_price) / current_price, 4)
+
+
+def compute_regime_mean_baseline_return_pct(
+    returns_series: list[float | None],
+    regime_series: list[str | None],
+    reference_idx: int,
+    horizon_periods: int,
+    regime_at_forecast: str | None,
+) -> float | None:
+    """Pure function: Forecasting 3.0 -- the 4th of the spec's 5-baseline
+    challenge (random walk / zero return / historical mean / momentum /
+    regime mean). Mirrors compute_baseline_return_pct's leakage-safety
+    exactly (only forward-return windows fully knowable AT OR BEFORE the
+    reference candle contribute), but additionally restricts to windows
+    whose START candle's own reconstructed regime (`regime_series[i]`,
+    from app.services.analysis.regime.reconstruct_regime_at) matches this
+    forecast's own `regime_at_forecast` -- "what a typical horizon-length
+    move looked like the last time the market was in this same regime,"
+    a tighter naive comparison than the historical-mean baseline's
+    unconditional average. None when this forecast has no recorded
+    regime, or no regime-matched window exists yet in stored history."""
+    if regime_at_forecast is None:
+        return None
+    forward = compute_forward_returns(returns_series, horizon=horizon_periods)
+    prior = [
+        forward[i]
+        for i in range(min(reference_idx, len(forward)))
+        if i + horizon_periods <= reference_idx
+        and forward[i] is not None
+        and regime_series[i] == regime_at_forecast
+    ]
+    if not prior:
+        return None
+    return round(100 * sum(prior) / len(prior), 4)
 
 
 def grade_confidence(error_pct: float, expected_volatility_pct: float | None) -> bool | None:
@@ -1003,8 +1047,13 @@ async def grade_price_forecasts(
     grading window, still zero extra I/O. Forecasting 3.0: also fills in
     `zero_return_baseline_error_pct`, a third naive baseline ("assume no
     change") alongside the two above -- again zero extra I/O, since it
-    only needs current_price/realized_price this loop already has.
-    Returns how many rows were graded this call."""
+    only needs current_price/realized_price this loop already has. And
+    `regime_mean_baseline_error_pct`, a fourth -- this one DOES pay one
+    extra build_regime_index() call per invocation (same cost ForecastEngine
+    .compute() already pays every cycle for the exact same reconstruction,
+    so this doesn't introduce a new cost tier), to regime-tag `rows` and
+    condition the naive baseline return on each forecast's own recorded
+    `regime_at_forecast`. Returns how many rows were graded this call."""
     async with session_factory() as session:
         ungraded = list(
             await session.scalars(
@@ -1021,6 +1070,11 @@ async def grade_price_forecasts(
     rows = await get_series(session_factory, model, symbol, Timeframe.DAILY)
     index_by_timestamp = {r.timestamp: i for i, r in enumerate(rows)}
     returns_series = [float(r.return_pct) if r.return_pct is not None else None for r in rows]
+    regime_index = await build_regime_index(session_factory, Timeframe.DAILY)
+    regime_series: list[str | None] = []
+    for r in rows:
+        reconstructed = reconstruct_regime_at(regime_index, r.timestamp)
+        regime_series.append(reconstructed.value if reconstructed is not None else None)
 
     graded = 0
     async with session_factory() as session:
@@ -1053,6 +1107,9 @@ async def grade_price_forecasts(
             historical_mean_baseline_return_pct = compute_baseline_return_pct(
                 returns_series, idx, horizon_periods
             )
+            regime_mean_baseline_return_pct = compute_regime_mean_baseline_return_pct(
+                returns_series, regime_series, idx, horizon_periods, snapshot.regime_at_forecast
+            )
 
             db_row = await session.get(PriceForecastSnapshot, snapshot.id)
             db_row.realized_price = realized_price
@@ -1079,6 +1136,9 @@ async def grade_price_forecasts(
             )
             db_row.zero_return_baseline_error_pct = compute_zero_return_baseline_error_pct(
                 current_price, realized_price
+            )
+            db_row.regime_mean_baseline_error_pct = compute_historical_mean_baseline_error_pct(
+                regime_mean_baseline_return_pct, current_price, realized_price
             )
             db_row.evaluated_at = datetime.now(UTC)
             db_row.forecast_status = status_after_grading(db_row.forecast_status)

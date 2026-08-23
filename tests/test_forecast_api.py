@@ -185,6 +185,7 @@ def _official_row(**overrides):
         "momentum_baseline_correct": None,
         "historical_mean_baseline_error_pct": None,
         "zero_return_baseline_error_pct": None,
+        "regime_mean_baseline_error_pct": None,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -307,11 +308,12 @@ async def test_official_history_passes_pagination_and_date_range():
     assert payload["offset"] == 20
 
 
-async def test_forecast_detail_serializes_all_three_baseline_comparisons():
+async def test_forecast_detail_serializes_all_four_baseline_comparisons():
     row = _official_row(
         momentum_baseline_correct=True,
         historical_mean_baseline_error_pct=2.5,
         zero_return_baseline_error_pct=5.0,
+        regime_mean_baseline_error_pct=3.5,
     )
     engine = AsyncMock()
     engine.get_forecast_detail.return_value = {"forecast": row, "agents": []}
@@ -322,6 +324,7 @@ async def test_forecast_detail_serializes_all_three_baseline_comparisons():
     assert detail["momentum_baseline_correct"] is True
     assert detail["historical_mean_baseline_error_pct"] == 2.5
     assert detail["zero_return_baseline_error_pct"] == 5.0
+    assert detail["regime_mean_baseline_error_pct"] == 3.5
 
 
 async def test_forecast_detail_404_when_not_found():
