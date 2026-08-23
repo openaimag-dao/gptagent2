@@ -1606,7 +1606,8 @@ async function renderWatchlist() {
           changeEl.textContent = fmtPct(q.changePct);
           changeEl.className = `wl-change ${changeClass(q.changePct)}`;
           row.querySelector(".wl-volume").textContent = q.volume != null ? fmtNum(q.volume, 0) : "n/a";
-          row.querySelector(".wl-freshness").replaceWith(dataFreshnessBadge(q.freshness, q.ageSeconds));
+          const freshnessBadge = row.querySelector(".wl-freshness .freshness-badge");
+          if (freshnessBadge) freshnessBadge.replaceWith(dataFreshnessBadge(q.freshness, q.ageSeconds));
         }
       },
     });
@@ -5618,7 +5619,10 @@ async function activate(page, params) {
     clearInterval(refreshTimer);
     refreshTimer = null;
   }
-  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.page === page));
+  document.querySelectorAll("nav button[data-page]").forEach((b) => b.classList.toggle("active", b.dataset.page === page));
+  const activeBtn = document.querySelector(`nav button[data-page="${page}"]`);
+  const activeGroup = activeBtn ? activeBtn.closest(".nav-group") : null;
+  if (activeGroup) activeGroup.open = true;
   document.getElementById("nav").classList.remove("open");
 
   const run = async () => {
@@ -5647,7 +5651,7 @@ window.addEventListener("hashchange", () => {
   activate(page, params);
 });
 
-document.querySelectorAll("nav button").forEach((btn) => {
+document.querySelectorAll("nav button[data-page]").forEach((btn) => {
   btn.addEventListener("click", () => navigate(btn.dataset.page));
 });
 
