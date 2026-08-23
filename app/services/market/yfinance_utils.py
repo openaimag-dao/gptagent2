@@ -48,7 +48,7 @@ def download_last_two_closes_sync(tickers: list[str]) -> BarsBySymbol:
     return results
 
 
-async def download_last_two_closes(tickers: list[str], attempts: int = 4) -> BarsBySymbol:
+async def download_last_two_closes(tickers: list[str], attempts: int = 2) -> BarsBySymbol:
     """Async wrapper with retries that accumulate partial results.
 
     yfinance swallows per-ticker failures internally (logs a warning, returns
@@ -60,6 +60,18 @@ async def download_last_two_closes(tickers: list[str], attempts: int = 4) -> Bar
     tickers still missing on each attempt and accumulates results, so a
     ticker gets up to `attempts` real chances regardless of what happens to
     the rest of the batch.
+
+    Default lowered from 4 to 2: production logs (this is the last-resort
+    fallback in multisource_stocks.py/multisource_macro.py, tried only after
+    Twelve Data and Alpha Vantage both fail) show every index/macro ticker
+    failing identically on every attempt with an empty-body JSONDecodeError
+    -- the same signature as an anti-bot/cloud-IP block, not a transient
+    rate limit (see coinbase_client.py's docstring for the same failure
+    class already diagnosed and worked around for Binance in this project).
+    4 attempts burned ~159s of every 5-minute collection cycle for a call
+    that never once succeeded; retries never helped, they only delayed the
+    job. 2 keeps one real second chance for a genuinely transient blip
+    without paying for two more guaranteed-to-fail rounds.
     """
     accumulated: BarsBySymbol = {}
     remaining = list(tickers)
