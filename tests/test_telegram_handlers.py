@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -11,6 +12,7 @@ from app.telegram.handlers import (
     _answer,
     _normalize_dashes,
     cmd_advice,
+    cmd_forecast,
     cmd_health,
     cmd_memory,
     cmd_move_alert,
@@ -107,6 +109,78 @@ async def test_cmd_advice_reports_unavailable_without_crashing():
     (text,), kwargs = message.answer.call_args
     assert "Not enough data yet" in text
     assert "BTC/1d" in text
+
+
+async def test_cmd_forecast_rejects_a_non_official_symbol():
+    message = AsyncMock()
+    command = CommandObject(args="DOGE")
+
+    await cmd_forecast(message, command)
+
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "DOGE is not an official forecast symbol" in text
+    assert "BTC" in text  # the real official roster is listed, not hidden
+
+
+async def test_cmd_forecast_defaults_to_btc_with_no_args():
+    message = AsyncMock()
+    command = CommandObject(args=None)
+    engine = AsyncMock()
+    engine.get_official_daily.return_value = {}
+    engine.get_official_performance.return_value = {"by_symbol": {}}
+
+    with patch("app.telegram.handlers.build_forecast_engine", return_value=engine):
+        await cmd_forecast(message, command)
+
+    engine.get_official_daily.assert_awaited_once_with(("BTC",))
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "BTC" in text
+
+
+async def test_cmd_forecast_shows_today_forecast_and_track_record():
+    message = AsyncMock()
+    command = CommandObject(args="sol")  # lowercase input must still resolve
+    row = SimpleNamespace(
+        official_forecast_date="2026-08-23",
+        direction="Bullish",
+        probability_pct=62,
+        current_price=95.14,
+        target_price=95.88,
+        expected_change_pct=0.78,
+        confidence_tier="Weak",
+        regime_at_forecast="accumulation",
+        computed_at=datetime.now(UTC) - timedelta(minutes=5),
+        evaluated_at=None,
+        direction_correct=None,
+        error_pct=None,
+    )
+    engine = AsyncMock()
+    engine.get_official_daily.return_value = {"SOL": row}
+    engine.get_official_performance.return_value = {
+        "by_symbol": {
+            "SOL": {
+                "graded_count": 5,
+                "direction_accuracy_pct": 80.0,
+                "direction_accuracy_ci": {"lower_pct": 40.0, "upper_pct": 95.0},
+                "avg_abs_error_pct": 1.2,
+                "target_reached_rate_pct": 60.0,
+            }
+        }
+    }
+
+    with patch("app.telegram.handlers.build_forecast_engine", return_value=engine):
+        await cmd_forecast(message, command)
+
+    engine.get_official_daily.assert_awaited_once_with(("SOL",))
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "SOL OFFICIAL FORECAST" in text
+    assert "Bullish 62%" in text
+    assert "Track Record (30D)" in text
+    assert "80.0%" in text
+    assert "95% CI: 40.0-95.0" in text
 
 
 async def test_cmd_health_replies_without_touching_db():
