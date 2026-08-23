@@ -136,6 +136,17 @@ h3 { font-size: 14px; margin: 20px 0 10px; color: var(--text); }
 .card-clickable { cursor: pointer; transition: border-color 0.12s ease, transform 0.12s ease; }
 .card-clickable:hover { border-color: var(--accent); transform: translateY(-1px); }
 
+.regime-card { margin-bottom: 16px; }
+.regime-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.regime-card .value { text-transform: capitalize; }
+.regime-card .regime-explanation { margin-top: 8px; line-height: 1.5; }
+
 .table-wrap { width: 100%; overflow-x: auto; margin-bottom: 20px; }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--border); }

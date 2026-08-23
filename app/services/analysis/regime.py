@@ -59,6 +59,12 @@ _REGIME_SYMBOL_ASSET_CLASS: dict[str, AssetClass] = {
 _REGIME_CONFIDENCE_HIGH = 85
 _REGIME_CONFIDENCE_MEDIUM = 60
 _REGIME_CONFIDENCE_LOW = 30
+# How many recent snapshots RegimeDetector.get_regime_streak() will walk
+# back through to find when the current regime started. detect_regime_job
+# runs every settings.analysis_interval_minutes (default 30min), so 500
+# snapshots covers roughly 10 days -- generous for how long a regime
+# typically persists, without an unbounded query.
+_REGIME_STREAK_LOOKBACK = 500
 _CORE_REGIME_INPUTS: tuple[str, ...] = (
     "spx_change_pct",
     "btc_change_pct",
@@ -294,6 +300,98 @@ def regime_confidence_label(confidence_pct: int | None) -> str:
     return "low"
 
 
+def _pct_or_na(value: float | None) -> str:
+    return f"{value:+.1f}%" if value is not None else "an unavailable input"
+
+
+_REGIME_DESCRIPTIONS: dict[str, Any] = {
+    "flight_to_safety": lambda i: (
+        f"Equities ({_pct_or_na(i.get('spx_change_pct'))}) and BTC "
+        f"({_pct_or_na(i.get('btc_change_pct'))}) fell while Gold "
+        f"({_pct_or_na(i.get('gold_change_pct'))}) and VIX "
+        f"({_pct_or_na(i.get('vix_change_pct'))}) moved the other way -- "
+        "capital rotating into traditional havens."
+    ),
+    "capitulation": lambda i: (
+        f"BTC dropped {_pct_or_na(i.get('btc_change_pct'))} while VIX spiked "
+        f"{_pct_or_na(i.get('vix_change_pct'))} -- a panic-scale, single-day risk-off move."
+    ),
+    "liquidity_expansion": lambda i: (
+        "The Fed Funds Rate just moved down -- looser monetary policy tends to support risk assets."
+    ),
+    "liquidity_contraction": lambda i: (
+        "The Fed Funds Rate just moved up -- tighter monetary policy tends to pressure risk assets."
+    ),
+    "strong_bull": lambda i: (
+        f"BTC ({_pct_or_na((i.get('momentum_30d') or {}).get('BTC'))}) and SPX "
+        f"({_pct_or_na((i.get('momentum_30d') or {}).get('SPX'))}) are both up over 20% "
+        "in the past 30 days -- a powerful, broad risk rally."
+    ),
+    "bull_weakening": lambda i: (
+        "BTC/SPX 30-day momentum is still positive but has decelerated sharply since the "
+        "prior reading -- an early bull-fatigue signal, not yet a trend reversal."
+    ),
+    "bull": lambda i: (
+        f"BTC ({_pct_or_na((i.get('momentum_30d') or {}).get('BTC'))}) and SPX "
+        f"({_pct_or_na((i.get('momentum_30d') or {}).get('SPX'))}) are both up over 10% "
+        "in the past 30 days."
+    ),
+    "bear": lambda i: (
+        f"BTC ({_pct_or_na((i.get('momentum_30d') or {}).get('BTC'))}) and SPX "
+        f"({_pct_or_na((i.get('momentum_30d') or {}).get('SPX'))}) are both down over 10% "
+        "in the past 30 days."
+    ),
+    "altseason": lambda i: (
+        f"BTC dominance is falling ({_pct_or_na(i.get('btc_dominance_change_pct'))}) while ETH "
+        f"({_pct_or_na(i.get('eth_change_pct'))}) and SOL ({_pct_or_na(i.get('sol_change_pct'))}) "
+        "rally hard -- capital rotating from BTC into alts."
+    ),
+    "accumulation": lambda i: (
+        "Derivatives positioning is long-heavy while BTC price is roughly flat -- leveraged "
+        "buyers building into weakness (a positioning read, not confirmed on-chain accumulation)."
+    ),
+    "distribution": lambda i: (
+        "Derivatives positioning is short-heavy while BTC price is roughly flat or up -- leveraged "
+        "sellers building into strength (a positioning read, not confirmed on-chain distribution)."
+    ),
+    "risk_on": lambda i: (
+        f"Equities ({_pct_or_na(i.get('spx_change_pct'))}) and BTC "
+        f"({_pct_or_na(i.get('btc_change_pct'))}) are both up while VIX "
+        f"({_pct_or_na(i.get('vix_change_pct'))}) and DXY "
+        f"({_pct_or_na(i.get('dxy_change_pct'))}) are both down -- broad risk appetite."
+    ),
+    "risk_off": lambda i: (
+        f"Equities ({_pct_or_na(i.get('spx_change_pct'))}) and BTC "
+        f"({_pct_or_na(i.get('btc_change_pct'))}) are both down while VIX "
+        f"({_pct_or_na(i.get('vix_change_pct'))}) and DXY "
+        f"({_pct_or_na(i.get('dxy_change_pct'))}) are both up -- broad risk aversion."
+    ),
+    "recovery": lambda i: (
+        "BTC and SPX both turned positive today, right after a Bear or Capitulation reading -- "
+        "an early bounce, not yet confirmed as a new uptrend."
+    ),
+    "sideways": lambda i: (
+        "Every available signal moved less than 0.3% -- no clear directional bias today."
+    ),
+    "neutral": lambda i: (
+        "Signals disagree with each other, or there isn't enough data to classify a clear regime."
+    ),
+}
+
+
+def describe_regime(regime: "MarketRegime | str", inputs: dict[str, Any]) -> str:
+    """One-line, honest explanation of why detect_regime() picked this
+    label -- built only from the same `inputs` dict detect_regime() already
+    returns, mirroring each rule branch's own criteria. Never invents a
+    number that isn't in `inputs`; a missing input renders as "an
+    unavailable input" rather than a fabricated value."""
+    value = regime.value if isinstance(regime, MarketRegime) else regime
+    template = _REGIME_DESCRIPTIONS.get(value)
+    if template is None:
+        return "No description available for this regime."
+    return template(inputs or {})
+
+
 async def build_regime_index(
     session_factory: async_sessionmaker[AsyncSession], timeframe: Timeframe
 ) -> dict[str, dict]:
@@ -420,3 +518,35 @@ class RegimeDetector:
                 .order_by(MarketRegimeSnapshot.computed_at.desc())
                 .limit(1)
             )
+
+    async def get_regime_streak(self) -> dict[str, Any] | None:
+        """How long the *current* regime has held, walking back through
+        recently persisted snapshots (all already written by the scheduled
+        detect_regime_job) rather than a fabricated duration. `since` is
+        honestly a lower bound when the whole lookback window is still the
+        same regime (`duration_is_lower_bound`) -- the true start could be
+        further back than this query looked."""
+        async with self._session_factory() as session:
+            rows = list(
+                await session.scalars(
+                    select(MarketRegimeSnapshot)
+                    .order_by(MarketRegimeSnapshot.computed_at.desc())
+                    .limit(_REGIME_STREAK_LOOKBACK)
+                )
+            )
+        if not rows:
+            return None
+        current_regime = rows[0].regime
+        since = rows[0].computed_at
+        broke_streak = False
+        for row in rows:
+            if row.regime != current_regime:
+                broke_streak = True
+                break
+            since = row.computed_at
+        duration_hours = (rows[0].computed_at - since).total_seconds() / 3600
+        return {
+            "since": since,
+            "duration_hours": round(duration_hours, 1),
+            "duration_is_lower_bound": not broke_streak and len(rows) >= _REGIME_STREAK_LOOKBACK,
+        }
