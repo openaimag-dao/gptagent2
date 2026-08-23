@@ -791,21 +791,67 @@ async def generate_report_job(report_type: str) -> None:
         logger.exception("Report broadcast failed (type=%s)", report_type)
 
 
+_job_run_status: dict[str, dict] = {}
+
+
+def get_job_run_status(job_func_name: str) -> dict | None:
+    """Forecasting 3.0 (Phase 29, operational health): a real, observed
+    record of a job's own recent executions -- last_run_at (every
+    invocation, start time), last_success_at (only set if the job
+    function returned without an unhandled exception escaping it),
+    last_failure_at/last_failure_error (only set if one did). None if
+    this job hasn't run since the process started, rather than a
+    fabricated timestamp. `job_func_name` is the wrapped function's own
+    `__name__` (e.g. "compute_forecast_job"), not the APScheduler job id
+    string passed to `scheduler.add_job(id=...)` -- those two are related
+    but not always identical, so callers should pass the actual function
+    object's `.__name__`, not guess a transform of the job id.
+
+    Caveat worth knowing before reading `last_failure_at` as "is this job
+    healthy": several jobs (compute_forecast_job, grade_forecasts_job,
+    invalidate_forecasts_job among them) already catch and log exceptions
+    per-symbol/per-horizon internally rather than letting them propagate
+    -- see the docstring below. That means a real per-symbol failure
+    inside one of those never reaches this wrapper as an exception; it's
+    still logged (search application logs for "failed"), just not
+    reflected here. This field only catches a failure severe enough to
+    escape the job function entirely."""
+    return _job_run_status.get(job_func_name)
+
+
 def _timed(job_func):
-    """POST-V9 Phase 19: wraps a scheduler job so every run logs its own
-    real wall-clock duration -- every job here already catches and logs
-    its own exceptions internally (see the `except Exception:
-    logger.exception(...)` block in each job above), so this never needs
-    to handle a raised exception itself; it only adds a duration
-    observation around whatever the job already does. Applied once, at
-    registration in start_scheduler(), rather than copy-pasted into
-    every job body."""
+    """POST-V9 Phase 19 / Forecasting 3.0 Phase 29: wraps a scheduler job
+    so every run logs its own real wall-clock duration and records its
+    own last-run/last-success/last-failure timestamps (see
+    get_job_run_status) -- most jobs here already catch and log their own
+    exceptions internally (see the `except Exception:
+    logger.exception(...)` block in each job above), so this rarely
+    observes a raised exception itself; when it does, it's recorded here
+    and re-raised unchanged (APScheduler's own error handling is
+    untouched by this). Applied once, at registration in
+    start_scheduler(), rather than copy-pasted into every job body."""
     job_name = job_func.__name__
 
     @functools.wraps(job_func)
     async def _wrapper(*args, **kwargs) -> None:
         start = time.monotonic()
-        await job_func(*args, **kwargs)
+        status = _job_run_status.setdefault(
+            job_name,
+            {
+                "last_run_at": None,
+                "last_success_at": None,
+                "last_failure_at": None,
+                "last_failure_error": None,
+            },
+        )
+        status["last_run_at"] = datetime.now(UTC)
+        try:
+            await job_func(*args, **kwargs)
+        except Exception as exc:
+            status["last_failure_at"] = datetime.now(UTC)
+            status["last_failure_error"] = str(exc)
+            raise
+        status["last_success_at"] = datetime.now(UTC)
         elapsed_ms = round((time.monotonic() - start) * 1000, 1)
         logger.info("Job timing: %s completed in %sms", job_name, elapsed_ms)
 

@@ -1647,3 +1647,61 @@ async def test_get_official_history_omits_date_filters_when_not_given():
     query_str = str(session.scalars.call_args.args[0])
     assert "official_forecast_date >=" not in query_str
     assert "official_forecast_date <=" not in query_str
+
+
+async def test_get_operational_health_reports_real_queried_signals():
+    engine, deps, session = _build_engine()
+    last_created = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    # order matches get_operational_health's own two scalar() calls:
+    # MAX(computed_at) first, then the pending-grading COUNT
+    session.scalar = AsyncMock(side_effect=[last_created, 3])
+    with patch(
+        "app.services.realtime.freshness.datetime",
+        wraps=datetime,
+    ) as mock_dt:
+        mock_dt.now.return_value = datetime(2026, 8, 23, 12, 0, tzinfo=UTC)
+        # two of today's official rows: one fresh, one old enough to be stale
+        session.scalars = AsyncMock(
+            return_value=[
+                datetime(2026, 8, 23, 11, 55, tzinfo=UTC),
+                datetime(2026, 8, 21, 0, 0, tzinfo=UTC),
+            ]
+        )
+        with patch(
+            "app.services.forecast.engine.get_settings",
+            return_value=SimpleNamespace(
+                official_forecast_freshness_live_seconds=3600.0,
+                official_forecast_freshness_recent_seconds=21600.0,
+                official_forecast_freshness_delayed_seconds=72000.0,
+                official_forecast_freshness_stale_seconds=93600.0,
+            ),
+        ):
+            result = await engine.get_operational_health(("BTC",))
+
+    assert result["last_prediction_created_at"] == last_created.isoformat()
+    assert result["grading_pending_count"] == 3
+    assert result["today_forecast_count"] == 2
+    assert result["stale_forecast_count"] == 1
+
+
+async def test_get_operational_health_handles_no_predictions_yet():
+    engine, deps, session = _build_engine()
+    session.scalar = AsyncMock(side_effect=[None, 0])
+    session.scalars = AsyncMock(return_value=[])
+    with patch(
+        "app.services.forecast.engine.get_settings",
+        return_value=SimpleNamespace(
+            official_forecast_freshness_live_seconds=3600.0,
+            official_forecast_freshness_recent_seconds=21600.0,
+            official_forecast_freshness_delayed_seconds=72000.0,
+            official_forecast_freshness_stale_seconds=93600.0,
+        ),
+    ):
+        result = await engine.get_operational_health(("BTC",))
+
+    assert result == {
+        "last_prediction_created_at": None,
+        "grading_pending_count": 0,
+        "today_forecast_count": 0,
+        "stale_forecast_count": 0,
+    }

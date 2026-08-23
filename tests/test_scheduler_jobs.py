@@ -1,7 +1,14 @@
 import logging
 from unittest.mock import AsyncMock, patch
 
-from app.scheduler.jobs import _timed, sync_crypto_daily_history_job
+import pytest
+
+from app.scheduler.jobs import (
+    _job_run_status,
+    _timed,
+    get_job_run_status,
+    sync_crypto_daily_history_job,
+)
 from app.services.history.schemas import Timeframe
 
 
@@ -61,3 +68,36 @@ async def test_sync_crypto_daily_history_job_logs_and_swallows_a_run_sync_failur
         await sync_crypto_daily_history_job()  # must not raise
 
     assert any("Crypto daily history sync job failed" in r.getMessage() for r in caplog.records)
+
+
+def test_get_job_run_status_returns_none_for_a_job_that_has_never_run():
+    assert get_job_run_status("a_job_name_nothing_ever_registers") is None
+
+
+async def test_timed_records_last_run_and_last_success_on_success():
+    async def _sample_job_success_case() -> None:
+        return None
+
+    with patch.dict(_job_run_status, {}, clear=True):
+        await _timed(_sample_job_success_case)()
+        status = get_job_run_status("_sample_job_success_case")
+
+    assert status["last_run_at"] is not None
+    assert status["last_success_at"] is not None
+    assert status["last_failure_at"] is None
+    assert status["last_failure_error"] is None
+
+
+async def test_timed_records_last_failure_and_reraises_on_exception():
+    async def _sample_job_failure_case() -> None:
+        raise RuntimeError("boom")
+
+    with patch.dict(_job_run_status, {}, clear=True):
+        with pytest.raises(RuntimeError, match="boom"):
+            await _timed(_sample_job_failure_case)()
+        status = get_job_run_status("_sample_job_failure_case")
+
+    assert status["last_run_at"] is not None
+    assert status["last_success_at"] is None
+    assert status["last_failure_at"] is not None
+    assert status["last_failure_error"] == "boom"
