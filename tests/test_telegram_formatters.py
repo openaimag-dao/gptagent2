@@ -797,6 +797,7 @@ def test_format_forecast_command_shows_call_and_track_record():
         "direction_accuracy_pct": 75.0,
         "direction_accuracy_ci": {"lower_pct": 40.9, "upper_pct": 92.1},
         "avg_abs_error_pct": 1.4,
+        "rmse_pct": 2.0,
         "target_reached_rate_pct": 62.5,
     }
     text = format_forecast_command("BTC", row, performance)
@@ -806,6 +807,7 @@ def test_format_forecast_command_shows_call_and_track_record():
     assert "Graded: 8" in text
     assert "Direction accuracy: 75.0% (95% CI: 40.9-92.1)" in text
     assert "Avg |error|: 1.4%" in text
+    assert "RMSE: 2.0%" in text
     assert "Target reached rate: 62.5%" in text
 
 
@@ -858,6 +860,7 @@ def test_format_forecast_weekly_review_includes_summary_and_insights():
             "graded_count": 12,
             "direction_accuracy_pct": 58.3,
             "avg_abs_error_pct": 2.1,
+            "rmse_pct": 3.2,
             "target_reached_rate_pct": 41.7,
         },
         "calibration": [],
@@ -867,6 +870,7 @@ def test_format_forecast_weekly_review_includes_summary_and_insights():
     text = format_forecast_weekly_review(performance, insights, days=7)
     assert "Graded: 12" in text
     assert "Direction accuracy: 58.3%" in text
+    assert "RMSE: 3.2%" in text
     assert "Avg |error|: 2.1%" in text
     assert "Target reached rate: 41.7%" in text
     assert "Technical Analysis was right more often" in text

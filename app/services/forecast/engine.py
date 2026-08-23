@@ -640,23 +640,41 @@ def summarize_official_performance(
     aggregate_agent_performance). error_pct/target_reached are each
     averaged only over the rows that actually have one -- a Neutral call
     has no target_reached verdict, so it's excluded from that rate
-    rather than silently counted as a miss."""
+    rather than silently counted as a miss.
+
+    Forecasting 3.0: `rmse_pct` is a second, distinct price-accuracy
+    metric alongside `avg_abs_error_pct` (MAE) -- root-mean-square over
+    the same signed error_pct values MAE takes the mean absolute value
+    of. RMSE penalizes large misses more than MAE does, so the two are
+    kept side by side rather than one replacing the other (same
+    four-distinct-metrics discipline as direction accuracy vs. target
+    hit rate vs. calibration)."""
     if not graded:
         return {
             "graded_count": 0,
             "direction_accuracy_pct": None,
             "direction_accuracy_ci": None,
             "avg_abs_error_pct": None,
+            "rmse_pct": None,
             "target_reached_rate_pct": None,
         }
     correct_flags = [correct for correct, _, _ in graded]
-    errors = [abs(error) for _, error, _ in graded if error is not None]
+    signed_errors = [error for _, error, _ in graded if error is not None]
     reached_flags = [reached for _, _, reached in graded if reached is not None]
     return {
         "graded_count": len(graded),
         "direction_accuracy_pct": round(100 * sum(correct_flags) / len(correct_flags), 2),
         "direction_accuracy_ci": compute_wilson_interval(sum(correct_flags), len(correct_flags)),
-        "avg_abs_error_pct": round(sum(errors) / len(errors), 2) if errors else None,
+        "avg_abs_error_pct": (
+            round(sum(abs(e) for e in signed_errors) / len(signed_errors), 2)
+            if signed_errors
+            else None
+        ),
+        "rmse_pct": (
+            round(math.sqrt(sum(e * e for e in signed_errors) / len(signed_errors)), 2)
+            if signed_errors
+            else None
+        ),
         "target_reached_rate_pct": (
             round(100 * sum(reached_flags) / len(reached_flags), 2) if reached_flags else None
         ),
