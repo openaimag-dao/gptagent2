@@ -4902,9 +4902,14 @@ async function renderAlerts() {
   const symbolInput = el("input", { type: "text", placeholder: "Symbol (e.g. BTC)" });
   const metricSelect = el(
     "select", {},
-    ["price", "probability_edge", "breakout_probability", "risk_off_score", "liquidity_score"].map(
-      (m) => el("option", { value: m }, m)
-    )
+    [
+      "price",
+      "change_pct_24h",
+      "probability_edge",
+      "breakout_probability",
+      "risk_off_score",
+      "liquidity_score",
+    ].map((m) => el("option", { value: m }, m))
   );
   const operatorSelect = el("select", {}, ["above", "below"].map((o) => el("option", { value: o }, o)));
   const thresholdInput = el("input", { type: "text", placeholder: "Threshold" });

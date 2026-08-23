@@ -208,6 +208,70 @@ async def test_evaluate_all_fires_and_notifies_on_price_breach():
     assert rule.last_triggered_at is not None
 
 
+async def test_evaluate_all_resolves_change_pct_24h_metric():
+    rule = _rule(metric="change_pct_24h", threshold=3.0)
+    session = AsyncMock()
+    session.scalars.return_value = [rule]
+    session.get.return_value = rule
+    session_factory = _session_factory(session)
+
+    market_repository = AsyncMock()
+    market_repository.get_latest.return_value = [
+        SimpleNamespace(symbol="BTC", price=80000.0, change_pct_24h=4.5)
+    ]
+
+    engine = AlertRuleEngine(
+        session_factory, market_repository, AsyncMock(), AsyncMock(), AsyncMock()
+    )
+    with patch("app.telegram.broadcast.send_text_to", AsyncMock(return_value=True)):
+        fired = await engine.evaluate_all()
+
+    assert fired[0]["value"] == 4.5
+
+
+async def test_evaluate_all_resolves_change_pct_24h_metric_below_threshold_for_sharp_drop():
+    # Same "sharp move" concept but the other direction -- a user sets
+    # BTC change_pct_24h below -3 alongside the above-3 rule to catch a
+    # sharp move in either direction, not just up.
+    rule = _rule(metric="change_pct_24h", operator="below", threshold=-3.0)
+    session = AsyncMock()
+    session.scalars.return_value = [rule]
+    session.get.return_value = rule
+    session_factory = _session_factory(session)
+
+    market_repository = AsyncMock()
+    market_repository.get_latest.return_value = [
+        SimpleNamespace(symbol="BTC", price=76000.0, change_pct_24h=-5.2)
+    ]
+
+    engine = AlertRuleEngine(
+        session_factory, market_repository, AsyncMock(), AsyncMock(), AsyncMock()
+    )
+    with patch("app.telegram.broadcast.send_text_to", AsyncMock(return_value=True)):
+        fired = await engine.evaluate_all()
+
+    assert fired[0]["value"] == -5.2
+
+
+async def test_evaluate_all_skips_change_pct_24h_when_unavailable():
+    rule = _rule(metric="change_pct_24h", threshold=3.0)
+    session = AsyncMock()
+    session.scalars.return_value = [rule]
+    session_factory = _session_factory(session)
+
+    market_repository = AsyncMock()
+    market_repository.get_latest.return_value = [
+        SimpleNamespace(symbol="BTC", price=80000.0, change_pct_24h=None)
+    ]
+
+    engine = AlertRuleEngine(
+        session_factory, market_repository, AsyncMock(), AsyncMock(), AsyncMock()
+    )
+    fired = await engine.evaluate_all()
+
+    assert fired == []
+
+
 async def test_evaluate_all_resolves_probability_edge_metric():
     rule = _rule(metric="probability_edge", threshold=10.0)
     session = AsyncMock()

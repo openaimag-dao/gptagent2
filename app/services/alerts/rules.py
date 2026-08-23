@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 VALID_METRICS: tuple[str, ...] = (
     "price",
+    "change_pct_24h",
     "probability_edge",
     "breakout_probability",
     "risk_off_score",
@@ -136,6 +137,17 @@ class AlertRuleEngine:
             assets = await self._market_repository.get_latest()
             asset = next((a for a in assets if a.symbol == symbol), None)
             return float(asset.price) if asset is not None else None
+        if metric == "change_pct_24h":
+            # Same 24h change every quote card already shows -- lets a user
+            # set e.g. "/setalert BTC change_pct_24h above 3" and
+            # "/setalert BTC change_pct_24h below -3" for a sharp-move alert
+            # in either direction, reusing the market data this engine
+            # already fetches for the "price" metric above.
+            assets = await self._market_repository.get_latest()
+            asset = next((a for a in assets if a.symbol == symbol), None)
+            if asset is None or asset.change_pct_24h is None:
+                return None
+            return float(asset.change_pct_24h)
         if metric == "probability_edge":
             snapshot = await self._probability_engine.get_latest(symbol, Timeframe.DAILY)
             if snapshot is None:
