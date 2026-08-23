@@ -1457,6 +1457,7 @@ def test_summarize_official_performance_empty_input():
         "direction_accuracy_pct": None,
         "direction_accuracy_ci": None,
         "avg_abs_error_pct": None,
+        "rmse_pct": None,
         "target_reached_rate_pct": None,
     }
 
@@ -1473,6 +1474,7 @@ def test_summarize_official_performance_excludes_missing_error_and_target_fields
     assert result["graded_count"] == 2
     assert result["direction_accuracy_pct"] == 50.0
     assert result["avg_abs_error_pct"] == 2.0
+    assert result["rmse_pct"] == 2.0
     assert result["target_reached_rate_pct"] == 100.0
 
 
@@ -1481,6 +1483,18 @@ def test_summarize_official_performance_averages_absolute_error():
     result = summarize_official_performance(graded)
     assert result["avg_abs_error_pct"] == 3.0  # mean(|-4|, |2|)
     assert result["target_reached_rate_pct"] == 50.0
+
+
+def test_summarize_official_performance_rmse_penalizes_large_errors_more_than_mae():
+    # RMSE (root-mean-square) must diverge from MAE (mean absolute) when
+    # errors are unequal in magnitude -- a single large miss should pull
+    # RMSE up more than it pulls MAE up. mean(|-1|, |7|) = 4.0 (MAE);
+    # sqrt(mean(1, 49)) = sqrt(25) = 5.0 (RMSE).
+    graded = [(True, -1.0, None), (False, 7.0, None)]
+    result = summarize_official_performance(graded)
+    assert result["avg_abs_error_pct"] == 4.0
+    assert result["rmse_pct"] == 5.0
+    assert result["rmse_pct"] > result["avg_abs_error_pct"]
 
 
 def test_derive_official_calibration_curve_buckets_by_stated_probability():

@@ -1973,8 +1973,12 @@ function forecastPerformanceSummaryCards(s) {
       ),
     ]),
     el("div", { class: "card" }, [
-      el("div", { class: "label" }, "Avg |Error|"),
+      el("div", { class: "label" }, "Avg |Error| (MAE)"),
       el("div", { class: "value" }, s.avg_abs_error_pct != null ? fmtPct(s.avg_abs_error_pct) : "n/a"),
+    ]),
+    el("div", { class: "card" }, [
+      el("div", { class: "label" }, "RMSE"),
+      el("div", { class: "value" }, s.rmse_pct != null ? fmtPct(s.rmse_pct) : "n/a"),
     ]),
     el("div", { class: "card" }, [
       el("div", { class: "label" }, "Target Reached Rate"),

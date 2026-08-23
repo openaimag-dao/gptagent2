@@ -596,6 +596,8 @@ def format_forecast_command(
             lines.append(f"Direction accuracy: {performance['direction_accuracy_pct']}%{ci_suffix}")
             if performance["avg_abs_error_pct"] is not None:
                 lines.append(f"Avg |error|: {performance['avg_abs_error_pct']}%")
+            if performance.get("rmse_pct") is not None:
+                lines.append(f"RMSE: {performance['rmse_pct']}%")
             if performance["target_reached_rate_pct"] is not None:
                 lines.append(f"Target reached rate: {performance['target_reached_rate_pct']}%")
 
@@ -624,6 +626,8 @@ def format_forecast_weekly_review(performance: dict, insights: list[dict], days:
         lines.append(f"Direction accuracy: {summary['direction_accuracy_pct']}%")
         if summary["avg_abs_error_pct"] is not None:
             lines.append(f"Avg |error|: {summary['avg_abs_error_pct']}%")
+        if summary.get("rmse_pct") is not None:
+            lines.append(f"RMSE: {summary['rmse_pct']}%")
         if summary["target_reached_rate_pct"] is not None:
             lines.append(f"Target reached rate: {summary['target_reached_rate_pct']}%")
 
