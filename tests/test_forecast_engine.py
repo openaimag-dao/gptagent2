@@ -1,5 +1,5 @@
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -7,6 +7,7 @@ import pytest
 
 from app.database.models import AgentForecast, PriceForecastSnapshot
 from app.services.analysis.regime import MarketRegime
+from app.services.common.statistics import compute_wilson_interval
 from app.services.forecast.engine import (
     FORECAST_MODEL_VERSION,
     ForecastEngine,
@@ -41,6 +42,7 @@ from app.services.forecast.engine import (
     price_forecast_quality_multiplier,
     summarize_forecast_accuracy,
     summarize_official_performance,
+    summarize_official_performance_by_symbol,
 )
 
 
@@ -1453,6 +1455,7 @@ def test_summarize_official_performance_empty_input():
     assert summarize_official_performance([]) == {
         "graded_count": 0,
         "direction_accuracy_pct": None,
+        "direction_accuracy_ci": None,
         "avg_abs_error_pct": None,
         "target_reached_rate_pct": None,
     }
@@ -1509,12 +1512,14 @@ def test_derive_regime_performance_breakdown_gates_small_groups():
             "regime": "risk_off",
             "sample_size": 8,
             "accuracy_pct": 62.5,
+            "accuracy_ci": compute_wilson_interval(5, 8),
             "insufficient_sample": False,
         },
         {
             "regime": "risk_on",
             "sample_size": 2,
             "accuracy_pct": None,
+            "accuracy_ci": None,
             "insufficient_sample": True,
         },
     ]
@@ -1529,6 +1534,7 @@ async def test_get_official_performance_combines_summary_calibration_and_regime(
     session.execute = AsyncMock(
         return_value=[
             SimpleNamespace(
+                symbol="BTC",
                 probability_pct=70,
                 direction_correct=True,
                 error_pct=1.5,
@@ -1536,6 +1542,7 @@ async def test_get_official_performance_combines_summary_calibration_and_regime(
                 regime_at_forecast="risk_on",
             ),
             SimpleNamespace(
+                symbol="BTC",
                 probability_pct=72,
                 direction_correct=False,
                 error_pct=-3.0,
@@ -1553,12 +1560,15 @@ async def test_get_official_performance_combines_summary_calibration_and_regime(
 
     assert result["summary"]["graded_count"] == 2
     assert result["summary"]["direction_accuracy_pct"] == 50.0
+    assert result["by_symbol"]["BTC"]["graded_count"] == 2
+    assert result["by_symbol"]["BTC"]["direction_accuracy_pct"] == 50.0
     assert len(result["calibration"]) == 1
     assert result["regime_breakdown"] == [
         {
             "regime": "risk_on",
             "sample_size": 2,
             "accuracy_pct": 50.0,
+            "accuracy_ci": compute_wilson_interval(1, 2),
             "insufficient_sample": False,
         }
     ]
@@ -1583,3 +1593,57 @@ async def test_get_official_performance_since_filters_by_evaluated_at():
 
     assert "evaluated_at" not in query_without_since
     assert "evaluated_at" in query_with_since
+
+
+def test_summarize_official_performance_by_symbol_groups_independently():
+    graded = [
+        ("BTC", True, 1.0, True),
+        ("BTC", False, -2.0, False),
+        ("SOL", True, 0.5, True),
+    ]
+    result = summarize_official_performance_by_symbol(graded)
+    assert set(result.keys()) == {"BTC", "SOL"}
+    assert result["BTC"]["graded_count"] == 2
+    assert result["BTC"]["direction_accuracy_pct"] == 50.0
+    assert result["SOL"]["graded_count"] == 1
+    assert result["SOL"]["direction_accuracy_pct"] == 100.0
+    # each symbol's own Wilson CI, not one pooled across symbols
+    assert result["BTC"]["direction_accuracy_ci"] == compute_wilson_interval(1, 2)
+    assert result["SOL"]["direction_accuracy_ci"] == compute_wilson_interval(1, 1)
+
+
+def test_summarize_official_performance_by_symbol_empty_input():
+    assert summarize_official_performance_by_symbol([]) == {}
+
+
+async def test_get_official_history_paginates_with_offset():
+    engine, deps, session = _build_engine()
+    session.scalars = AsyncMock(return_value=[])
+
+    await engine.get_official_history("BTC", limit=10, offset=20)
+
+    query = session.scalars.call_args.args[0]
+    compiled = query.compile(compile_kwargs={"literal_binds": True})
+    assert "LIMIT 10" in str(compiled)
+    assert "OFFSET 20" in str(compiled)
+
+
+async def test_get_official_history_filters_by_date_range():
+    engine, deps, session = _build_engine()
+    session.scalars = AsyncMock(return_value=[])
+
+    await engine.get_official_history("BTC", date_from=date(2026, 1, 1), date_to=date(2026, 1, 31))
+
+    query_str = str(session.scalars.call_args.args[0])
+    assert "official_forecast_date" in query_str
+
+
+async def test_get_official_history_omits_date_filters_when_not_given():
+    engine, deps, session = _build_engine()
+    session.scalars = AsyncMock(return_value=[])
+
+    await engine.get_official_history("BTC")
+
+    query_str = str(session.scalars.call_args.args[0])
+    assert "official_forecast_date >=" not in query_str
+    assert "official_forecast_date <=" not in query_str
