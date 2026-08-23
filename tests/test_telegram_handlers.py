@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from aiogram.exceptions import TelegramBadRequest
@@ -8,11 +9,14 @@ from aiogram.types import ErrorEvent, Update
 from app.telegram.handlers import (
     BOT_COMMANDS,
     _answer,
+    _normalize_dashes,
     cmd_advice,
     cmd_health,
     cmd_memory,
+    cmd_move_alert,
     cmd_portfolio,
     cmd_scanner,
+    cmd_set_alert,
     cmd_watchdog,
     handle_errors,
 )
@@ -327,3 +331,90 @@ def test_bot_commands_are_valid_telegram_command_names():
         assert 1 <= len(name) <= 32
         assert all(c.isalnum() or c == "_" for c in name)
         assert 1 <= len(description) <= 256
+
+
+def test_normalize_dashes_converts_unicode_minus_variants_to_ascii_hyphen():
+    for dash in "‐‑‒–—−":
+        result = _normalize_dashes(f"BTC change_pct_24h below {dash}3")
+        assert result == "BTC change_pct_24h below -3"
+    assert _normalize_dashes("BTC price above 70000") == "BTC price above 70000"
+
+
+# Root-cause regression for the bug the user hit live: a phone keyboard's
+# "smart punctuation" rewrote the "-3" they typed into an en dash, and
+# float("–3") raised ValueError, so /setalert BTC change_pct_24h below -3
+# failed with "Threshold and cooldown minutes must be numbers." even
+# though the command itself was correct.
+async def test_cmd_set_alert_accepts_a_unicode_en_dash_negative_threshold():
+    message = AsyncMock()
+    message.chat.id = 12345
+    command = CommandObject(args="BTC change_pct_24h below –3")
+    engine = AsyncMock()
+    engine.create_rule.return_value = SimpleNamespace(
+        id=1,
+        symbol="BTC",
+        metric="change_pct_24h",
+        operator="below",
+        threshold=-3.0,
+        cooldown_minutes=60,
+    )
+
+    with patch("app.telegram.handlers.build_alert_rule_engine", return_value=engine):
+        await cmd_set_alert(message, command)
+
+    engine.create_rule.assert_awaited_once_with("12345", "BTC", "change_pct_24h", "below", -3.0, 60)
+    message.answer.assert_awaited_once()
+    (text,), kwargs = message.answer.call_args
+    assert "must be numbers" not in text
+
+
+async def test_cmd_move_alert_creates_both_directions_without_a_typed_minus_sign():
+    message = AsyncMock()
+    message.chat.id = 12345
+    command = CommandObject(args="BTC 3")
+    engine = AsyncMock()
+    up_rule = SimpleNamespace(id=1, symbol="BTC")
+    down_rule = SimpleNamespace(id=2, symbol="BTC")
+    engine.create_rule.side_effect = [up_rule, down_rule]
+
+    with patch("app.telegram.handlers.build_alert_rule_engine", return_value=engine):
+        await cmd_move_alert(message, command)
+
+    assert engine.create_rule.await_args_list[0].args == (
+        "12345",
+        "BTC",
+        "change_pct_24h",
+        "above",
+        3.0,
+        60,
+    )
+    assert engine.create_rule.await_args_list[1].args == (
+        "12345",
+        "BTC",
+        "change_pct_24h",
+        "below",
+        -3.0,
+        60,
+    )
+    (text,), kwargs = message.answer.call_args
+    assert "Rule #1" in text and "Rule #2" in text
+
+
+async def test_cmd_move_alert_rejects_non_positive_pct():
+    message = AsyncMock()
+    command = CommandObject(args="BTC 0")
+
+    await cmd_move_alert(message, command)
+
+    (text,), kwargs = message.answer.call_args
+    assert "positive" in text.lower()
+
+
+async def test_cmd_move_alert_shows_usage_when_args_missing():
+    message = AsyncMock()
+    command = CommandObject(args=None)
+
+    await cmd_move_alert(message, command)
+
+    (text,), kwargs = message.answer.call_args
+    assert "Usage: /movealert" in text
