@@ -1,3 +1,4 @@
+from app.config import get_settings
 from app.database.models import (
     AssetClass,
     AssetPrice,
@@ -8,6 +9,7 @@ from app.database.models import (
     MarketRegimeSnapshot,
     NewsItem,
     PatternSignal,
+    PriceForecastSnapshot,
     ProbabilitySnapshot,
     Report,
     ScenarioSnapshot,
@@ -17,6 +19,7 @@ from app.database.models import (
 from app.services.common.ai_insight import format_ai_insight_lines
 from app.services.common.navigation import nav_pointer
 from app.services.consensus.engine import ConsensusResult
+from app.services.realtime.freshness import age_seconds, classify_freshness
 from app.services.scenarios.engine import scenario_extremes, scenario_threat_level
 from app.services.shocks.detectors import regime_direction_bucket
 
@@ -522,6 +525,82 @@ def format_official_daily_digest(payloads: list[dict], date: str) -> str:
         )
     lines.append("")
     lines.append("Full detail, agent evidence and grading: dashboard -> Forecasting 2.0")
+    return "\n".join(lines)
+
+
+def format_forecast_command(
+    symbol: str, daily_row: PriceForecastSnapshot | None, performance: dict | None
+) -> str:
+    """Forecasting 3.0 (Phase 26): on-demand /forecast SYMBOL -- today's
+    official 24h call plus its own real 30-day track record, reusing
+    exactly the rows/aggregation the dashboard's Overview and Performance
+    pages already show (ForecastEngine.get_official_daily /
+    get_official_performance's by_symbol breakdown), never a second
+    computation path. Every other Telegram surface of this data before
+    this command existed was push-only (the daily digest and weekly
+    review broadcasts) -- this is the first on-demand read.
+
+    The Track Record section is shown whenever `performance` is given,
+    independent of whether today's forecast has been computed yet --
+    a user checking accuracy before the daily job fires shouldn't lose
+    that history just because there's no "today" row yet."""
+    if daily_row is None:
+        lines = [
+            f"*{symbol} OFFICIAL FORECAST*",
+            "",
+            f"No official forecast for {symbol} yet today -- check back after "
+            "the daily forecast job runs.",
+        ]
+    else:
+        settings = get_settings()
+        age = age_seconds(daily_row.computed_at)
+        freshness = classify_freshness(
+            age,
+            live_seconds=settings.official_forecast_freshness_live_seconds,
+            recent_seconds=settings.official_forecast_freshness_recent_seconds,
+            delayed_seconds=settings.official_forecast_freshness_delayed_seconds,
+            stale_seconds=settings.official_forecast_freshness_stale_seconds,
+        )
+        age_minutes = round(age / 60)
+        lines = [
+            f"*{symbol} OFFICIAL FORECAST -- {daily_row.official_forecast_date}*",
+            "",
+            f"{daily_row.direction} {daily_row.probability_pct}% -- "
+            f"{float(daily_row.current_price):,.2f} -> {float(daily_row.target_price):,.2f} "
+            f"({float(daily_row.expected_change_pct):+.2f}%)",
+            f"Confidence: {daily_row.confidence_tier or 'n/a'} | "
+            f"Regime: {daily_row.regime_at_forecast or 'n/a'}",
+            f"Freshness: {freshness.upper()} ({age_minutes}m ago)",
+        ]
+        if daily_row.evaluated_at is not None:
+            if daily_row.direction_correct is None:
+                outcome = "NEUTRAL"
+            else:
+                outcome = "CORRECT" if daily_row.direction_correct else "WRONG"
+            error_suffix = (
+                f" (error {float(daily_row.error_pct):+.2f}%)"
+                if daily_row.error_pct is not None
+                else ""
+            )
+            lines.append(f"Graded: {outcome}{error_suffix}")
+
+    if performance is not None:
+        lines.append("")
+        lines.append("*Track Record (30D)*")
+        if performance["graded_count"] == 0:
+            lines.append(f"No graded official forecasts for {symbol} in the last 30 days yet.")
+        else:
+            lines.append(f"Graded: {performance['graded_count']}")
+            ci = performance.get("direction_accuracy_ci")
+            ci_suffix = f" (95% CI: {ci['lower_pct']}-{ci['upper_pct']})" if ci else ""
+            lines.append(f"Direction accuracy: {performance['direction_accuracy_pct']}%{ci_suffix}")
+            if performance["avg_abs_error_pct"] is not None:
+                lines.append(f"Avg |error|: {performance['avg_abs_error_pct']}%")
+            if performance["target_reached_rate_pct"] is not None:
+                lines.append(f"Target reached rate: {performance['target_reached_rate_pct']}%")
+
+    lines.append("")
+    lines.append("Full detail: dashboard -> Forecasting 2.0")
     return "\n".join(lines)
 
 

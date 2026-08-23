@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
@@ -8,6 +8,7 @@ from aiogram.types import ErrorEvent, Message
 from sqlalchemy import select
 
 from app.api.reports import build_report_generator
+from app.config import get_settings
 from app.database.models import AssetClass, CryptoHistory, HistoricalEvent
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
@@ -35,6 +36,7 @@ from app.services.data_quality.engine import DataQualityEngine
 from app.services.etf.engine import ETFIntelligenceEngine
 from app.services.explanation.engine import ExplanationEngine
 from app.services.features.engine import FeatureEngine
+from app.services.forecast.engine import build_forecast_engine, summarize_official_performance
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.registry import find_symbol_config
 from app.services.history.repository import get_series
@@ -52,6 +54,7 @@ from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.quality.engine import PredictionQualityEngine
 from app.services.ranking.engine import RankingEngine
+from app.services.realtime.config import parse_watchlist
 from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import (
     MarketReplayEngine,
@@ -96,6 +99,7 @@ from app.telegram.formatters import (
     format_events,
     format_explanation,
     format_features,
+    format_forecast_command,
     format_global_score,
     format_historical_comparison,
     format_history,
@@ -171,6 +175,9 @@ HELP_TEXT = (
     "/report -- latest AI market analysis report\n"
     "/history SYMBOL [timeframe] -- historical OHLCV + indicators (e.g. /history BTC 1d)\n"
     "/events -- curated historical market events\n"
+    "/forecast [SYMBOL] -- today's official 24h forecast + 30-day track record "
+    "for an official symbol (default BTC; official symbols only -- SOL/LINK/UNI "
+    "by default alongside BTC)\n"
     "/probability SYMBOL -- empirical next-day up/down probability\n"
     "/learning SYMBOL [timeframe] -- self-learning accuracy: graded past "
     "predictions vs what actually happened\n"
@@ -289,6 +296,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("report", "Latest AI market analysis report"),
     ("history", "Historical OHLCV + indicators, e.g. /history BTC 1d"),
     ("events", "Curated historical market events"),
+    ("forecast", "Official 24h forecast + 30-day track record for an official symbol"),
     ("probability", "Empirical next-day up/down probability"),
     ("learning", "Self-learning accuracy: graded past predictions"),
     ("quality", "Prediction Quality Lab: Brier score, precision/recall, calibration"),
@@ -593,6 +601,54 @@ async def cmd_quality(message: Message, command: CommandObject) -> None:
     engine = PredictionQualityEngine(get_session_factory())
     result = await engine.evaluate(config.symbol, config.model, timeframe)
     await _answer(message, format_quality(result, config.symbol, timeframe_arg))
+
+
+def _official_forecast_symbols() -> tuple[str, ...]:
+    """Same parse_watchlist(settings.official_forecast_symbols) roster
+    app/api/forecast.py's own _official_forecast_symbols() and
+    app/scheduler/jobs.py's official_forecast_symbols() already compute
+    -- duplicated here (a one-line settings read, not real logic) rather
+    than imported from either, since scheduler.jobs transitively imports
+    app.telegram.broadcast -> app.telegram.bot -> app.telegram.handlers,
+    so importing scheduler.jobs from this module would be a circular
+    import."""
+    return tuple(parse_watchlist(get_settings().official_forecast_symbols))
+
+
+@router.message(Command("forecast"))
+async def cmd_forecast(message: Message, command: CommandObject) -> None:
+    """Forecasting 3.0 (Phase 26): on-demand read of the official daily
+    forecast surface -- the daily digest and weekly review broadcasts
+    already push this data, but there was no way to ask for it on
+    demand before this command. Scoped to _official_forecast_symbols()
+    (BTC/SOL/LINK/UNI by default) since that's the only roster with a
+    24h official forecast + 30-day track record to show; any other
+    symbol gets an honest "not one of the official symbols" reply
+    rather than silently falling back to a different, unrelated
+    intraday computation."""
+    symbol = (command.args or "BTC").strip().upper().split()[0]
+    official_symbols = _official_forecast_symbols()
+    if symbol not in official_symbols:
+        await _answer(
+            message,
+            f"{symbol} is not an official forecast symbol. Official symbols: "
+            f"{', '.join(official_symbols)}.",
+        )
+        return
+
+    engine = build_forecast_engine()
+    daily = await engine.get_official_daily((symbol,))
+    performance = await engine.get_official_performance(
+        (symbol,), since=datetime.now(UTC) - timedelta(days=30)
+    )
+    # by_symbol has no entry at all for a symbol with zero graded rows in
+    # the window (summarize_official_performance_by_symbol only groups
+    # over what's actually present) -- fall back to that same function's
+    # own empty-input shape so the reply still shows an honest
+    # "no graded forecasts yet" line instead of silently dropping the
+    # whole Track Record section.
+    symbol_performance = performance["by_symbol"].get(symbol) or summarize_official_performance([])
+    await _answer(message, format_forecast_command(symbol, daily.get(symbol), symbol_performance))
 
 
 @router.message(Command("patterns"))

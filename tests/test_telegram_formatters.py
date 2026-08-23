@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from app.database.models import (
@@ -31,6 +31,7 @@ from app.telegram.formatters import (
     format_data_quality,
     format_explanation,
     format_features,
+    format_forecast_command,
     format_forecast_weekly_review,
     format_global_score,
     format_historical_comparison,
@@ -752,6 +753,87 @@ def test_format_official_daily_digest_one_line_per_symbol():
     assert "+2.31%" in text
     assert "SOL: Bearish 55%" in text
     assert "-3.33%" in text
+
+
+def test_format_forecast_command_no_forecast_today():
+    text = format_forecast_command("BTC", None, None)
+    assert "No official forecast for BTC yet today" in text
+
+
+def test_format_forecast_command_still_shows_track_record_without_todays_forecast():
+    # A user checking accuracy before the daily job fires shouldn't lose
+    # real 30-day history just because there's no "today" row yet.
+    performance = {
+        "graded_count": 8,
+        "direction_accuracy_pct": 75.0,
+        "direction_accuracy_ci": {"lower_pct": 40.9, "upper_pct": 92.1},
+        "avg_abs_error_pct": 1.4,
+        "target_reached_rate_pct": 62.5,
+    }
+    text = format_forecast_command("BTC", None, performance)
+    assert "No official forecast for BTC yet today" in text
+    assert "Track Record (30D)" in text
+    assert "Graded: 8" in text
+    assert "Direction accuracy: 75.0% (95% CI: 40.9-92.1)" in text
+
+
+def test_format_forecast_command_shows_call_and_track_record():
+    row = SimpleNamespace(
+        official_forecast_date="2026-08-23",
+        direction="Bullish",
+        probability_pct=62,
+        current_price=77245.13,
+        target_price=77966.06,
+        expected_change_pct=0.93,
+        confidence_tier="Weak",
+        regime_at_forecast="accumulation",
+        computed_at=datetime.now(UTC),
+        evaluated_at=None,
+        direction_correct=None,
+        error_pct=None,
+    )
+    performance = {
+        "graded_count": 8,
+        "direction_accuracy_pct": 75.0,
+        "direction_accuracy_ci": {"lower_pct": 40.9, "upper_pct": 92.1},
+        "avg_abs_error_pct": 1.4,
+        "target_reached_rate_pct": 62.5,
+    }
+    text = format_forecast_command("BTC", row, performance)
+    assert "BTC OFFICIAL FORECAST -- 2026-08-23" in text
+    assert "Bullish 62% -- 77,245.13 -> 77,966.06 (+0.93%)" in text
+    assert "Confidence: Weak | Regime: accumulation" in text
+    assert "Graded: 8" in text
+    assert "Direction accuracy: 75.0% (95% CI: 40.9-92.1)" in text
+    assert "Avg |error|: 1.4%" in text
+    assert "Target reached rate: 62.5%" in text
+
+
+def test_format_forecast_command_shows_graded_outcome_when_resolved():
+    row = SimpleNamespace(
+        official_forecast_date="2026-08-20",
+        direction="Bearish",
+        probability_pct=58,
+        current_price=100.0,
+        target_price=98.0,
+        expected_change_pct=-2.0,
+        confidence_tier="Medium",
+        regime_at_forecast="risk_off",
+        computed_at=datetime.now(UTC) - timedelta(days=1),
+        evaluated_at=datetime.now(UTC),
+        direction_correct=True,
+        error_pct=-0.5,
+    )
+    performance = {
+        "graded_count": 0,
+        "direction_accuracy_pct": None,
+        "direction_accuracy_ci": None,
+        "avg_abs_error_pct": None,
+        "target_reached_rate_pct": None,
+    }
+    text = format_forecast_command("BTC", row, performance)
+    assert "Graded: CORRECT (error -0.50%)" in text
+    assert "No graded official forecasts for BTC in the last 30 days yet." in text
 
 
 def test_format_forecast_weekly_review_no_graded_forecasts():
