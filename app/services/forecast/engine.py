@@ -67,6 +67,7 @@ from app.services.patterns.engine import PatternEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.quality.engine import PredictionQualityEngine
 from app.services.quality.metrics import classify_calibration_reliability
+from app.services.realtime.freshness import age_seconds, classify_freshness
 from app.services.sentiment.engine import SentimentEngine
 from app.services.technical.engine import TechnicalAnalysisEngine
 from app.services.whales.engine import WhaleIntelligenceEngine
@@ -1875,6 +1876,65 @@ class ForecastEngine:
             "by_symbol": by_symbol,
             "calibration": calibration,
             "regime_breakdown": regime_breakdown,
+        }
+
+    async def get_operational_health(self, symbols: tuple[str, ...]) -> dict:
+        """Forecasting 3.0 (Phase 29, operational health): real, queried
+        signals about the official-forecast pipeline's current state --
+        distinct from get_job_run_status (scheduler/jobs.py), which
+        tracks whether the *job itself* recently executed. This is the
+        complementary "is the data it produces actually healthy" half:
+        when the last official prediction was actually persisted, how
+        many already-due predictions are still waiting to be graded, and
+        how many of today's official forecasts have gone stale by the
+        same freshness thresholds the dashboard cards already use.
+        `grading_pending_count` mirrors grade_price_forecasts()'s own
+        ungraded-row filter exactly, so it never drifts from what that
+        job will actually pick up next run."""
+        settings = get_settings()
+        async with self._session_factory() as session:
+            last_created = await session.scalar(
+                select(func.max(PriceForecastSnapshot.computed_at)).where(
+                    PriceForecastSnapshot.symbol.in_(symbols),
+                    PriceForecastSnapshot.is_official_daily.is_(True),
+                )
+            )
+            pending_count = await session.scalar(
+                select(func.count()).where(
+                    PriceForecastSnapshot.symbol.in_(symbols),
+                    PriceForecastSnapshot.is_official_daily.is_(True),
+                    PriceForecastSnapshot.reference_timestamp.is_not(None),
+                    PriceForecastSnapshot.evaluated_at.is_(None),
+                )
+            )
+            today_rows = list(
+                await session.scalars(
+                    select(PriceForecastSnapshot.computed_at).where(
+                        PriceForecastSnapshot.symbol.in_(symbols),
+                        PriceForecastSnapshot.is_official_daily.is_(True),
+                        PriceForecastSnapshot.official_forecast_date == datetime.now(UTC).date(),
+                    )
+                )
+            )
+        stale_count = sum(
+            1
+            for computed_at in today_rows
+            if classify_freshness(
+                age_seconds(computed_at),
+                live_seconds=settings.official_forecast_freshness_live_seconds,
+                recent_seconds=settings.official_forecast_freshness_recent_seconds,
+                delayed_seconds=settings.official_forecast_freshness_delayed_seconds,
+                stale_seconds=settings.official_forecast_freshness_stale_seconds,
+            )
+            in ("stale", "offline")
+        )
+        return {
+            "last_prediction_created_at": last_created.isoformat()
+            if last_created is not None
+            else None,
+            "grading_pending_count": pending_count or 0,
+            "today_forecast_count": len(today_rows),
+            "stale_forecast_count": stale_count,
         }
 
     async def get_learning_insights(self, symbols: tuple[str, ...]) -> list[dict]:
