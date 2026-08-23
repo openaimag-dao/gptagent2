@@ -2161,7 +2161,11 @@ function errorLabEntryCard(entry) {
     : el("p", { class: "sub" }, "No per-agent evidence recorded for this forecast.");
 
   return el("div", { class: "card" }, [
-    el("div", { class: "label" }, `${f.symbol} -- ${f.official_forecast_date || "n/a"}`),
+    el(
+      "div",
+      { class: "label" },
+      el("a", { href: `#forecast2detail?id=${f.id}` }, `${f.symbol} -- ${f.official_forecast_date || "n/a"}`)
+    ),
     el(
       "div",
       { class: "value down" },
