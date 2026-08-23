@@ -953,6 +953,19 @@ def compute_historical_mean_baseline_error_pct(
     return round(100 * (realized_price - naive_target_price) / naive_target_price, 4)
 
 
+def compute_zero_return_baseline_error_pct(current_price: float, realized_price: float) -> float:
+    """Pure function: Forecasting 3.0 -- the price-target error the
+    simplest possible naive baseline ("assume no change at all", i.e. a
+    0% predicted return so its naive target is just current_price) would
+    have made. Computed the exact same way error_pct and
+    historical_mean_baseline_error_pct are (100*(realized-target)/target
+    against the naive target), so all three are directly comparable
+    magnitude-for-magnitude. Unlike the other two baselines this one
+    never needs history to average -- current_price is always known, so
+    this is never None for a gradable row."""
+    return round(100 * (realized_price - current_price) / current_price, 4)
+
+
 def grade_confidence(error_pct: float, expected_volatility_pct: float | None) -> bool | None:
     """Pure function: did the real error stay within this forecast's own
     ATR-derived expected volatility band -- the same "no better than
@@ -987,8 +1000,11 @@ async def grade_price_forecasts(
     `max_adverse_excursion_pct` (path analysis, not just the final-price
     error) and `error_type` (a coarse, honestly-derivable classification of
     wrong calls) -- both computed from the exact same already-fetched
-    grading window, still zero extra I/O. Returns how many rows were
-    graded this call."""
+    grading window, still zero extra I/O. Forecasting 3.0: also fills in
+    `zero_return_baseline_error_pct`, a third naive baseline ("assume no
+    change") alongside the two above -- again zero extra I/O, since it
+    only needs current_price/realized_price this loop already has.
+    Returns how many rows were graded this call."""
     async with session_factory() as session:
         ungraded = list(
             await session.scalars(
@@ -1060,6 +1076,9 @@ async def grade_price_forecasts(
             )
             db_row.historical_mean_baseline_error_pct = compute_historical_mean_baseline_error_pct(
                 historical_mean_baseline_return_pct, current_price, realized_price
+            )
+            db_row.zero_return_baseline_error_pct = compute_zero_return_baseline_error_pct(
+                current_price, realized_price
             )
             db_row.evaluated_at = datetime.now(UTC)
             db_row.forecast_status = status_after_grading(db_row.forecast_status)

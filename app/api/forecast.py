@@ -87,7 +87,7 @@ def _serialize_official_detail(row) -> dict:
     candle this was computed from), forecast_version/model_version/
     invalidation fields (is this still the live call for its day, or
     superseded, and which revision of the forecast formula produced it --
-    see FORECAST_MODEL_VERSION's own docstring), and the two baseline
+    see FORECAST_MODEL_VERSION's own docstring), and the three baseline
     comparisons already graded alongside it."""
     payload = _serialize_official(row)
     payload.update(
@@ -107,6 +107,9 @@ def _serialize_official_detail(row) -> dict:
             "momentum_baseline_correct": row.momentum_baseline_correct,
             "historical_mean_baseline_error_pct": float(row.historical_mean_baseline_error_pct)
             if row.historical_mean_baseline_error_pct is not None
+            else None,
+            "zero_return_baseline_error_pct": float(row.zero_return_baseline_error_pct)
+            if row.zero_return_baseline_error_pct is not None
             else None,
         }
     )
