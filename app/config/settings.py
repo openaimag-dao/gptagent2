@@ -298,7 +298,7 @@ class Settings(BaseSettings):
     # is a US-licensed exchange with no comparable reason to block
     # US-origin/cloud traffic.
     realtime_enabled: bool = True
-    realtime_watchlist: str = "BTC,ETH,SOL,BNB,XRP"
+    realtime_watchlist: str = "BTC,ETH,SOL,BNB,XRP,LINK,UNI"
     realtime_ws_url: str = "wss://ws-feed.exchange.coinbase.com"
     # Comma-separated seconds; reconnect attempts walk this list and hold
     # at the last value rather than growing unbounded or tight-looping.
