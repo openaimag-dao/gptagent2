@@ -211,8 +211,11 @@ HELP_TEXT = (
     "/weekly -- Weekly Review: accuracy, alerts, historical comparison\n"
     "/monthly -- Monthly Performance: accuracy, alerts, historical comparison\n"
     "/setalert SYMBOL METRIC OPERATOR THRESHOLD [COOLDOWN_MINUTES] -- create a custom "
-    "alert rule (metrics: price, probability_edge, breakout_probability, risk_off_score, "
-    "liquidity_score; operators: above, below), e.g. /setalert BTC price above 70000\n"
+    "alert rule (metrics: price, change_pct_24h, probability_edge, breakout_probability, "
+    "risk_off_score, liquidity_score; operators: above, below), "
+    "e.g. /setalert BTC price above 70000\n"
+    "/movealert SYMBOL PCT [COOLDOWN_MINUTES] -- alert on a sharp 24h % move in either "
+    "direction (creates the above/below pair for you), e.g. /movealert BTC 3\n"
     "/myrules -- your active custom alert rules\n"
     "/delalert RULE_ID -- delete one of your custom alert rules\n"
     "/alerthistory -- your recently fired custom alerts\n"
@@ -313,6 +316,7 @@ BOT_COMMANDS: list[tuple[str, str]] = [
     ("weekly", "Weekly Review: accuracy, alerts, historical comparison"),
     ("monthly", "Monthly Performance: accuracy, alerts, historical comparison"),
     ("setalert", "Create a custom alert rule, e.g. /setalert BTC price above 70000"),
+    ("movealert", "Alert on a sharp % move either direction, e.g. /movealert BTC 3"),
     ("myrules", "Your active custom alert rules"),
     ("delalert", "Delete one of your custom alert rules"),
     ("alerthistory", "Your recently fired custom alerts"),
@@ -987,15 +991,31 @@ async def cmd_monthly(message: Message) -> None:
     await _answer(message, format_monthly_performance(result))
 
 
+# Phone keyboards' "smart punctuation" (iOS/Android autocorrect) commonly
+# rewrites a typed hyphen-minus in "-3" into an en dash, em dash, or the
+# Unicode minus sign when it's followed by a digit -- float("-3")/int("-3")
+# parse fine, but float("–3")/int(...) raise ValueError, so a user's
+# own device silently breaks a negative threshold. Normalized back to a
+# plain ASCII "-" before any numeric parsing below.
+_UNICODE_MINUS_CHARS = "‐‑‒–—−"
+
+
+def _normalize_dashes(text: str) -> str:
+    for ch in _UNICODE_MINUS_CHARS:
+        text = text.replace(ch, "-")
+    return text
+
+
 @router.message(Command("setalert"))
 async def cmd_set_alert(message: Message, command: CommandObject) -> None:
-    parts = (command.args or "").split()
+    parts = _normalize_dashes(command.args or "").split()
     if len(parts) < 4:
         await _answer(
             message,
             "Usage: /setalert SYMBOL METRIC OPERATOR THRESHOLD [COOLDOWN_MINUTES]\n"
             f"Metrics: {', '.join(VALID_METRICS)}\n"
-            f"Operators: {', '.join(VALID_OPERATORS)}",
+            f"Operators: {', '.join(VALID_OPERATORS)}\n"
+            "For a sharp-move alert in either direction, /movealert is simpler.",
         )
         return
     symbol, metric, operator, threshold_arg, *rest = parts
@@ -1015,6 +1035,52 @@ async def cmd_set_alert(message: Message, command: CommandObject) -> None:
         await _answer(message, str(exc))
         return
     await _answer(message, format_alert_rule_created(rule))
+
+
+@router.message(Command("movealert"))
+async def cmd_move_alert(message: Message, command: CommandObject) -> None:
+    """A friendlier one-shot wrapper over the same AlertRule primitive
+    /setalert already uses: creates the "above +PCT" and "below -PCT"
+    change_pct_24h rules together, so a user catching a sharp move in
+    either direction (e.g. "alert me if BTC moves 3%") never has to type
+    a negative number themselves -- see _normalize_dashes' docstring for
+    why that was tripping people up on /setalert directly."""
+    parts = _normalize_dashes(command.args or "").split()
+    if len(parts) < 2:
+        await _answer(
+            message,
+            "Usage: /movealert SYMBOL PCT [COOLDOWN_MINUTES]\n"
+            "Creates two rules that together notify you if the symbol's 24h "
+            "change moves at least PCT% in either direction.\n"
+            "Example: /movealert BTC 3",
+        )
+        return
+    symbol, pct_arg, *rest = parts
+    try:
+        pct = float(pct_arg)
+        cooldown_minutes = int(rest[0]) if rest else 60
+    except ValueError:
+        await _answer(message, "PCT and cooldown minutes must be numbers.")
+        return
+    if pct <= 0:
+        await _answer(message, "PCT must be positive, e.g. 3 (covers +3% and -3%).")
+        return
+
+    engine = build_alert_rule_engine()
+    chat_id = str(message.chat.id)
+    up_rule = await engine.create_rule(
+        chat_id, symbol, "change_pct_24h", "above", pct, cooldown_minutes
+    )
+    down_rule = await engine.create_rule(
+        chat_id, symbol, "change_pct_24h", "below", -pct, cooldown_minutes
+    )
+    await _answer(
+        message,
+        f"*Sharp-move alert set for {up_rule.symbol}*\n"
+        f"Rule #{up_rule.id}: 24h change above +{pct:.2f}%\n"
+        f"Rule #{down_rule.id}: 24h change below -{pct:.2f}%\n"
+        f"Cooldown {cooldown_minutes}m each. Manage with /myrules and /delalert.",
+    )
 
 
 @router.message(Command("myrules"))
