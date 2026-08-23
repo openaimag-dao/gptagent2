@@ -515,6 +515,16 @@ async def test_compute_builds_full_payload_and_persists():
     assert session.add.call_count == 1 + len(payload["confidence_breakdown"])
     added_snapshot = session.add.call_args_list[0][0][0]
     assert isinstance(added_snapshot, PriceForecastSnapshot)
+    # Forecasting 3.0 (Phase 22): the same effective_confidence_pct/
+    # data_quality_score the live payload already carries (confidence
+    # discounted for sample size/calibration/data freshness), now also
+    # persisted onto the row rather than lost once an official forecast
+    # is written.
+    assert (
+        added_snapshot.calibrated_confidence_pct
+        == payload["confidence"]["effective_confidence_pct"]
+    )
+    assert added_snapshot.data_quality_score == payload["data_quality"]["data_quality_score"]
     added_agent_rows = [c[0][0] for c in session.add.call_args_list[1:]]
     assert all(isinstance(r, AgentForecast) for r in added_agent_rows)
     assert {r.agent_name for r in added_agent_rows} == {
@@ -1140,6 +1150,8 @@ async def test_persist_assigns_incrementing_forecast_version():
         "price_path": [],
         "probability_distribution": [],
         "key_levels": {},
+        "confidence": {"effective_confidence_pct": 55},
+        "data_quality": {"data_quality_score": 80},
     }
     version = await engine._persist(
         payload,
@@ -1154,6 +1166,10 @@ async def test_persist_assigns_incrementing_forecast_version():
     added = session.add.call_args[0][0]
     assert added.forecast_version == 4
     assert added.regime_at_forecast == "bull"
+    # Forecasting 3.0 (Phase 22): persisted straight from this cycle's own
+    # already-computed payload, not re-derived.
+    assert added.calibrated_confidence_pct == 55
+    assert added.data_quality_score == 80
 
 
 async def test_persist_starts_at_version_one_when_no_prior_forecast():
@@ -1171,6 +1187,8 @@ async def test_persist_starts_at_version_one_when_no_prior_forecast():
         "price_path": [],
         "probability_distribution": [],
         "key_levels": {},
+        "confidence": {"effective_confidence_pct": 55},
+        "data_quality": {"data_quality_score": 80},
     }
     version = await engine._persist(
         payload,
@@ -1204,6 +1222,8 @@ async def test_persist_supersedes_prior_active_forecasts_for_same_symbol_horizon
         "price_path": [],
         "probability_distribution": [],
         "key_levels": {},
+        "confidence": {"effective_confidence_pct": 55},
+        "data_quality": {"data_quality_score": 80},
     }
     version = await engine._persist(
         payload,
@@ -1240,6 +1260,8 @@ async def test_persist_official_daily_skips_insert_when_todays_row_already_exist
         "price_path": [],
         "probability_distribution": [],
         "key_levels": {},
+        "confidence": {"effective_confidence_pct": 55},
+        "data_quality": {"data_quality_score": 80},
     }
     version = await engine._persist(
         payload,
@@ -1269,6 +1291,8 @@ async def test_persist_official_daily_inserts_and_stamps_official_fields_when_no
         "price_path": [],
         "probability_distribution": [],
         "key_levels": {},
+        "confidence": {"effective_confidence_pct": 55},
+        "data_quality": {"data_quality_score": 80},
     }
     version = await engine._persist(
         payload,
@@ -1303,6 +1327,8 @@ async def test_persist_stamps_the_current_forecast_model_version():
         "price_path": [],
         "probability_distribution": [],
         "key_levels": {},
+        "confidence": {"effective_confidence_pct": 55},
+        "data_quality": {"data_quality_score": 80},
     }
     await engine._persist(
         payload,

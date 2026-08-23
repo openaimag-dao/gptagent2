@@ -1685,7 +1685,11 @@ class ForecastEngine:
         persisted forecast (official or not) also gets one AgentForecast
         row per confidence_breakdown entry -- the per-agent evidence table
         the spec asks for, built from data ForecastEngine already computed
-        this cycle, not a new agent system."""
+        this cycle, not a new agent system. Forecasting 3.0 (Phase 22):
+        also persists `calibrated_confidence_pct`/`data_quality_score` --
+        both already computed this cycle (payload["confidence"]
+        ["effective_confidence_pct"] / payload["data_quality"]
+        ["data_quality_score"]), just never written to the row before."""
         today = datetime.now(UTC).date()
         async with self._session_factory() as session:
             if is_official_daily:
@@ -1729,6 +1733,8 @@ class ForecastEngine:
                 direction=payload["direction"],
                 probability_pct=payload["probability_pct"],
                 confidence_tier=confidence_tier,
+                calibrated_confidence_pct=payload["confidence"]["effective_confidence_pct"],
+                data_quality_score=payload["data_quality"]["data_quality_score"],
                 checkpoints=payload["price_path"],
                 distribution=payload["probability_distribution"],
                 key_levels=payload["key_levels"],
