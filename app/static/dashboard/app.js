@@ -1456,7 +1456,13 @@ async function renderWatchlist() {
     realtimeStatus && realtimeStatus.watchlist ? realtimeStatus.watchlist : ["BTC", "ETH", "SOL"];
   let symbols = _loadWatchlistSymbols(defaultWatchlist);
 
-  const tableWrap = el("div");
+  // .table-wrap (not a bare div) -- this table builds its own <table> for
+  // sortable headers rather than going through the shared table() helper,
+  // which was the one thing that made it miss table()'s built-in overflow-x
+  // scroll container. Without it the Symbol/Price/24H/Volume/Freshness/
+  // Forecast/remove-button row is wider than a phone screen and the page
+  // itself scrolls horizontally instead of just this table.
+  const tableWrap = el("div", { class: "table-wrap" });
   nodes.push(tableWrap);
 
   let sortKey = null;
