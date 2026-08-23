@@ -27,7 +27,7 @@ import logging
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -48,6 +48,7 @@ from app.services.analysis.report import derive_risk_level
 from app.services.backtest.metrics import compute_max_drawdown_pct
 from app.services.calendar.engine import EconomicCalendarEngine
 from app.services.common.scoring import center_scaled
+from app.services.common.statistics import compute_wilson_interval
 from app.services.conviction.engine import classify_conviction
 from app.services.data_quality.engine import assess_symbol_quality, compute_data_quality_score
 from app.services.explanation.engine import ExplanationEngine
@@ -643,6 +644,7 @@ def summarize_official_performance(
         return {
             "graded_count": 0,
             "direction_accuracy_pct": None,
+            "direction_accuracy_ci": None,
             "avg_abs_error_pct": None,
             "target_reached_rate_pct": None,
         }
@@ -652,11 +654,28 @@ def summarize_official_performance(
     return {
         "graded_count": len(graded),
         "direction_accuracy_pct": round(100 * sum(correct_flags) / len(correct_flags), 2),
+        "direction_accuracy_ci": compute_wilson_interval(sum(correct_flags), len(correct_flags)),
         "avg_abs_error_pct": round(sum(errors) / len(errors), 2) if errors else None,
         "target_reached_rate_pct": (
             round(100 * sum(reached_flags) / len(reached_flags), 2) if reached_flags else None
         ),
     }
+
+
+def summarize_official_performance_by_symbol(
+    graded: list[tuple[str, bool, float | None, bool | None]],
+) -> dict[str, dict]:
+    """Pure function: Forecasting 3.0 Track Record -- the same four-number
+    scorecard as summarize_official_performance(), but one per symbol
+    instead of pooled across the whole official roster. `graded` is
+    (symbol, direction_correct, error_pct, target_reached) quadruples,
+    already filtered upstream to graded rows -- same statistical-honesty
+    behavior as the pooled summary (Wilson CI on direction accuracy,
+    None fields when a symbol has no graded rows), just grouped first."""
+    by_symbol: dict[str, list[tuple[bool, float | None, bool | None]]] = defaultdict(list)
+    for symbol, correct, error, reached in graded:
+        by_symbol[symbol].append((correct, error, reached))
+    return {symbol: summarize_official_performance(rows) for symbol, rows in by_symbol.items()}
 
 
 def derive_official_calibration_curve(
@@ -731,6 +750,9 @@ def derive_regime_performance_breakdown(
                 "accuracy_pct": None
                 if insufficient
                 else round(100 * sum(outcomes) / sample_size, 1),
+                "accuracy_ci": None
+                if insufficient
+                else compute_wilson_interval(sum(outcomes), sample_size),
                 "insufficient_sample": insufficient,
             }
         )
@@ -1716,22 +1738,35 @@ class ForecastEngine:
             return {row.symbol: row for row in rows}
 
     async def get_official_history(
-        self, symbol: str, limit: int = 30
+        self,
+        symbol: str,
+        limit: int = 30,
+        offset: int = 0,
+        date_from: date | None = None,
+        date_to: date | None = None,
     ) -> list[PriceForecastSnapshot]:
-        """Forecasting 2.0 (Part 34 Page 2/3): past official daily 24h
+        """Forecasting 2.0/3.0 (Part 34 Page 2/3): past official daily 24h
         forecasts for one symbol, most recent first -- includes graded
         outcome fields (realized_price/error_pct/direction_correct/
         target_reached/excursions/error_type) once grade_price_forecasts
-        has filled them in, still None until then."""
+        has filled them in, still None until then. `offset` paginates past
+        `limit`; `date_from`/`date_to` (inclusive, on official_forecast_date)
+        scope to a date range -- both optional, None means unbounded."""
+        filters = [
+            PriceForecastSnapshot.symbol == symbol.upper(),
+            PriceForecastSnapshot.horizon == "24h",
+            PriceForecastSnapshot.is_official_daily.is_(True),
+        ]
+        if date_from is not None:
+            filters.append(PriceForecastSnapshot.official_forecast_date >= date_from)
+        if date_to is not None:
+            filters.append(PriceForecastSnapshot.official_forecast_date <= date_to)
         async with self._session_factory() as session:
             result = await session.scalars(
                 select(PriceForecastSnapshot)
-                .where(
-                    PriceForecastSnapshot.symbol == symbol.upper(),
-                    PriceForecastSnapshot.horizon == "24h",
-                    PriceForecastSnapshot.is_official_daily.is_(True),
-                )
+                .where(*filters)
                 .order_by(PriceForecastSnapshot.official_forecast_date.desc())
+                .offset(offset)
                 .limit(limit)
             )
             return list(result)
@@ -1797,6 +1832,7 @@ class ForecastEngine:
             rows = list(
                 await session.execute(
                     select(
+                        PriceForecastSnapshot.symbol,
                         PriceForecastSnapshot.probability_pct,
                         PriceForecastSnapshot.direction_correct,
                         PriceForecastSnapshot.error_pct,
@@ -1816,6 +1852,17 @@ class ForecastEngine:
                 for r in rows
             ]
         )
+        by_symbol = summarize_official_performance_by_symbol(
+            [
+                (
+                    r.symbol,
+                    r.direction_correct,
+                    float(r.error_pct) if r.error_pct is not None else None,
+                    r.target_reached,
+                )
+                for r in rows
+            ]
+        )
         calibration = derive_official_calibration_curve(
             [(r.probability_pct, r.direction_correct) for r in rows]
         )
@@ -1825,6 +1872,7 @@ class ForecastEngine:
         )
         return {
             "summary": summary,
+            "by_symbol": by_symbol,
             "calibration": calibration,
             "regime_breakdown": regime_breakdown,
         }

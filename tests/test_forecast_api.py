@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -248,3 +248,49 @@ async def test_official_daily_next_refresh_uses_the_official_job_id():
 
     mock_next_run.assert_called_once_with(forecast.OFFICIAL_DAILY_FORECAST_JOB_ID)
     assert payload["next_refresh_at"] == next_run.isoformat()
+
+
+async def test_official_performance_default_window_passes_no_since():
+    engine = AsyncMock()
+    engine.get_official_performance.return_value = {"summary": {}, "by_symbol": {}}
+    with (
+        patch("app.api.forecast.build_forecast_engine", return_value=engine),
+        patch("app.api.forecast._official_forecast_symbols", return_value=("BTC",)),
+    ):
+        payload = await forecast.get_official_performance(window="all")
+
+    engine.get_official_performance.assert_awaited_once_with(("BTC",), since=None)
+    assert payload["window"] == "all"
+
+
+@pytest.mark.parametrize("window,days", [("7d", 7), ("30d", 30), ("90d", 90)])
+async def test_official_performance_window_translates_to_since_cutoff(window, days):
+    engine = AsyncMock()
+    engine.get_official_performance.return_value = {"summary": {}, "by_symbol": {}}
+    before_call = datetime.now(UTC)
+    with (
+        patch("app.api.forecast.build_forecast_engine", return_value=engine),
+        patch("app.api.forecast._official_forecast_symbols", return_value=("BTC",)),
+    ):
+        payload = await forecast.get_official_performance(window=window)
+
+    assert payload["window"] == window
+    since = engine.get_official_performance.call_args.kwargs["since"]
+    expected = before_call - timedelta(days=days)
+    # allow a few seconds of test-execution slack around the cutoff
+    assert abs((since - expected).total_seconds()) < 5
+
+
+async def test_official_history_passes_pagination_and_date_range():
+    engine = AsyncMock()
+    engine.get_official_history.return_value = []
+    with patch("app.api.forecast.build_forecast_engine", return_value=engine):
+        payload = await forecast.get_official_forecast_history(
+            "btc", limit=10, offset=20, date_from=date(2026, 1, 1), date_to=date(2026, 1, 31)
+        )
+
+    engine.get_official_history.assert_awaited_once_with(
+        "BTC", 10, 20, date(2026, 1, 1), date(2026, 1, 31)
+    )
+    assert payload["limit"] == 10
+    assert payload["offset"] == 20

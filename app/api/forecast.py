@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -229,14 +229,30 @@ async def get_official_daily_forecasts() -> dict:
 
 
 @router.get("/{symbol}/official/history")
-async def get_official_forecast_history(symbol: str, limit: int = Query(30, le=100)) -> dict:
-    """Forecasting 2.0 (Part 34 Page 2/3) -- past official daily 24h
+async def get_official_forecast_history(
+    symbol: str,
+    limit: int = Query(30, le=100),
+    offset: int = Query(0, ge=0),
+    date_from: date | None = Query(
+        None, description="Inclusive lower bound on official_forecast_date"
+    ),
+    date_to: date | None = Query(
+        None, description="Inclusive upper bound on official_forecast_date"
+    ),
+) -> dict:
+    """Forecasting 2.0/3.0 (Part 34 Page 2/3) -- past official daily 24h
     forecasts for one symbol, most recent first, with graded outcomes
-    where available."""
+    where available. `offset` paginates past `limit`; `date_from`/`date_to`
+    scope to a date range."""
     symbol = symbol.upper()
     engine = build_forecast_engine()
-    rows = await engine.get_official_history(symbol, limit)
-    return {"symbol": symbol, "forecasts": [_serialize_official(r) for r in rows]}
+    rows = await engine.get_official_history(symbol, limit, offset, date_from, date_to)
+    return {
+        "symbol": symbol,
+        "limit": limit,
+        "offset": offset,
+        "forecasts": [_serialize_official(r) for r in rows],
+    }
 
 
 @router.get("/official/agent-performance")
@@ -251,15 +267,34 @@ async def get_agent_performance() -> dict:
     return {"min_sample_size": get_settings().agent_performance_min_sample_size, "rows": rows}
 
 
+_PERFORMANCE_WINDOW_DAYS = {"7d": 7, "30d": 30, "90d": 90}
+
+
 @router.get("/official/performance")
-async def get_official_performance() -> dict:
-    """Forecasting 2.0 (Page 4, Performance) -- the overall scorecard
+async def get_official_performance(
+    window: str = Query(
+        "all",
+        pattern="^(7d|30d|90d|all)$",
+        description="Rolling lookback by evaluated_at: 7d, 30d, 90d, or all (default)",
+    ),
+) -> dict:
+    """Forecasting 2.0/3.0 (Page 4, Performance) -- the overall scorecard
     across every graded official daily forecast in official_forecast_symbols:
-    summary stats, a probability-calibration curve, and accuracy broken
-    down by regime. Distinct from /official/agent-performance (per-agent)
-    and /official/learning-center (needs two regimes per agent)."""
+    summary stats (overall and per-symbol), a probability-calibration
+    curve, and accuracy broken down by regime. `window` restricts to
+    forecasts GRADED within the last N days (same `since` semantics the
+    weekly-review Telegram digest already uses -- reused here, not
+    reimplemented); "all" (default) keeps the original all-time behavior.
+    Distinct from /official/agent-performance (per-agent) and
+    /official/learning-center (needs two regimes per agent)."""
+    since = (
+        datetime.now(UTC) - timedelta(days=_PERFORMANCE_WINDOW_DAYS[window])
+        if window in _PERFORMANCE_WINDOW_DAYS
+        else None
+    )
     engine = build_forecast_engine()
-    return await engine.get_official_performance(_official_forecast_symbols())
+    result = await engine.get_official_performance(_official_forecast_symbols(), since=since)
+    return {"window": window, **result}
 
 
 @router.get("/official/error-lab")

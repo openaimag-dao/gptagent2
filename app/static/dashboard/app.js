@@ -73,6 +73,14 @@ function fmtNum(v, digits = 2) {
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
+// `ci` is a compute_wilson_interval()-shaped {lower_pct, upper_pct, sample_count}
+// dict, or null when there's nothing to bound. Renders "" (not "n/a") when
+// absent so callers can append it directly after a point-estimate string.
+function fmtCI(ci) {
+  if (ci == null) return "";
+  return ` (95% CI: ${ci.lower_pct}-${ci.upper_pct})`;
+}
+
 function card(label, value, sub, cls, id) {
   return el("div", { class: "card" }, [
     el("div", { class: "label" }, label),
@@ -1950,6 +1958,35 @@ async function renderForecastDetail(params) {
 // sample size is shown as INSUFFICIENT SAMPLE rather than a number -- same
 // rule as Agent Performance/Learning Center, applied to a coarser grouping.
 
+function forecastPerformanceSummaryCards(s) {
+  return el("div", { class: "grid" }, [
+    el("div", { class: "card" }, [
+      el("div", { class: "label" }, "Graded Forecasts"),
+      el("div", { class: "value" }, String(s.graded_count)),
+    ]),
+    el("div", { class: "card" }, [
+      el("div", { class: "label" }, "Direction Accuracy"),
+      el(
+        "div",
+        { class: `value ${changeClass(s.direction_accuracy_pct - 50)}` },
+        `${s.direction_accuracy_pct}%${fmtCI(s.direction_accuracy_ci)}`
+      ),
+    ]),
+    el("div", { class: "card" }, [
+      el("div", { class: "label" }, "Avg |Error|"),
+      el("div", { class: "value" }, s.avg_abs_error_pct != null ? fmtPct(s.avg_abs_error_pct) : "n/a"),
+    ]),
+    el("div", { class: "card" }, [
+      el("div", { class: "label" }, "Target Reached Rate"),
+      el(
+        "div",
+        { class: "value" },
+        s.target_reached_rate_pct != null ? `${s.target_reached_rate_pct}%` : "n/a"
+      ),
+    ]),
+  ]);
+}
+
 async function renderForecastPerformance() {
   const nodes = [
     el("h1", {}, "Performance"),
@@ -1961,88 +1998,93 @@ async function renderForecastPerformance() {
     ),
   ];
 
-  const data = await safe("/api/forecast/official/performance");
-  if (!data || !data.summary || data.summary.graded_count === 0) {
-    nodes.push(
-      el(
-        "p",
-        { class: "sub" },
-        "No graded official daily forecasts yet -- this page fills in as forecasts resolve."
-      )
-    );
-    return nodes;
-  }
+  const windowLabels = { "7d": "7D", "30d": "30D", "90d": "90D", all: "ALL" };
+  const windowRow = el("div", { class: "forecast-tabs" });
+  nodes.push(windowRow);
+  const results = el("div");
+  nodes.push(results);
 
-  const s = data.summary;
-  nodes.push(
-    el("div", { class: "grid" }, [
-      el("div", { class: "card" }, [
-        el("div", { class: "label" }, "Graded Forecasts"),
-        el("div", { class: "value" }, String(s.graded_count)),
-      ]),
-      el("div", { class: "card" }, [
-        el("div", { class: "label" }, "Direction Accuracy"),
+  async function load(window) {
+    windowRow.innerHTML = "";
+    Object.entries(windowLabels).forEach(([key, label]) => {
+      const btn = el("button", { class: `forecast-tab${key === window ? " active" : ""}` }, label);
+      btn.addEventListener("click", () => load(key));
+      windowRow.appendChild(btn);
+    });
+    results.innerHTML = "";
+    const data = await safe(`/api/forecast/official/performance?window=${window}`);
+    if (!data || !data.summary || data.summary.graded_count === 0) {
+      results.appendChild(
         el(
-          "div",
-          { class: `value ${changeClass(s.direction_accuracy_pct - 50)}` },
-          `${s.direction_accuracy_pct}%`
-        ),
-      ]),
-      el("div", { class: "card" }, [
-        el("div", { class: "label" }, "Avg |Error|"),
-        el("div", { class: "value" }, s.avg_abs_error_pct != null ? fmtPct(s.avg_abs_error_pct) : "n/a"),
-      ]),
-      el("div", { class: "card" }, [
-        el("div", { class: "label" }, "Target Reached Rate"),
-        el(
-          "div",
-          { class: "value" },
-          s.target_reached_rate_pct != null ? `${s.target_reached_rate_pct}%` : "n/a"
-        ),
-      ]),
-    ])
-  );
+          "p",
+          { class: "sub" },
+          "No graded official daily forecasts yet in this window -- this page fills in as forecasts resolve."
+        )
+      );
+      return;
+    }
 
-  nodes.push(el("h2", {}, "Calibration Curve"));
-  if (data.calibration.length) {
-    nodes.push(
-      table(
-        ["Stated Probability", "Count", "Avg Stated", "Observed Accuracy", "Gap", "Sufficiency"],
-        data.calibration.map((b) => [
-          b.probability_bucket,
-          String(b.count),
-          `${b.avg_stated_probability_pct}%`,
-          `${b.observed_accuracy_pct}%`,
-          fmtPct(b.calibration_gap_pct),
-          decisionPill(
-            b.sample_sufficiency.toUpperCase(),
-            b.sample_sufficiency === "reliable" ? "good" : b.sample_sufficiency === "usable" ? "neutral" : "bad"
-          ),
-        ])
-      )
-    );
-  } else {
-    nodes.push(el("p", { class: "sub" }, "No calibration buckets yet."));
+    results.appendChild(el("h2", {}, "Overall"));
+    results.appendChild(forecastPerformanceSummaryCards(data.summary));
+
+    const bySymbol = data.by_symbol || {};
+    const symbols = Object.keys(bySymbol).sort();
+    if (symbols.length) {
+      results.appendChild(el("h2", {}, "By Asset"));
+      for (const symbol of symbols) {
+        const s = bySymbol[symbol];
+        if (s.graded_count === 0) continue;
+        results.appendChild(el("h3", {}, symbol));
+        results.appendChild(forecastPerformanceSummaryCards(s));
+      }
+    }
+
+    results.appendChild(el("h2", {}, "Calibration Curve"));
+    if (data.calibration.length) {
+      results.appendChild(
+        table(
+          ["Stated Probability", "Count", "Avg Stated", "Observed Accuracy", "Gap", "Sufficiency"],
+          data.calibration.map((b) => [
+            b.probability_bucket,
+            String(b.count),
+            `${b.avg_stated_probability_pct}%`,
+            `${b.observed_accuracy_pct}%`,
+            fmtPct(b.calibration_gap_pct),
+            decisionPill(
+              b.sample_sufficiency.toUpperCase(),
+              b.sample_sufficiency === "reliable" ? "good" : b.sample_sufficiency === "usable" ? "neutral" : "bad"
+            ),
+          ])
+        )
+      );
+    } else {
+      results.appendChild(el("p", { class: "sub" }, "No calibration buckets yet."));
+    }
+
+    results.appendChild(el("h2", {}, "Accuracy By Regime"));
+    if (data.regime_breakdown.length) {
+      results.appendChild(
+        table(
+          ["Regime", "Sample Size", "Accuracy"],
+          data.regime_breakdown.map((r) => [
+            r.regime,
+            String(r.sample_size),
+            r.insufficient_sample
+              ? decisionPill("INSUFFICIENT SAMPLE", "neutral")
+              : el(
+                  "span",
+                  { class: changeClass(r.accuracy_pct - 50) },
+                  `${r.accuracy_pct}%${fmtCI(r.accuracy_ci)}`
+                ),
+          ])
+        )
+      );
+    } else {
+      results.appendChild(el("p", { class: "sub" }, "No regime-tagged graded forecasts yet."));
+    }
   }
 
-  nodes.push(el("h2", {}, "Accuracy By Regime"));
-  if (data.regime_breakdown.length) {
-    nodes.push(
-      table(
-        ["Regime", "Sample Size", "Accuracy"],
-        data.regime_breakdown.map((r) => [
-          r.regime,
-          String(r.sample_size),
-          r.insufficient_sample
-            ? decisionPill("INSUFFICIENT SAMPLE", "neutral")
-            : el("span", { class: changeClass(r.accuracy_pct - 50) }, `${r.accuracy_pct}%`),
-        ])
-      )
-    );
-  } else {
-    nodes.push(el("p", { class: "sub" }, "No regime-tagged graded forecasts yet."));
-  }
-
+  await load("all");
   return nodes;
 }
 
