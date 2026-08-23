@@ -162,6 +162,8 @@ def _official_row(**overrides):
         "direction": "Bullish",
         "probability_pct": 70,
         "confidence_tier": "Medium",
+        "calibrated_confidence_pct": None,
+        "data_quality_score": None,
         "regime_at_forecast": "neutral",
         "official_forecast_date": datetime.now(UTC).date(),
         "computed_at": datetime.now(UTC),
@@ -214,6 +216,40 @@ async def test_official_daily_attaches_freshness_for_a_just_computed_row():
     assert btc["freshness"] == "live"
     assert btc["is_stale"] is False
     assert 250 <= btc["age_seconds"] <= 350
+
+
+async def test_official_daily_serializes_calibrated_confidence_and_data_quality():
+    row = _official_row(calibrated_confidence_pct=62, data_quality_score=88)
+    engine = AsyncMock()
+    engine.get_official_daily.return_value = {"BTC": row}
+    with (
+        patch("app.api.forecast.build_forecast_engine", return_value=engine),
+        patch("app.api.forecast._official_forecast_symbols", return_value=("BTC",)),
+        patch("app.api.forecast.get_job_next_run", return_value=None),
+    ):
+        payload = await forecast.get_official_daily_forecasts()
+
+    btc = payload["forecasts"][0]
+    assert btc["calibrated_confidence_pct"] == 62
+    assert btc["data_quality_score"] == 88
+
+
+async def test_official_daily_honestly_reports_missing_calibration_for_old_rows():
+    # rows persisted before these columns existed have nothing to report --
+    # never fabricated, never silently defaulted to a number.
+    row = _official_row()
+    engine = AsyncMock()
+    engine.get_official_daily.return_value = {"BTC": row}
+    with (
+        patch("app.api.forecast.build_forecast_engine", return_value=engine),
+        patch("app.api.forecast._official_forecast_symbols", return_value=("BTC",)),
+        patch("app.api.forecast.get_job_next_run", return_value=None),
+    ):
+        payload = await forecast.get_official_daily_forecasts()
+
+    btc = payload["forecasts"][0]
+    assert btc["calibrated_confidence_pct"] is None
+    assert btc["data_quality_score"] is None
 
 
 async def test_official_daily_marks_a_day_old_row_stale():

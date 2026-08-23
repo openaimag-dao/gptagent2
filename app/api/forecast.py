@@ -28,6 +28,8 @@ def _serialize_official(row) -> dict:
         "direction": row.direction,
         "probability_pct": row.probability_pct,
         "confidence_tier": row.confidence_tier,
+        "calibrated_confidence_pct": row.calibrated_confidence_pct,
+        "data_quality_score": row.data_quality_score,
         "regime_at_forecast": row.regime_at_forecast,
         "official_forecast_date": row.official_forecast_date.isoformat()
         if row.official_forecast_date is not None

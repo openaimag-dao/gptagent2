@@ -1195,6 +1195,19 @@ class PriceForecastSnapshot(Base):
     direction: Mapped[str] = mapped_column(String(20))
     probability_pct: Mapped[int] = mapped_column()
     confidence_tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Forecasting 3.0 (Phase 22): `classify_conviction()` already computes
+    # `effective_confidence_pct` every cycle -- the raw stated
+    # `probability_pct` discounted by sample size, Prediction Quality
+    # Lab's own Brier-score calibration read, and data freshness (see
+    # classify_conviction's own docstring) -- and `data_quality_score`
+    # was already one of the multipliers that went into it. Both were
+    # already returned in the live/transient compute() payload
+    # (`confidence`/`data_quality`) but never persisted, so an official
+    # row lost them the moment it was written -- this is that gap closed,
+    # not a new confidence concept. Nullable: honestly absent for rows
+    # persisted before these columns existed.
+    calibrated_confidence_pct: Mapped[int | None] = mapped_column(nullable=True)
+    data_quality_score: Mapped[int | None] = mapped_column(nullable=True)
     checkpoints: Mapped[list] = mapped_column(JSON, default=list)
     distribution: Mapped[list] = mapped_column(JSON, default=list)
     key_levels: Mapped[dict] = mapped_column(JSON, default=dict)

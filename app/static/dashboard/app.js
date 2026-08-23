@@ -1710,6 +1710,14 @@ function forecastDailyCard(f) {
       " ",
       officialFreshnessBadge(f.freshness, f.age_seconds),
     ]),
+    f.calibrated_confidence_pct != null
+      ? el(
+          "div",
+          { class: "sub" },
+          `Calibrated confidence: ${f.calibrated_confidence_pct}%` +
+            (f.data_quality_score != null ? ` (data quality ${f.data_quality_score}/100)` : "")
+        )
+      : null,
     isActive ? null : el("div", { class: "sub error" }, `Status: ${f.forecast_status}`),
   ]);
 }
@@ -1856,6 +1864,20 @@ async function renderForecastDetail(params) {
         el("div", { class: "label" }, "Regime / Status"),
         el("div", { class: "value" }, f.regime_at_forecast || "n/a"),
         el("div", { class: "sub" }, `${f.forecast_status}${f.error_type ? ` -- ${f.error_type}` : ""}`),
+      ]),
+      el("div", { class: "card" }, [
+        el("div", { class: "label" }, "Calibrated Confidence"),
+        el(
+          "div",
+          { class: "value" },
+          f.calibrated_confidence_pct != null ? `${f.calibrated_confidence_pct}%` : "n/a"
+        ),
+        el(
+          "div",
+          { class: "sub" },
+          `Data quality: ${f.data_quality_score != null ? `${f.data_quality_score}/100` : "n/a"} ` +
+            `(stated ${f.confidence_tier || "n/a"})`
+        ),
       ]),
     ])
   );
