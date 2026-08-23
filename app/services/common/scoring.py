@@ -36,7 +36,7 @@ def direction_from_score(
         direction = "bearish"
     else:
         direction = "neutral"
-    confidence = clamp(abs(delta) * (100.0 / max(center, 100.0 - center)))
+    confidence = round(clamp(abs(delta) * (100.0 / max(center, 100.0 - center))), 1)
     return direction, confidence
 
 

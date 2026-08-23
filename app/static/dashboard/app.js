@@ -3159,8 +3159,8 @@ async function renderTechnical() {
           card("Confidence", d.confidence != null ? `${d.confidence.toFixed(0)}%` : "n/a"),
           card("Breakout Probability", d.breakout_probability != null ? `${d.breakout_probability.toFixed(0)}%` : "n/a"),
           card("Breakdown Probability", d.breakdown_probability != null ? `${d.breakdown_probability.toFixed(0)}%` : "n/a"),
-          card("Support", d.support != null ? d.support.toLocaleString() : "n/a"),
-          card("Resistance", d.resistance != null ? d.resistance.toLocaleString() : "n/a"),
+          card("Support", d.support != null ? fmtNum(d.support) : "n/a"),
+          card("Resistance", d.resistance != null ? fmtNum(d.resistance) : "n/a"),
         ])
       );
       results.appendChild(el("p", { class: "sub" }, `Source: ${d.source} -- timeframes: ${(d.timeframes_covered || []).join(", ") || "n/a"}`));
@@ -3421,7 +3421,11 @@ async function renderExplanation() {
             ["Driver", "Value"],
             Object.entries(d.macro_drivers).map(([k, v]) => [
               k.replace(/_/g, " "),
-              v == null ? "n/a" : typeof v === "object" ? JSON.stringify(v) : String(v),
+              v == null || (typeof v === "object" && Object.keys(v).length === 0)
+                ? "n/a"
+                : typeof v === "object"
+                  ? JSON.stringify(v)
+                  : String(v),
             ])
           )
         );
@@ -4448,7 +4452,10 @@ async function renderWhales() {
         ["Field", "Value"],
         Object.entries(data)
           .filter(([k]) => k !== "available" && k !== "symbol")
-          .map(([k, v]) => [k.replace(/_/g, " "), v == null ? "n/a" : String(v)])
+          .map(([k, v]) => [
+            k.replace(/_/g, " "),
+            v == null ? "n/a" : typeof v === "number" ? v.toLocaleString() : String(v),
+          ])
       )
     );
   } else {
@@ -4600,8 +4607,8 @@ async function renderBreakout() {
       results.appendChild(
         el("div", { class: "grid" }, [
           card("Event", latest.event_type.replace(/_/g, " "), null, latest.direction === "bullish" ? "up" : "down"),
-          card("Level", latest.level.toFixed(4)),
-          card("Price", latest.price.toFixed(4)),
+          card("Level", fmtNum(latest.level)),
+          card("Price", fmtNum(latest.price)),
           card(
             "Probability",
             latest.probability_pct !== null ? `${latest.probability_pct}%` : "unavailable"
@@ -4730,7 +4737,10 @@ async function renderOnchain() {
       results.appendChild(
         table(
           ["Metric", "Value"],
-          Object.entries(data.metrics).map(([k, v]) => [k.replace(/_/g, " "), v == null ? "unavailable" : String(v)])
+          Object.entries(data.metrics).map(([k, v]) => [
+            k.replace(/_/g, " "),
+            v == null ? "unavailable" : typeof v === "number" ? v.toLocaleString() : String(v),
+          ])
         )
       );
     } catch (err) {
@@ -5469,7 +5479,10 @@ async function renderAssetDetail(params) {
     nodes.push(
       table(
         ["Metric", "Value"],
-        Object.entries(onchain.metrics).map(([k, v]) => [k.replace(/_/g, " "), v == null ? "unavailable" : String(v)])
+        Object.entries(onchain.metrics).map(([k, v]) => [
+          k.replace(/_/g, " "),
+          v == null ? "unavailable" : typeof v === "number" ? v.toLocaleString() : String(v),
+        ])
       )
     );
   }
@@ -5481,7 +5494,10 @@ async function renderAssetDetail(params) {
         ["Field", "Value"],
         Object.entries(whales)
           .filter(([k]) => k !== "available" && k !== "symbol")
-          .map(([k, v]) => [k.replace(/_/g, " "), v == null ? "n/a" : String(v)])
+          .map(([k, v]) => [
+            k.replace(/_/g, " "),
+            v == null ? "n/a" : typeof v === "number" ? v.toLocaleString() : String(v),
+          ])
       )
     );
   }
