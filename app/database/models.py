@@ -1250,6 +1250,19 @@ class PriceForecastSnapshot(Base):
     historical_mean_baseline_error_pct: Mapped[float | None] = mapped_column(
         Numeric(10, 4), nullable=True
     )
+    # Forecasting 3.0: a third naive baseline alongside the two above --
+    # "assume no change at all" (target = current_price, i.e. 0% return).
+    # The simplest possible non-trivial baseline a real forecast must beat;
+    # computed the exact same way error_pct/historical_mean_baseline_
+    # error_pct are (100*(realized-naive_target)/naive_target), so all
+    # three are directly comparable magnitude-for-magnitude. Nullable only
+    # for rows persisted before this column existed -- every future graded
+    # row can always compute this baseline (current_price is never
+    # missing), unlike the other two which need history to have anything
+    # to average.
+    zero_return_baseline_error_pct: Mapped[float | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
     # Forecast Intelligence Upgrade: filled in alongside the grading fields
     # above, by the same grade_price_forecasts() call, walking the real
     # intrabar high/low of every bar between the forecast and its grading
@@ -1279,9 +1292,7 @@ class PriceForecastSnapshot(Base):
     # Bullish call's MFE is how far price ran up in its favor, MAE is how
     # far it ran against it) -- both None for a Neutral call, same as
     # target_reached, since there's no "favorable side" to measure.
-    max_favorable_excursion_pct: Mapped[float | None] = mapped_column(
-        Numeric(10, 4), nullable=True
-    )
+    max_favorable_excursion_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     max_adverse_excursion_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     # Forecasting 2.0 (Part 27): a coarse, honestly-derivable classification
     # of what kind of miss this was -- filled in only for graded, wrong
@@ -1328,9 +1339,7 @@ class AgentForecast(Base):
     __tablename__ = "agent_forecasts"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    forecast_id: Mapped[int] = mapped_column(
-        ForeignKey("price_forecast_snapshots.id"), index=True
-    )
+    forecast_id: Mapped[int] = mapped_column(ForeignKey("price_forecast_snapshots.id"), index=True)
     agent_name: Mapped[str] = mapped_column(String(40))
     direction: Mapped[str | None] = mapped_column(String(20), nullable=True)
     confidence_pct: Mapped[int | None] = mapped_column(nullable=True)

@@ -55,6 +55,11 @@ def _aggregate_stats(rows: list[PriceForecastSnapshot]) -> dict:
         for r in rows
         if r.historical_mean_baseline_error_pct is not None
     ]
+    zero_return_errors = [
+        abs(float(r.zero_return_baseline_error_pct))
+        for r in rows
+        if r.zero_return_baseline_error_pct is not None
+    ]
     target_reached_graded = [r.target_reached for r in rows if r.target_reached is not None]
 
     avg_abs_error_pct = round(sum(errors) / len(errors), 4) if errors else None
@@ -68,6 +73,9 @@ def _aggregate_stats(rows: list[PriceForecastSnapshot]) -> dict:
         round(sum(historical_mean_errors) / len(historical_mean_errors), 4)
         if historical_mean_errors
         else None
+    )
+    zero_return_baseline_avg_abs_error_pct = (
+        round(sum(zero_return_errors) / len(zero_return_errors), 4) if zero_return_errors else None
     )
 
     return {
@@ -93,6 +101,12 @@ def _aggregate_stats(rows: list[PriceForecastSnapshot]) -> dict:
             avg_abs_error_pct < historical_mean_baseline_avg_abs_error_pct
             if avg_abs_error_pct is not None
             and historical_mean_baseline_avg_abs_error_pct is not None
+            else None
+        ),
+        "zero_return_baseline_avg_abs_error_pct": zero_return_baseline_avg_abs_error_pct,
+        "beats_zero_return_baseline": (
+            avg_abs_error_pct < zero_return_baseline_avg_abs_error_pct
+            if avg_abs_error_pct is not None and zero_return_baseline_avg_abs_error_pct is not None
             else None
         ),
         # Forecast Intelligence Upgrade: did price actually TOUCH the

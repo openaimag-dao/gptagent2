@@ -1929,6 +1929,15 @@ async function renderForecastDetail(params) {
             : "not graded yet"
         }`
       ),
+      el(
+        "li",
+        {},
+        `Zero-return baseline (naive "assume no change") error: ${
+          f.zero_return_baseline_error_pct != null
+            ? fmtPct(f.zero_return_baseline_error_pct)
+            : "not graded yet"
+        }`
+      ),
     ])
   );
 

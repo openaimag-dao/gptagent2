@@ -30,6 +30,7 @@ from app.services.forecast.engine import (
     compute_price_target,
     compute_probability_distribution,
     compute_scenario_cases,
+    compute_zero_return_baseline_error_pct,
     derive_learning_insights,
     derive_official_calibration_curve,
     derive_regime_label,
@@ -670,6 +671,18 @@ def test_compute_historical_mean_baseline_error_pct_computes_signed_error():
     )
 
 
+def test_compute_zero_return_baseline_error_pct_exact_match_is_zero():
+    # naive target = current_price itself (0% predicted return)
+    assert compute_zero_return_baseline_error_pct(100.0, 100.0) == 0.0
+
+
+def test_compute_zero_return_baseline_error_pct_computes_signed_error():
+    # naive target = 100.0, realized = 105.0 -> error = 100*(105-100)/100
+    assert compute_zero_return_baseline_error_pct(100.0, 105.0) == 5.0
+    # a down move produces a negative error
+    assert compute_zero_return_baseline_error_pct(100.0, 95.0) == -5.0
+
+
 # ---- Forecast Intelligence Upgrade: target_reached (intrabar touch) --------
 
 
@@ -803,6 +816,9 @@ async def test_grade_price_forecasts_grades_an_elapsed_row():
     # and no prior baseline sample -- honestly None, not fabricated.
     assert db_row.momentum_baseline_correct is None
     assert db_row.historical_mean_baseline_error_pct is None
+    # Forecasting 3.0: the zero-return baseline never needs history to
+    # average -- current_price is always known, so it's always graded.
+    assert db_row.zero_return_baseline_error_pct == round(100 * (105.0 - 100.0) / 100.0, 4)
     # Forecast Intelligence Upgrade: price actually touched the target
     # (high 105.0 >= target 103.0) during the window, not just ended up
     # past it at horizon-elapse.
@@ -854,6 +870,9 @@ async def test_grade_price_forecasts_computes_baseline_comparisons():
     # -> idx=1, +5%) gives a 5.0% historical-mean baseline -> naive target
     # 100*(1.05)=105.0, exactly matching the real realized_price of 105.0
     assert db_row.historical_mean_baseline_error_pct == 0.0
+    # zero-return baseline's naive target is just current_price (100.0),
+    # so its error is the full realized move: (105-100)/100 = 5%
+    assert db_row.zero_return_baseline_error_pct == 5.0
 
 
 async def test_grade_price_forecasts_preserves_invalidated_status():

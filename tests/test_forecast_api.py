@@ -174,6 +174,17 @@ def _official_row(**overrides):
         "max_adverse_excursion_pct": None,
         "error_type": None,
         "evaluated_at": None,
+        "checkpoints": [],
+        "distribution": [],
+        "key_levels": {},
+        "reference_timestamp": None,
+        "forecast_version": 1,
+        "model_version": None,
+        "invalidation_reason": None,
+        "invalidated_at": None,
+        "momentum_baseline_correct": None,
+        "historical_mean_baseline_error_pct": None,
+        "zero_return_baseline_error_pct": None,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -294,3 +305,32 @@ async def test_official_history_passes_pagination_and_date_range():
     )
     assert payload["limit"] == 10
     assert payload["offset"] == 20
+
+
+async def test_forecast_detail_serializes_all_three_baseline_comparisons():
+    row = _official_row(
+        momentum_baseline_correct=True,
+        historical_mean_baseline_error_pct=2.5,
+        zero_return_baseline_error_pct=5.0,
+    )
+    engine = AsyncMock()
+    engine.get_forecast_detail.return_value = {"forecast": row, "agents": []}
+    with patch("app.api.forecast.build_forecast_engine", return_value=engine):
+        payload = await forecast.get_forecast_detail(1)
+
+    detail = payload["forecast"]
+    assert detail["momentum_baseline_correct"] is True
+    assert detail["historical_mean_baseline_error_pct"] == 2.5
+    assert detail["zero_return_baseline_error_pct"] == 5.0
+
+
+async def test_forecast_detail_404_when_not_found():
+    engine = AsyncMock()
+    engine.get_forecast_detail.return_value = None
+    with (
+        patch("app.api.forecast.build_forecast_engine", return_value=engine),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await forecast.get_forecast_detail(999)
+
+    assert exc_info.value.status_code == 404
