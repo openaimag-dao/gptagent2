@@ -1317,6 +1317,48 @@ function renderLiveAlertsFeed(data) {
   return nodes;
 }
 
+// Compact multi-asset complement to the single-symbol AI Forecast Center
+// hero card above it: the same official daily forecasts Forecasting 2.0
+// already computes and shows one-card-per-asset (BTC/SOL/LINK/UNI by
+// default) -- reused here as one glanceable row per asset instead of
+// requiring a page switch. No new computation, no extra DB write: this
+// is a pure GET against the already-cached-by-the-daily-job rows.
+function renderForecastSnapshotMatrix(daily) {
+  if (!daily || !daily.forecasts || !daily.forecasts.length) return [];
+  const available = daily.forecasts.filter((f) => f.available);
+  if (!available.length) return [];
+  const nodes = [el("h2", {}, "AI Forecast Snapshot")];
+  nodes.push(
+    el(
+      "p",
+      { class: "sub" },
+      "Today's official 24h call per asset -- see Forecasting 2.0 for full history and grading."
+    )
+  );
+  nodes.push(
+    table(
+      ["Asset", "Direction", "Price", "Target", "Expected Change", "Probability", "Confidence"],
+      available.map((f) => {
+        const d = (f.direction || "").toLowerCase();
+        const directionCls = d.includes("bullish") ? "up" : d.includes("bearish") ? "down" : "neutral";
+        return [
+          el("a", { href: `#assetdetail?symbol=${f.symbol}` }, f.symbol),
+          el("span", { class: directionCls }, f.direction),
+          fmtNum(f.current_price),
+          fmtNum(f.target_price),
+          el("span", { class: changeClass(f.expected_change_pct) }, fmtPct(f.expected_change_pct)),
+          `${f.probability_pct}%`,
+          f.confidence_tier,
+        ];
+      })
+    )
+  );
+  nodes.push(
+    el("p", { class: "sub nav-pointer" }, ["See also: ", el("a", { href: "#forecast2" }, "Forecasting 2.0")])
+  );
+  return nodes;
+}
+
 async function renderOverview() {
   const [
     forecastCenter,
@@ -1333,6 +1375,7 @@ async function renderOverview() {
     alertPerformance,
     alertPerformanceByType,
     liveAlerts,
+    forecastDaily,
   ] = await Promise.all([
     renderForecastCenter(),
     renderExecutiveSummary(),
@@ -1348,13 +1391,16 @@ async function renderOverview() {
     safe("/api/alert-performance"),
     safe("/api/alert-performance/by-type"),
     safe("/api/watchdog/events?limit=5"),
+    safe("/api/forecast/official/daily"),
   ]);
 
   const nodes = [];
   if (realtimeStatus && realtimeStatus.watchlist && realtimeStatus.watchlist.length) {
     nodes.push(liveTicker(realtimeStatus.watchlist, market ? market.quotes : null));
   }
-  nodes.push(forecastCenter, execSummary, el("h2", {}, "Overview"));
+  nodes.push(forecastCenter);
+  nodes.push(...renderForecastSnapshotMatrix(forecastDaily));
+  nodes.push(execSummary, el("h2", {}, "Overview"));
   const regimeCard = renderMarketRegimeCard(regime);
   if (regimeCard) nodes.push(regimeCard);
   const top = el("div", { class: "grid" });
