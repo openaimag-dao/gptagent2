@@ -289,6 +289,13 @@ colors).
 - OPEN ORDERS has a Cancel button per resting order.
 - PERFORMANCE renders the overall stat grid plus the by-side/by-symbol/
   by-leverage/by-strategy breakdown tables.
+- RISK renders `GET /api/simulator/risk`'s stat grid (margin ratio,
+  available margin, max drawdown, daily PnL/loss, total exposure, open
+  position count, largest position), a Warnings section (color-coded
+  pills reusing the existing `decisionPill`/`.pill` system — no new CSS)
+  that reads "No active warnings" when the account is healthy, and an
+  Open Position Risk table (notional, concentration, distance to
+  liquidation per position).
 - SETTINGS has the account-name switcher (a lightweight stand-in for the
   task's "New Demo Session" concept — different account names are
   fully separate demo accounts) and the Reset Demo Account button.
@@ -305,6 +312,9 @@ server: placed a MARKET order through the UI (real BTC price, real fill),
 confirmed the resulting position appeared in POSITIONS with the correct
 entry/mark/margin, confirmed PERFORMANCE and ACCOUNT HISTORY rendered
 real data, and confirmed the SETTINGS tab's controls render correctly.
+Separately verified the RISK tab against a real 50x BTC position: the
+rendered margin ratio, daily PnL, total exposure, and a NEAR_LIQUIDATION
+warning naming the position all matched the API response exactly.
 
 ## AI integration
 
@@ -359,11 +369,10 @@ section — summarized here:
 - Performance breakdowns (`by_side`/`by_symbol`/`by_leverage`/`by_strategy`)
   compute over every closed trade with no pagination or date-range filter
   yet — fine at demo-account trade volumes, would need one at scale.
-- `GET /api/simulator/risk` has no dashboard panel yet — the backend
-  endpoint is complete and live-verified, but the RISK tab/widget the
-  task describes (max risk settings, prominent warning banners) is not
-  yet built on the frontend. Optional per-account Max Risk Settings
-  (task's own "optional" note) are also not yet implemented.
+- The RISK tab renders warnings and metrics but does not yet have
+  user-configurable Max Risk Settings (task's own "optional" note) —
+  the four warning thresholds are server-side settings today, not
+  editable per-account from the dashboard.
 
 ## Confirmations
 

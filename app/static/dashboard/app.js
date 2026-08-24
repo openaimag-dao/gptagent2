@@ -5744,6 +5744,7 @@ const FUTURES_TABS = [
   "order-history",
   "trade-history",
   "performance",
+  "risk",
   "account-history",
   "settings",
 ];
@@ -5754,6 +5755,7 @@ const FUTURES_TAB_LABELS = {
   "order-history": "Order History",
   "trade-history": "Trade History",
   performance: "Performance",
+  risk: "Risk",
   "account-history": "Account History",
   settings: "Settings",
 };
@@ -6210,6 +6212,65 @@ async function renderFuturesPerformanceTab() {
   return wrap;
 }
 
+function futuresWarningTone(level) {
+  if (level === "MARGIN_WARNING") return "warning";
+  return "bad"; // HIGH_RISK / NEAR_LIQUIDATION
+}
+
+async function renderFuturesRiskTab() {
+  const risk = await safe(`/api/simulator/risk?name=${encodeURIComponent(futuresAccountName())}`);
+  const wrap = el("div", {});
+  if (!risk) {
+    wrap.appendChild(el("p", { class: "error" }, "Risk data unavailable."));
+    return wrap;
+  }
+
+  wrap.appendChild(
+    el("div", { class: "grid" }, [
+      card("Margin Ratio", risk.margin_ratio_pct != null ? `${risk.margin_ratio_pct}%` : "n/a"),
+      card("Available Margin", risk.available_margin_pct != null ? `${risk.available_margin_pct}%` : "n/a"),
+      card("Max Drawdown", risk.max_drawdown_pct != null ? `${risk.max_drawdown_pct}%` : "n/a", null, "down"),
+      card("Daily PnL", fmtNum(risk.daily_pnl), null, changeClass(risk.daily_pnl)),
+      card("Daily Loss", risk.daily_loss_pct != null ? `${risk.daily_loss_pct}%` : "n/a"),
+      card("Total Exposure", fmtNum(risk.total_exposure)),
+      card("Open Positions", risk.open_position_count),
+      card("Largest Position", risk.largest_position ? risk.largest_position.symbol : "n/a"),
+    ])
+  );
+
+  wrap.appendChild(el("h3", {}, "Warnings"));
+  if (!risk.warnings.length) {
+    wrap.appendChild(el("p", { class: "sub" }, "No active warnings. These never block trading -- they're informational only."));
+  } else {
+    const list = el("div", { class: "controls" });
+    for (const w of risk.warnings) {
+      list.appendChild(
+        el("p", {}, [decisionPill(w.level, futuresWarningTone(w.level)), " ", w.message])
+      );
+    }
+    wrap.appendChild(list);
+  }
+
+  wrap.appendChild(el("h3", {}, "Open Position Risk"));
+  if (!risk.positions.length) {
+    wrap.appendChild(el("p", { class: "sub" }, "No open positions."));
+  } else {
+    wrap.appendChild(
+      table(
+        ["Symbol", "Side", "Notional", "Concentration", "Distance to Liquidation"],
+        risk.positions.map((p) => [
+          p.symbol,
+          p.side,
+          fmtNum(p.notional),
+          p.concentration_pct != null ? `${p.concentration_pct}%` : "n/a",
+          p.distance_to_liquidation_pct != null ? `${p.distance_to_liquidation_pct}%` : "n/a",
+        ])
+      )
+    );
+  }
+  return wrap;
+}
+
 async function renderFuturesAccountHistoryTab() {
   const data = await safe(`/api/simulator/ledger?name=${encodeURIComponent(futuresAccountName())}&limit=200`);
   const entries = data ? data.ledger : [];
@@ -6286,6 +6347,7 @@ const FUTURES_TAB_RENDERERS = {
   "order-history": renderFuturesOrderHistoryTab,
   "trade-history": renderFuturesTradeHistoryTab,
   performance: renderFuturesPerformanceTab,
+  risk: renderFuturesRiskTab,
   "account-history": renderFuturesAccountHistoryTab,
   settings: renderFuturesSettingsTab,
 };
