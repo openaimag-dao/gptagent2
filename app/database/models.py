@@ -1460,3 +1460,247 @@ class AlertPerformanceGrade(Base):
     baseline_return_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     edge_vs_baseline_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     graded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+# ---- Futures Simulator: 100% demo/paper-trading, no real money, no real
+# exchange orders, no Binance API keys anywhere in this codebase. Real
+# market data (price/candles) drives execution; only account/position/
+# order/fee/funding/liquidation state is simulated. See
+# docs/FUTURES_SIMULATOR.md / docs/FUTURES_SIMULATOR_MATH.md.
+
+
+class FuturesSimAccount(Base):
+    """One virtual demo futures account. This project has no user/auth
+    model at all (single-tenant deployment -- the only existing
+    "ownership" key anywhere is AlertRule.chat_id, and even that's
+    Telegram-specific); `name` is a Portfolio-style named-account key
+    (see Portfolio.name above), defaulting to one "default" account per
+    deployment -- the honest reading of "one user = one demo account" in
+    an app with no login system, with room for more named accounts later
+    if a real multi-account need appears.
+
+    RESET (Reset Demo Account) never deletes history: it stamps the
+    current ACTIVE row's `status` to RESET (leaving every column
+    untouched, permanently queryable) and INSERTs a brand-new ACTIVE row
+    with a fresh `account_session_id` and `wallet_balance` reset to
+    `futures_sim_initial_balance_usd` -- so old demo sessions stay
+    comparable forever ("Session 1 vs Session 2 vs Session 3").
+
+    `wallet_balance`/`realized_pnl_total`/`fees_paid_total`/
+    `funding_paid_total` are the only account-level numbers persisted
+    incrementally (bumped by the engine alongside every ledger entry it
+    writes). `equity`/`unrealized_pnl`/`used_margin`/`available_margin`/
+    `margin_ratio` are deliberately NOT stored columns: they're derived
+    live from this account's own OPEN FuturesSimPosition rows against
+    current mark prices every time they're read (see
+    app.services.futures_sim.engine.compute_account_state()) -- so they
+    can never drift stale relative to the positions that actually
+    determine them, and there is no cache-invalidation bug class to have.
+    `peak_equity`/`max_drawdown_pct` are the one derived pair that
+    genuinely needs persistence (a high-water mark can't be recovered
+    from current state alone) -- ratcheted forward by the engine whenever
+    a freshly-computed equity figure exceeds the stored peak."""
+
+    __tablename__ = "futures_sim_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), index=True)
+    account_session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(), unique=True, index=True, default=uuid.uuid4
+    )
+    status: Mapped[str] = mapped_column(String(10), default="ACTIVE", index=True)
+    wallet_balance: Mapped[float] = mapped_column(Numeric(24, 8))
+    realized_pnl_total: Mapped[float] = mapped_column(Numeric(24, 8), default=0)
+    fees_paid_total: Mapped[float] = mapped_column(Numeric(24, 8), default=0)
+    funding_paid_total: Mapped[float] = mapped_column(Numeric(24, 8), default=0)
+    peak_equity: Mapped[float] = mapped_column(Numeric(24, 8))
+    max_drawdown_pct: Mapped[float] = mapped_column(Numeric(10, 4), default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "uq_futures_sim_account_active_name",
+            "name",
+            unique=True,
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
+    )
+
+
+class FuturesSimPosition(Base):
+    """One futures position, mutable while OPEN (unlike this file's
+    append-only forecast/grade tables, a live position genuinely is a
+    single mutable thing until it closes -- there is exactly one current
+    truth for "how big is this position right now"). `mark_price` is
+    updated by the engine on every recompute; `unrealized_pnl` is
+    deliberately NOT a stored column -- it's always derived from
+    `mark_price`/`entry_price`/`quantity`/`side` at read time (see
+    app.services.futures_sim.engine.position_pnl()), so `mark_price`
+    being current is the only thing that ever needs updating, never two
+    numbers that could drift out of sync with each other.
+    `liquidation_price` is recomputed by the engine on every mark-price
+    tick and on every margin-affecting event (see
+    docs/FUTURES_SIMULATOR_MATH.md for the exact formula, which differs
+    for ISOLATED vs CROSS)."""
+
+    __tablename__ = "futures_sim_positions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("futures_sim_accounts.id", ondelete="CASCADE"), index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    side: Mapped[str] = mapped_column(String(5))  # LONG / SHORT
+    margin_mode: Mapped[str] = mapped_column(String(10))  # ISOLATED / CROSS
+    leverage: Mapped[int] = mapped_column()
+    quantity: Mapped[float] = mapped_column(Numeric(24, 8))
+    entry_price: Mapped[float] = mapped_column(Numeric(24, 8))
+    mark_price: Mapped[float] = mapped_column(Numeric(24, 8))
+    initial_margin: Mapped[float] = mapped_column(Numeric(24, 8))
+    maintenance_margin: Mapped[float] = mapped_column(Numeric(24, 8))
+    realized_pnl: Mapped[float] = mapped_column(Numeric(24, 8), default=0)
+    liquidation_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    sl_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    tp_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    status: Mapped[str] = mapped_column(String(12), default="OPEN", index=True)
+    close_reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FuturesSimOrder(Base):
+    """One simulated order. `client_order_id` is the idempotency key
+    (task requirement: open/close/cancel must never double-execute from a
+    double click, network retry, or WebSocket duplicate) -- the engine
+    upserts on this, never blindly inserts. `position_side` is the
+    LONG/SHORT this order acts on, distinct from `side` (BUY/SELL) per
+    Binance's own one-way convention: BUY opens/adds LONG or closes
+    SHORT; SELL opens/adds SHORT or closes LONG -- `reduce_only` plus
+    `position_side` together are what the engine uses to decide which."""
+
+    __tablename__ = "futures_sim_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("futures_sim_accounts.id", ondelete="CASCADE"), index=True
+    )
+    position_id: Mapped[int | None] = mapped_column(
+        ForeignKey("futures_sim_positions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    client_order_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    side: Mapped[str] = mapped_column(String(4))  # BUY / SELL
+    position_side: Mapped[str] = mapped_column(String(5))  # LONG / SHORT
+    order_type: Mapped[str] = mapped_column(String(20))
+    margin_mode: Mapped[str] = mapped_column(String(10))
+    leverage: Mapped[int] = mapped_column()
+    quantity: Mapped[float] = mapped_column(Numeric(24, 8))
+    price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    stop_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    reduce_only: Mapped[bool] = mapped_column(default=False)
+    status: Mapped[str] = mapped_column(String(20), default="NEW", index=True)
+    requested_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    estimated_fill_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    actual_fill_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    slippage_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    filled_quantity: Mapped[float] = mapped_column(Numeric(24, 8), default=0)
+    fee_rate_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    fee_amount: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
+    reject_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # "manual" or "ai_assisted" (Paper Trade Tagging) -- prediction_id
+    # links to PriceForecastSnapshot.id when ai_assisted, so AI-assisted
+    # vs manual win rate can be compared later without a new FK/relationship
+    # (PriceForecastSnapshot is append-only and never deleted, so a plain
+    # int reference is safe and matches how this codebase already treats
+    # cross-domain references it doesn't want a hard FK coupling to).
+    strategy_tag: Mapped[str] = mapped_column(String(20), default="manual")
+    prediction_id: Mapped[int | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FuturesSimTrade(Base):
+    """One CLOSING execution (a realized trade) -- Trade History is built
+    entirely from this table, distinct from Order History (every order,
+    filled or not) and Position History (the position's own lifecycle
+    summary). A position that's partially closed twice and then fully
+    closed produces three FuturesSimTrade rows against the same
+    `position_id`, each with its own entry/exit/PnL/duration -- never one
+    row silently overwritten."""
+
+    __tablename__ = "futures_sim_trades"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("futures_sim_accounts.id", ondelete="CASCADE"), index=True
+    )
+    position_id: Mapped[int] = mapped_column(
+        ForeignKey("futures_sim_positions.id", ondelete="CASCADE"), index=True
+    )
+    order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("futures_sim_orders.id", ondelete="SET NULL"), nullable=True
+    )
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    side: Mapped[str] = mapped_column(String(5))
+    leverage: Mapped[int] = mapped_column()
+    entry_price: Mapped[float] = mapped_column(Numeric(24, 8))
+    exit_price: Mapped[float] = mapped_column(Numeric(24, 8))
+    quantity: Mapped[float] = mapped_column(Numeric(24, 8))
+    gross_pnl: Mapped[float] = mapped_column(Numeric(24, 8))
+    fees: Mapped[float] = mapped_column(Numeric(24, 8), default=0)
+    funding: Mapped[float] = mapped_column(Numeric(24, 8), default=0)
+    net_pnl: Mapped[float] = mapped_column(Numeric(24, 8))
+    roi_pct: Mapped[float] = mapped_column(Numeric(10, 4))
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )
+    duration_seconds: Mapped[int] = mapped_column()
+    exit_reason: Mapped[str] = mapped_column(String(20))
+    strategy_tag: Mapped[str] = mapped_column(String(20), default="manual")
+    prediction_id: Mapped[int | None] = mapped_column(nullable=True)
+    # Strategy Journal (optional, per trade): strategy_label is a coarse
+    # tag (Breakout/Trend/MeanReversion/News/AISignal/Other); note is the
+    # free-text "why did I enter/exit" the task asks for; self_assessment_tags
+    # is the Trade Review checklist (Good Entry/Overleveraged/Ignored Stop/
+    # etc.) -- all optional and honestly empty/None until a user fills them in.
+    strategy_label: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    self_assessment_tags: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class FuturesSimLedgerEntry(Base):
+    """Immutable append-only account ledger -- every balance-affecting
+    event (task: DEPOSIT/WITHDRAWAL/OPEN/CLOSE/FEE/FUNDING/REALIZED_PNL/
+    LIQUIDATION/RESET), each row carrying the exact signed `amount` and
+    the account's `balance_after` at that moment, so the account's full
+    wallet_balance history can always be reconstructed independently of
+    the current FuturesSimAccount row -- even though there are no real
+    withdrawals in a demo account, this ledger is what proves the balance
+    is honest. `reference_type`/`reference_id` point at the order/
+    position/trade that caused the entry, when there is one (RESET/DEPOSIT
+    have none)."""
+
+    __tablename__ = "futures_sim_ledger_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("futures_sim_accounts.id", ondelete="CASCADE"), index=True
+    )
+    event_type: Mapped[str] = mapped_column(String(20), index=True)
+    amount: Mapped[float] = mapped_column(Numeric(24, 8))
+    balance_after: Mapped[float] = mapped_column(Numeric(24, 8))
+    reference_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    reference_id: Mapped[int | None] = mapped_column(nullable=True)
+    description: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, index=True
+    )

@@ -298,7 +298,11 @@ class Settings(BaseSettings):
     # is a US-licensed exchange with no comparable reason to block
     # US-origin/cloud traffic.
     realtime_enabled: bool = True
-    realtime_watchlist: str = "BTC,ETH,SOL,BNB,XRP,LINK,UNI"
+    # Futures Simulator (Phase 4): extended to the simulator's full
+    # 10-symbol supported-asset list (was missing DOGE/AVAX/SUI) --
+    # to_coinbase_product() builds "{SYMBOL}-USD" generically, and Coinbase
+    # lists all three, so this is a watchlist entry, not new client code.
+    realtime_watchlist: str = "BTC,ETH,SOL,BNB,XRP,DOGE,LINK,AVAX,SUI,UNI"
     realtime_ws_url: str = "wss://ws-feed.exchange.coinbase.com"
     # Comma-separated seconds; reconnect attempts walk this list and hold
     # at the last value rather than growing unbounded or tight-looping.
@@ -360,4 +364,29 @@ class Settings(BaseSettings):
     # regimes before it's worth surfacing at all -- filters out noise
     # from two buckets that are statistically indistinguishable.
     learning_insight_min_sample_size: int = 5
+
+    # ---- Futures Simulator: demo/paper-trading terminal ----
+    # Everything below configures a fully virtual futures account -- no
+    # real money, no real exchange orders, no Binance API keys anywhere in
+    # this codebase. Real market data (price/candles) drives execution;
+    # only the account/position/order/fee/funding/liquidation state is
+    # simulated. See docs/FUTURES_SIMULATOR.md and
+    # docs/FUTURES_SIMULATOR_MATH.md for the full model.
+    futures_sim_symbols: str = "BTC,ETH,SOL,BNB,XRP,DOGE,LINK,AVAX,SUI,UNI"
+    futures_sim_initial_balance_usd: float = 10000.0
+    # Binance USDT-M's own default (non-VIP) schedule -- used only as a
+    # realistic starting point for the simulated fee schedule, not fetched
+    # live from any exchange.
+    futures_sim_maker_fee_pct: float = 0.02
+    futures_sim_taker_fee_pct: float = 0.04
+    # Applied to every simulated MARKET order fill (both directions) --
+    # never zero, since a real market order always crosses some spread.
+    futures_sim_market_slippage_pct: float = 0.02
+    futures_sim_leverage_options: str = "1,2,3,5,10,15,20,25,30,50,75"
+    # Per-symbol leverage/maintenance-margin brackets are SIMULATED (see
+    # FUTURES_LEVERAGE_BRACKETS in app.services.futures_sim.engine) --
+    # this is the fallback used only if a symbol is somehow missing from
+    # that table, kept deliberately conservative.
+    futures_sim_default_max_leverage: int = 20
+    futures_sim_default_maintenance_margin_pct: float = 1.0
     learning_insight_min_gap_pct: float = 15.0

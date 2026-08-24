@@ -31,6 +31,12 @@ def test_registry_covers_the_expected_symbol_universe():
         "SOL",
         "LINK",
         "UNI",
+        # crypto (Futures Simulator's full 10-symbol supported-asset list)
+        "BNB",
+        "XRP",
+        "DOGE",
+        "AVAX",
+        "SUI",
         # macro
         "DXY",
         "GOLD",
