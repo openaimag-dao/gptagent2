@@ -66,8 +66,10 @@ def _aggregate_stats(rows: list[PriceForecastSnapshot]) -> dict:
         if r.regime_mean_baseline_error_pct is not None
     ]
     target_reached_graded = [r.target_reached for r in rows if r.target_reached is not None]
+    crps_values = [float(r.crps_pct) for r in rows if r.crps_pct is not None]
 
     avg_abs_error_pct = round(sum(errors) / len(errors), 4) if errors else None
+    avg_crps_pct = round(sum(crps_values) / len(crps_values), 4) if crps_values else None
     direction_accuracy_pct = (
         round(100 * sum(direction_graded) / len(direction_graded), 2) if direction_graded else None
     )
@@ -89,6 +91,12 @@ def _aggregate_stats(rows: list[PriceForecastSnapshot]) -> dict:
     return {
         "evaluated_count": len(rows),
         "avg_abs_error_pct": avg_abs_error_pct,
+        # Forecasting 3.0 (Phase 5/12/13): a DISTINCT metric from
+        # avg_abs_error_pct -- CRPS scores the whole predicted
+        # distribution (p10..p90), not just the point-forecast error, so
+        # a forecast can have the same MAE as another but a better (or
+        # worse) CRPS depending on how well-calibrated its spread was.
+        "avg_crps_pct": avg_crps_pct,
         "direction_accuracy_pct": direction_accuracy_pct,
         "confidence_accuracy_pct": (
             round(100 * sum(confidence_graded) / len(confidence_graded), 2)

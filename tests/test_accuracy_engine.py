@@ -28,6 +28,7 @@ def _row(
     historical_mean_baseline_error_pct=None,
     zero_return_baseline_error_pct=None,
     regime_mean_baseline_error_pct=None,
+    crps_pct=None,
     regime_at_forecast=None,
     target_reached=None,
 ):
@@ -46,6 +47,7 @@ def _row(
         historical_mean_baseline_error_pct=historical_mean_baseline_error_pct,
         zero_return_baseline_error_pct=zero_return_baseline_error_pct,
         regime_mean_baseline_error_pct=regime_mean_baseline_error_pct,
+        crps_pct=crps_pct,
         regime_at_forecast=regime_at_forecast,
         target_reached=target_reached,
     )
@@ -82,6 +84,7 @@ def test_aggregate_stats_real_averages():
     assert stats["beats_zero_return_baseline"] is None
     assert stats["regime_mean_baseline_avg_abs_error_pct"] is None
     assert stats["beats_regime_mean_baseline"] is None
+    assert stats["avg_crps_pct"] is None
 
 
 def test_aggregate_stats_honest_none_when_nothing_graded():
@@ -181,6 +184,16 @@ def test_aggregate_stats_does_not_beat_regime_mean_baseline_when_worse():
     ]
     stats = _aggregate_stats(rows)
     assert stats["beats_regime_mean_baseline"] is False
+
+
+def test_aggregate_stats_averages_crps_only_over_scored_rows():
+    rows = [
+        _row(crps_pct=0.5),
+        _row(crps_pct=1.5),
+        _row(crps_pct=None),  # no quantiles to score -- excluded, not zero
+    ]
+    stats = _aggregate_stats(rows)
+    assert stats["avg_crps_pct"] == 1.0
 
 
 # ---- Forecast Intelligence Upgrade: target_reached (intrabar touch) --------

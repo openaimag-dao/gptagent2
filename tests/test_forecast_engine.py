@@ -20,11 +20,13 @@ from app.services.forecast.engine import (
     check_target_reached,
     classify_direction_label,
     classify_error_type,
+    compute_crps_pct,
     compute_excursions,
     compute_expected_max_drawdown_pct,
     compute_historical_mean_baseline_error_pct,
     compute_horizon_consistency,
     compute_momentum_score,
+    compute_pinball_loss,
     compute_prediction_range,
     compute_price_path,
     compute_price_target,
@@ -726,6 +728,52 @@ def test_compute_regime_mean_baseline_return_pct_averages_only_regime_matched_wi
     assert result == 5.0
 
 
+def test_compute_pinball_loss_zero_when_realized_matches_quantile_exactly():
+    assert compute_pinball_loss(0.5, 3.0, 3.0) == 0.0
+
+
+def test_compute_pinball_loss_penalizes_underestimate_by_tau():
+    # realized (5.0) is ABOVE the stated quantile (3.0) -- penalized by tau
+    assert compute_pinball_loss(0.9, 3.0, 5.0) == round((5.0 - 3.0) * 0.9, 10)
+
+
+def test_compute_pinball_loss_penalizes_overestimate_by_one_minus_tau():
+    # realized (1.0) is BELOW the stated quantile (3.0) -- penalized by 1-tau
+    assert round(compute_pinball_loss(0.9, 3.0, 1.0), 10) == 0.2
+
+
+def test_compute_crps_pct_none_without_any_quantiles():
+    empty = {"p10_pct": None, "p25_pct": None, "p50_pct": None, "p75_pct": None, "p90_pct": None}
+    assert compute_crps_pct(empty, 3.0) is None
+
+
+def test_compute_crps_pct_zero_when_realized_matches_every_quantile():
+    # a (degenerate) distribution that's a point mass exactly at the
+    # realized outcome scores a perfect 0 -- every pinball loss is 0.
+    quantiles = {"p10_pct": 2.0, "p25_pct": 2.0, "p50_pct": 2.0, "p75_pct": 2.0, "p90_pct": 2.0}
+    assert compute_crps_pct(quantiles, 2.0) == 0.0
+
+
+def test_compute_crps_pct_scores_partial_quantile_sets_honestly():
+    # only p50 available (e.g. an older/degraded sample) -- CRPS still
+    # computes from what IS there, not fabricated from missing quantiles.
+    quantiles = {"p10_pct": None, "p25_pct": None, "p50_pct": 1.0, "p75_pct": None, "p90_pct": None}
+    result = compute_crps_pct(quantiles, 3.0)
+    # single quantile at tau=0.5: pinball loss = (3.0-1.0)*0.5 = 1.0; CRPS = 2*mean([1.0]) = 2.0
+    assert result == 2.0
+
+
+def test_compute_crps_pct_rewards_a_sharper_distribution_around_the_same_correct_median():
+    # both distributions are centered on the SAME median, which is also
+    # exactly what happened -- CRPS should still prefer the sharper
+    # (narrower) one, since an unnecessarily wide spread around a correct
+    # outcome is a less useful forecast, not an equally good one.
+    narrow = {"p10_pct": 0.8, "p25_pct": 0.9, "p50_pct": 1.0, "p75_pct": 1.1, "p90_pct": 1.2}
+    wide = {"p10_pct": -4.0, "p25_pct": -1.0, "p50_pct": 1.0, "p75_pct": 3.0, "p90_pct": 6.0}
+    realized = 1.0
+    assert compute_crps_pct(wide, realized) > compute_crps_pct(narrow, realized)
+
+
 # ---- Forecast Intelligence Upgrade: target_reached (intrabar touch) --------
 
 
@@ -898,6 +946,11 @@ async def test_grade_price_forecasts_computes_baseline_comparisons():
         current_price=100.0,
         direction="Bullish",
         regime_at_forecast="risk_on",
+        p10_pct=0.0,
+        p25_pct=2.0,
+        p50_pct=4.0,
+        p75_pct=6.0,
+        p90_pct=8.0,
     )
     db_row = SimpleNamespace(
         realized_price=None,
@@ -938,6 +991,10 @@ async def test_grade_price_forecasts_computes_baseline_comparisons():
     # candle is tagged "risk_on", matching this forecast's own regime) --
     # same naive target 105.0, so the same zero error
     assert db_row.regime_mean_baseline_error_pct == 0.0
+    # CRPS scored against this row's own persisted p10..p90 (0/2/4/6/8)
+    # and the realized 5.0% return (same figure zero_return_baseline_
+    # error_pct computed above) -- 2 * mean(pinball losses) = 0.92
+    assert db_row.crps_pct == 0.92
 
 
 async def test_grade_price_forecasts_preserves_invalidated_status():
@@ -1152,6 +1209,13 @@ async def test_persist_assigns_incrementing_forecast_version():
         "key_levels": {},
         "confidence": {"effective_confidence_pct": 55},
         "data_quality": {"data_quality_score": 80},
+        "forward_return_quantiles": {
+            "p10_pct": -5.0,
+            "p25_pct": -2.0,
+            "p50_pct": 1.0,
+            "p75_pct": 4.0,
+            "p90_pct": 7.0,
+        },
     }
     version = await engine._persist(
         payload,
@@ -1170,6 +1234,11 @@ async def test_persist_assigns_incrementing_forecast_version():
     # already-computed payload, not re-derived.
     assert added.calibrated_confidence_pct == 55
     assert added.data_quality_score == 80
+    # Forecasting 3.0 (Phase 5/12/13): the same quantiles persisted so a
+    # later grading pass can score this row's own distribution via CRPS.
+    assert added.p10_pct == -5.0
+    assert added.p50_pct == 1.0
+    assert added.p90_pct == 7.0
 
 
 async def test_persist_starts_at_version_one_when_no_prior_forecast():
@@ -1189,6 +1258,13 @@ async def test_persist_starts_at_version_one_when_no_prior_forecast():
         "key_levels": {},
         "confidence": {"effective_confidence_pct": 55},
         "data_quality": {"data_quality_score": 80},
+        "forward_return_quantiles": {
+            "p10_pct": -5.0,
+            "p25_pct": -2.0,
+            "p50_pct": 1.0,
+            "p75_pct": 4.0,
+            "p90_pct": 7.0,
+        },
     }
     version = await engine._persist(
         payload,
@@ -1224,6 +1300,13 @@ async def test_persist_supersedes_prior_active_forecasts_for_same_symbol_horizon
         "key_levels": {},
         "confidence": {"effective_confidence_pct": 55},
         "data_quality": {"data_quality_score": 80},
+        "forward_return_quantiles": {
+            "p10_pct": -5.0,
+            "p25_pct": -2.0,
+            "p50_pct": 1.0,
+            "p75_pct": 4.0,
+            "p90_pct": 7.0,
+        },
     }
     version = await engine._persist(
         payload,
@@ -1262,6 +1345,13 @@ async def test_persist_official_daily_skips_insert_when_todays_row_already_exist
         "key_levels": {},
         "confidence": {"effective_confidence_pct": 55},
         "data_quality": {"data_quality_score": 80},
+        "forward_return_quantiles": {
+            "p10_pct": -5.0,
+            "p25_pct": -2.0,
+            "p50_pct": 1.0,
+            "p75_pct": 4.0,
+            "p90_pct": 7.0,
+        },
     }
     version = await engine._persist(
         payload,
@@ -1293,6 +1383,13 @@ async def test_persist_official_daily_inserts_and_stamps_official_fields_when_no
         "key_levels": {},
         "confidence": {"effective_confidence_pct": 55},
         "data_quality": {"data_quality_score": 80},
+        "forward_return_quantiles": {
+            "p10_pct": -5.0,
+            "p25_pct": -2.0,
+            "p50_pct": 1.0,
+            "p75_pct": 4.0,
+            "p90_pct": 7.0,
+        },
     }
     version = await engine._persist(
         payload,
@@ -1329,6 +1426,13 @@ async def test_persist_stamps_the_current_forecast_model_version():
         "key_levels": {},
         "confidence": {"effective_confidence_pct": 55},
         "data_quality": {"data_quality_score": 80},
+        "forward_return_quantiles": {
+            "p10_pct": -5.0,
+            "p25_pct": -2.0,
+            "p50_pct": 1.0,
+            "p75_pct": 4.0,
+            "p90_pct": 7.0,
+        },
     }
     await engine._persist(
         payload,
