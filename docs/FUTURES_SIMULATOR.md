@@ -209,6 +209,39 @@ drawdown/profit factor/etc.) rather than a parallel metrics engine — each
 trade's ROI-on-margin feeds those ratios as its "return," the same
 equity-curve-over-a-return-sequence model that module already assumes.
 
+## Risk metrics
+
+`GET /api/simulator/risk` classifies the account's *current* state into
+warnings the dashboard can surface — margin ratio, distance to
+liquidation per open position, position concentration, account drawdown,
+and today's realized+unrealized PnL as a percent of equity. It is
+**permissive by default**, per the task's own requirement: nothing here
+blocks or rejects an action, it only labels the current state as
+`HIGH_RISK` (elevated margin ratio, or a large daily loss), 
+`NEAR_LIQUIDATION` (a specific position within
+`futures_sim_risk_near_liquidation_pct` of its liquidation price), or
+`MARGIN_WARNING` (available margin below
+`futures_sim_risk_margin_warning_available_pct` of equity) — all four
+thresholds are `futures_sim_risk_*` settings, not hardcoded.
+
+`app.services.futures_sim.risk.compute_risk_metrics` is a pure function
+with zero I/O: the API layer does the one query it needs (today's closed
+trades, to sum `net_pnl` into `todays_realized_pnl`) and reuses the same
+`get_account_state()`/mark-price-enriched positions the account and
+positions endpoints already compute — no parallel data path. Distance to
+liquidation is measured as a percent of the position's own mark price
+(matching the mark-price-vs-raw-price scoping documented above and in
+§10 of the math doc — risk display uses the same enriched positions the
+`/positions` endpoint returns, so it inherits the SIMULATED mark price
+there), and is `None` when a position doesn't have a liquidation price
+yet.
+
+Live-verified against the real running server: opened a real 50x BTC
+long against live market data (entry 78846.14, liquidation 77584.60 —
+1.58% away), confirmed `/risk` returned the same 1.58% distance and a
+`NEAR_LIQUIDATION` warning naming that position, then closed the
+position and confirmed `/risk` returned to a zeroed, warning-free state.
+
 ## API surface (as of this document)
 
 ```
@@ -223,6 +256,7 @@ POST   /api/simulator/positions/{id}/close [admin]
 POST   /api/simulator/positions/{id}/sl-tp [admin]
 GET    /api/simulator/trades
 GET    /api/simulator/performance
+GET    /api/simulator/risk
 GET    /api/simulator/ledger
 ```
 
@@ -325,6 +359,11 @@ section — summarized here:
 - Performance breakdowns (`by_side`/`by_symbol`/`by_leverage`/`by_strategy`)
   compute over every closed trade with no pagination or date-range filter
   yet — fine at demo-account trade volumes, would need one at scale.
+- `GET /api/simulator/risk` has no dashboard panel yet — the backend
+  endpoint is complete and live-verified, but the RISK tab/widget the
+  task describes (max risk settings, prominent warning banners) is not
+  yet built on the frontend. Optional per-account Max Risk Settings
+  (task's own "optional" note) are also not yet implemented.
 
 ## Confirmations
 

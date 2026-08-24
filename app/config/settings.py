@@ -415,4 +415,12 @@ class Settings(BaseSettings):
     # own mark-price formula (this project has no real index-price feed to
     # match against).
     futures_sim_mark_price_ema_alpha: float = 0.3
+    # Risk warning thresholds (task: HIGH RISK / NEAR LIQUIDATION / MARGIN
+    # WARNING labels) -- permissive by default, matching the task's own
+    # "permissive by default but warnings visible" requirement. Never
+    # block an action, only surface a warning.
+    futures_sim_risk_high_margin_ratio_pct: float = 50.0
+    futures_sim_risk_near_liquidation_pct: float = 5.0
+    futures_sim_risk_margin_warning_available_pct: float = 10.0
+    futures_sim_risk_daily_loss_warning_pct: float = 5.0
     learning_insight_min_gap_pct: float = 15.0

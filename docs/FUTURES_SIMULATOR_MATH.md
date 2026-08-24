@@ -349,6 +349,32 @@ position (a partial close leaves the accumulated funding attributed to
 the remaining position rather than proportionally splitting it — a
 documented simplification).
 
+## 14. Risk metrics
+
+```
+distance_to_liquidation_pct = 100 * (mark_price - liquidation_price) / mark_price   (LONG)
+                             = 100 * (liquidation_price - mark_price) / mark_price   (SHORT)
+
+concentration_pct[i]        = 100 * notional[i] / sum(notional)
+
+daily_pnl                   = todays_realized_pnl + unrealized_pnl
+daily_loss_pct               = -100 * daily_pnl / equity   (only when daily_pnl < 0, else None)
+```
+
+`app.services.futures_sim.risk.compute_risk_metrics` is a pure, zero-I/O
+function over data the API layer already has — the same mark-price-
+enriched positions §10 describes and the `get_account_state()` equity/
+margin-ratio/available-margin the account endpoint already computes.
+`todays_realized_pnl` is the caller's own responsibility (sum of today's
+closed trades' `net_pnl`); this function does no trade-history query
+itself. Warning thresholds (`futures_sim_risk_high_margin_ratio_pct`,
+`futures_sim_risk_near_liquidation_pct`,
+`futures_sim_risk_margin_warning_available_pct`,
+`futures_sim_risk_daily_loss_warning_pct`) are all configurable settings,
+never hardcoded — and, per the task's own "permissive by default"
+requirement, none of them block or reject anything; they only classify
+the account's current state for display.
+
 ---
 
 ## Known limitations (as of this document)
@@ -374,3 +400,8 @@ documented simplification).
   a position/order can theoretically remain past its trigger price for up
   to one polling interval before being auto-closed/filled. Fine for a
   training tool; not a claim of real-time exchange-grade latency.
+- Risk metrics' `distance_to_liquidation_pct` (§14) is `None` for a
+  position without a computed liquidation price yet (see §8b's own
+  documented CROSS-margin deferral), and `daily_loss_pct`/`daily_pnl`
+  depend on the caller supplying `todays_realized_pnl` correctly — the
+  function itself does no trade-history query.
