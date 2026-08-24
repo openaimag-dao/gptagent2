@@ -31,6 +31,7 @@ from app.services.forecast.engine import (
     compute_price_path,
     compute_price_target,
     compute_probability_distribution,
+    compute_quantile_coverage,
     compute_regime_mean_baseline_return_pct,
     compute_scenario_cases,
     compute_zero_return_baseline_error_pct,
@@ -1729,6 +1730,40 @@ def test_derive_official_calibration_curve_clamps_100_pct_into_last_bucket():
     assert curve[0]["probability_bucket"] == "80-100%"
 
 
+def test_compute_quantile_coverage_empty_input_is_honestly_none():
+    result = compute_quantile_coverage([], 80.0)
+    assert result == {
+        "sample_size": 0,
+        "expected_coverage_pct": 80.0,
+        "observed_coverage_pct": None,
+        "coverage_gap_pct": None,
+        "sample_sufficiency": "insufficient",
+    }
+
+
+def test_compute_quantile_coverage_counts_realized_return_inside_the_band():
+    # 3 of 4 realized returns fall within [lower, upper] -- the 4th (12.0)
+    # is above its own upper bound (8.0) and correctly excluded.
+    graded = [
+        (0.0, 10.0, 5.0),  # inside
+        (-5.0, 5.0, 0.0),  # inside
+        (1.0, 9.0, 1.0),  # inside (boundary-inclusive)
+        (0.0, 8.0, 12.0),  # outside
+    ]
+    result = compute_quantile_coverage(graded, 80.0)
+    assert result["sample_size"] == 4
+    assert result["observed_coverage_pct"] == 75.0
+    assert result["expected_coverage_pct"] == 80.0
+    assert result["coverage_gap_pct"] == -5.0
+
+
+def test_compute_quantile_coverage_perfect_coverage_has_zero_gap():
+    graded = [(0.0, 10.0, 5.0), (0.0, 10.0, 5.0)]
+    result = compute_quantile_coverage(graded, 100.0)
+    assert result["observed_coverage_pct"] == 100.0
+    assert result["coverage_gap_pct"] == 0.0
+
+
 def test_derive_regime_performance_breakdown_gates_small_groups():
     graded = [("risk_on", True)] * 2 + [("risk_off", True)] * 5 + [("risk_off", False)] * 3
     result = derive_regime_performance_breakdown(graded, min_sample_size=5)
@@ -1765,6 +1800,11 @@ async def test_get_official_performance_combines_summary_calibration_and_regime(
                 error_pct=1.5,
                 target_reached=True,
                 regime_at_forecast="risk_on",
+                p10_pct=0.0,
+                p25_pct=1.0,
+                p75_pct=3.0,
+                p90_pct=4.0,
+                zero_return_baseline_error_pct=2.0,
             ),
             SimpleNamespace(
                 symbol="BTC",
@@ -1773,6 +1813,11 @@ async def test_get_official_performance_combines_summary_calibration_and_regime(
                 error_pct=-3.0,
                 target_reached=False,
                 regime_at_forecast="risk_on",
+                p10_pct=-4.0,
+                p25_pct=-3.0,
+                p75_pct=-1.0,
+                p90_pct=0.0,
+                zero_return_baseline_error_pct=-6.0,  # outside both its own bands
             ),
         ]
     )
@@ -1797,6 +1842,13 @@ async def test_get_official_performance_combines_summary_calibration_and_regime(
             "insufficient_sample": False,
         }
     ]
+    # Forecasting 3.0 (Phase 13): first row's realized return (2.0) falls
+    # inside its own P10-P90 (0.0-4.0); second row's (-6.0) falls outside
+    # its own (-4.0 to 0.0) -- 1 of 2 covered -> 50% observed vs 80% expected.
+    assert result["quantile_coverage"]["p10_p90"]["sample_size"] == 2
+    assert result["quantile_coverage"]["p10_p90"]["observed_coverage_pct"] == 50.0
+    assert result["quantile_coverage"]["p10_p90"]["coverage_gap_pct"] == -30.0
+    assert result["quantile_coverage"]["p25_p75"]["sample_size"] == 2
 
 
 async def test_get_official_performance_since_filters_by_evaluated_at():
