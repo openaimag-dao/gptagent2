@@ -124,3 +124,40 @@ def test_permissive_by_default_a_healthy_account_has_no_warnings():
     healthy_position = _position(mark_price=100_000.0, liquidation_price=50_000.0)
     result = compute_risk_metrics(_account_state(), [healthy_position])
     assert result["warnings"] == []
+
+
+def test_default_thresholds_are_reported_when_no_overrides_given():
+    result = compute_risk_metrics(_account_state(), [])
+    assert result["thresholds"]["near_liquidation_pct"] == 5.0
+
+
+def test_max_risk_settings_override_tightens_the_near_liquidation_warning():
+    position = _position(mark_price=100_000.0, liquidation_price=90_000.0)  # 10% away
+    # Default 5% threshold: no warning at 10% away.
+    default_result = compute_risk_metrics(_account_state(), [position])
+    assert not any(w["level"] == "NEAR_LIQUIDATION" for w in default_result["warnings"])
+
+    # Account-level override widens the "near" band to 15% -- now it fires.
+    overridden_result = compute_risk_metrics(
+        _account_state(), [position], risk_settings_overrides={"near_liquidation_pct": 15.0}
+    )
+    assert any(w["level"] == "NEAR_LIQUIDATION" for w in overridden_result["warnings"])
+    assert overridden_result["thresholds"]["near_liquidation_pct"] == 15.0
+
+
+def test_max_risk_settings_override_with_none_value_falls_back_to_default():
+    result = compute_risk_metrics(
+        _account_state(), [], risk_settings_overrides={"near_liquidation_pct": None}
+    )
+    assert result["thresholds"]["near_liquidation_pct"] == 5.0
+
+
+def test_max_risk_settings_override_only_affects_the_given_key():
+    result = compute_risk_metrics(
+        _account_state(margin_ratio=60.0),
+        [],
+        risk_settings_overrides={"near_liquidation_pct": 15.0},
+    )
+    # high_margin_ratio still uses the global default (60% >= 50%), so it still warns.
+    assert any(w["level"] == "HIGH_RISK" for w in result["warnings"])
+    assert result["thresholds"]["high_margin_ratio_pct"] == 50.0

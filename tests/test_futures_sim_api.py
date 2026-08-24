@@ -605,7 +605,7 @@ async def test_set_position_sl_tp_turns_order_rejected_into_http_400():
 
 async def test_get_risk_combines_account_state_and_open_positions():
     engine = AsyncMock()
-    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    engine.get_or_create_account.return_value = _fake_account()
     engine.get_account_state.return_value = {
         "equity": 10_000.0,
         "available_margin": 9_000.0,
@@ -742,3 +742,98 @@ async def test_update_trade_journal_rejects_an_unknown_self_assessment_tag():
             9, futures_sim.UpdateTradeJournalRequest(self_assessment_tags=["NotARealTag"])
         )
     assert exc_info.value.status_code == 400
+
+
+# ---- GET/POST /risk-settings -------------------------------------------
+
+
+def _fake_account(**overrides):
+    defaults = dict(
+        id=1,
+        risk_high_margin_ratio_pct=None,
+        risk_near_liquidation_pct=None,
+        risk_margin_warning_available_pct=None,
+        risk_daily_loss_warning_pct=None,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
+
+
+async def test_get_risk_settings_reports_no_overrides_by_default():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = _fake_account()
+    with patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine):
+        payload = await futures_sim.get_risk_settings()
+
+    assert payload["overrides"]["near_liquidation_pct"] is None
+    assert payload["defaults"]["near_liquidation_pct"] == 5.0
+
+
+async def test_get_risk_settings_reports_an_existing_override():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = _fake_account(risk_near_liquidation_pct=15.0)
+    with patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine):
+        payload = await futures_sim.get_risk_settings()
+
+    assert payload["overrides"]["near_liquidation_pct"] == 15.0
+
+
+async def test_update_risk_settings_sets_the_given_overrides():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    account = _fake_account()
+    session_factory, session = _session_ctx(get_return=account)
+
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
+    ):
+        payload = await futures_sim.update_risk_settings(
+            futures_sim.UpdateRiskSettingsRequest(near_liquidation_pct=15.0)
+        )
+
+    assert account.risk_near_liquidation_pct == 15.0
+    assert account.risk_high_margin_ratio_pct is None  # untouched field reverts to None
+    assert payload["overrides"]["near_liquidation_pct"] == 15.0
+    session.commit.assert_awaited_once()
+
+
+async def test_update_risk_settings_with_none_clears_an_existing_override():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    account = _fake_account(risk_near_liquidation_pct=15.0)
+    session_factory, _session = _session_ctx(get_return=account)
+
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
+    ):
+        await futures_sim.update_risk_settings(futures_sim.UpdateRiskSettingsRequest())
+
+    assert account.risk_near_liquidation_pct is None
+
+
+async def test_update_risk_settings_rejects_a_non_positive_threshold():
+    with pytest.raises(Exception):
+        futures_sim.UpdateRiskSettingsRequest(near_liquidation_pct=0)
+
+
+async def test_get_risk_passes_account_overrides_into_compute_risk_metrics():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = _fake_account(risk_near_liquidation_pct=15.0)
+    engine.get_account_state.return_value = {
+        "equity": 10_000.0,
+        "available_margin": 9_000.0,
+        "unrealized_pnl": 0.0,
+        "margin_ratio": 10.0,
+        "max_drawdown_pct": 0.0,
+    }
+    session_factory, _session = _session_ctx(scalars_return=[])
+
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
+    ):
+        payload = await futures_sim.get_risk()
+
+    assert payload["thresholds"]["near_liquidation_pct"] == 15.0

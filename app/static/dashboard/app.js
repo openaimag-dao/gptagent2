@@ -6312,8 +6312,83 @@ function futuresWarningTone(level) {
   return "bad"; // HIGH_RISK / NEAR_LIQUIDATION
 }
 
+const RISK_SETTINGS_FIELDS = [
+  ["high_margin_ratio_pct", "High Margin Ratio Warning (%)"],
+  ["near_liquidation_pct", "Near-Liquidation Warning (%)"],
+  ["margin_warning_available_pct", "Low Available Margin Warning (%)"],
+  ["daily_loss_warning_pct", "Daily Loss Warning (%)"],
+];
+
+// Task: optional, per-account Max Risk Settings -- overrides for the four
+// Risk Metrics warning thresholds. Never blocks trading, only changes
+// when a warning fires (same permissive-by-default philosophy as the
+// rest of the RISK tab).
+function futuresMaxRiskSettingsSection(riskSettings) {
+  const section = el("div", {}, [el("h3", {}, "Max Risk Settings")]);
+  section.appendChild(
+    el(
+      "p",
+      { class: "sub" },
+      "Optional per-account overrides for the warning thresholds above. Leave a field blank to use the global default. These never block trading."
+    )
+  );
+
+  const inputs = {};
+  const rows = RISK_SETTINGS_FIELDS.map(([key, label]) => {
+    const input = el("input", {
+      type: "number",
+      step: "any",
+      placeholder: `default: ${riskSettings.defaults[key]}`,
+    });
+    if (riskSettings.overrides[key] != null) input.value = riskSettings.overrides[key];
+    inputs[key] = input;
+    return el("div", { class: "controls" }, [el("label", { class: "sub" }, `${label}: `), input]);
+  });
+  for (const row of rows) section.appendChild(row);
+
+  const statusMsg = el("p", { class: "sub" });
+  const saveBtn = el("button", {}, "Save Max Risk Settings");
+  const resetBtn = el("button", {}, "Reset to Defaults");
+
+  async function submit(body) {
+    statusMsg.className = "sub";
+    statusMsg.textContent = "Saving...";
+    try {
+      await fetchJSONWithAdminKey("/api/simulator/risk-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, account_name: futuresAccountName() }),
+      });
+      navigate("futures", new URLSearchParams({ tab: "risk" }));
+    } catch (err) {
+      statusMsg.className = "error";
+      statusMsg.textContent = `Error: ${err.message}`;
+    }
+  }
+
+  saveBtn.addEventListener("click", () => {
+    const body = {};
+    for (const [key] of RISK_SETTINGS_FIELDS) {
+      body[key] = inputs[key].value === "" ? null : parseFloat(inputs[key].value);
+    }
+    submit(body);
+  });
+  resetBtn.addEventListener("click", () => {
+    const body = {};
+    for (const [key] of RISK_SETTINGS_FIELDS) body[key] = null;
+    submit(body);
+  });
+
+  section.appendChild(el("div", { class: "controls" }, [saveBtn, resetBtn]));
+  section.appendChild(statusMsg);
+  return section;
+}
+
 async function renderFuturesRiskTab() {
-  const risk = await safe(`/api/simulator/risk?name=${encodeURIComponent(futuresAccountName())}`);
+  const [risk, riskSettings] = await Promise.all([
+    safe(`/api/simulator/risk?name=${encodeURIComponent(futuresAccountName())}`),
+    safe(`/api/simulator/risk-settings?name=${encodeURIComponent(futuresAccountName())}`),
+  ]);
   const wrap = el("div", {});
   if (!risk) {
     wrap.appendChild(el("p", { class: "error" }, "Risk data unavailable."));
@@ -6363,6 +6438,8 @@ async function renderFuturesRiskTab() {
       )
     );
   }
+
+  if (riskSettings) wrap.appendChild(futuresMaxRiskSettingsSection(riskSettings));
   return wrap;
 }
 

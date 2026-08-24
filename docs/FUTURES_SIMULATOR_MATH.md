@@ -375,6 +375,18 @@ never hardcoded — and, per the task's own "permissive by default"
 requirement, none of them block or reject anything; they only classify
 the account's current state for display.
 
+**Max Risk Settings (optional, per-account):** each threshold can be
+overridden per account (`futures_sim_accounts.risk_*` columns, migration
+0046 — all nullable, `NULL` = "use the global default"). The API layer
+resolves the account's four columns into a `risk_settings_overrides`
+dict and passes it to `compute_risk_metrics`, which resolves each
+threshold independently (`_resolve_threshold`: override if non-`None`,
+else the global setting) — an account can override just one threshold
+without affecting the other three. The response's own `thresholds`
+object always reports the four resolved values actually used, so a
+caller never has to separately fetch the account's overrides to know
+what triggered (or didn't trigger) a warning.
+
 ---
 
 ## Known limitations (as of this document)

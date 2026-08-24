@@ -8,12 +8,13 @@ every other read endpoint in this app already behaves."""
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.api.admin import require_admin_key
 from app.config import get_settings
 from app.database.models import (
+    FuturesSimAccount,
     FuturesSimLedgerEntry,
     FuturesSimOrder,
     FuturesSimPosition,
@@ -77,6 +78,19 @@ class ClosePositionRequest(BaseModel):
 class SetStopLossTakeProfitRequest(BaseModel):
     sl_price: float | None = None
     tp_price: float | None = None  # either field omitted/None clears that trigger
+    account_name: str = DEFAULT_ACCOUNT_NAME
+
+
+class UpdateRiskSettingsRequest(BaseModel):
+    # Task: Max Risk Settings (optional, per-account). Each field is a
+    # full-replace override: a value sets it, None (the default, or an
+    # explicit null) reverts that one threshold back to the global
+    # futures_sim_risk_* setting. Never blocks trading -- only changes
+    # when a Risk Metrics warning fires.
+    high_margin_ratio_pct: float | None = Field(default=None, gt=0)
+    near_liquidation_pct: float | None = Field(default=None, gt=0)
+    margin_warning_available_pct: float | None = Field(default=None, gt=0)
+    daily_loss_warning_pct: float | None = Field(default=None, gt=0)
     account_name: str = DEFAULT_ACCOUNT_NAME
 
 
@@ -189,6 +203,27 @@ def _serialize_trade(trade: FuturesSimTrade) -> dict:
         "strategy_label": trade.strategy_label,
         "note": trade.note,
         "self_assessment_tags": trade.self_assessment_tags,
+    }
+
+
+def _account_risk_overrides(account: FuturesSimAccount) -> dict:
+    """Task: Max Risk Settings -- this account's own override for each
+    Risk Metrics warning threshold, or None where it hasn't set one (and
+    app.services.futures_sim.risk.compute_risk_metrics falls back to the
+    global futures_sim_risk_* setting)."""
+    return {
+        "high_margin_ratio_pct": float(account.risk_high_margin_ratio_pct)
+        if account.risk_high_margin_ratio_pct is not None
+        else None,
+        "near_liquidation_pct": float(account.risk_near_liquidation_pct)
+        if account.risk_near_liquidation_pct is not None
+        else None,
+        "margin_warning_available_pct": float(account.risk_margin_warning_available_pct)
+        if account.risk_margin_warning_available_pct is not None
+        else None,
+        "daily_loss_warning_pct": float(account.risk_daily_loss_warning_pct)
+        if account.risk_daily_loss_warning_pct is not None
+        else None,
     }
 
 
@@ -514,7 +549,49 @@ async def get_risk(name: str = DEFAULT_ACCOUNT_NAME) -> dict:
             }
         )
 
-    return compute_risk_metrics(account_state, positions, todays_realized_pnl)
+    return compute_risk_metrics(
+        account_state, positions, todays_realized_pnl, _account_risk_overrides(account)
+    )
+
+
+@router.get("/risk-settings")
+async def get_risk_settings(name: str = DEFAULT_ACCOUNT_NAME) -> dict:
+    """Task: Max Risk Settings -- this account's overrides alongside the
+    global defaults, so the dashboard can show which thresholds are
+    customized and what they'd fall back to."""
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(name)
+    settings = get_settings()
+    return {
+        "overrides": _account_risk_overrides(account),
+        "defaults": {
+            "high_margin_ratio_pct": settings.futures_sim_risk_high_margin_ratio_pct,
+            "near_liquidation_pct": settings.futures_sim_risk_near_liquidation_pct,
+            "margin_warning_available_pct": settings.futures_sim_risk_margin_warning_available_pct,
+            "daily_loss_warning_pct": settings.futures_sim_risk_daily_loss_warning_pct,
+        },
+    }
+
+
+@router.post("/risk-settings", dependencies=[Depends(require_admin_key)])
+async def update_risk_settings(request: UpdateRiskSettingsRequest) -> dict:
+    """Task: Max Risk Settings (optional, per-account). Full-replace: each
+    field either sets that account's override or (None) reverts it to the
+    global default. Never blocks trading -- same permissive-by-default
+    philosophy as the rest of Risk Metrics, this only changes when a
+    warning fires."""
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(request.account_name)
+    async with get_session_factory()() as session:
+        account = await session.get(FuturesSimAccount, account.id)
+        account.risk_high_margin_ratio_pct = request.high_margin_ratio_pct
+        account.risk_near_liquidation_pct = request.near_liquidation_pct
+        account.risk_margin_warning_available_pct = request.margin_warning_available_pct
+        account.risk_daily_loss_warning_pct = request.daily_loss_warning_pct
+        await session.commit()
+        await session.refresh(account)
+        overrides = _account_risk_overrides(account)
+    return {"overrides": overrides}
 
 
 @router.get("/ledger")
