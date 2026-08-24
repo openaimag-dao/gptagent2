@@ -222,7 +222,10 @@ blocks or rejects an action, it only labels the current state as
 `futures_sim_risk_near_liquidation_pct` of its liquidation price), or
 `MARGIN_WARNING` (available margin below
 `futures_sim_risk_margin_warning_available_pct` of equity) — all four
-thresholds are `futures_sim_risk_*` settings, not hardcoded.
+thresholds are `futures_sim_risk_*` settings, not hardcoded, and each can
+be overridden per-account by Max Risk Settings (below). The response's
+`thresholds` object always reports the four *effective* values used for
+that response (account override if set, else the global default).
 
 `app.services.futures_sim.risk.compute_risk_metrics` is a pure function
 with zero I/O: the API layer does the one query it needs (today's closed
@@ -270,6 +273,37 @@ Edit button to set a strategy label, two self-assessment tags, and a
 note, saved, and confirmed via a direct API read that the trade's
 journal fields persisted exactly as entered.
 
+## Max Risk Settings
+
+Optional (task's own "optional" note), per-account overrides for the
+four Risk Metrics warning thresholds — `futures_sim_accounts` gained four
+nullable columns (migration 0046) mirroring the `futures_sim_risk_*`
+settings; a `NULL` column means "use the global default", a non-`NULL`
+value overrides that one threshold for this account only. This never
+changes whether an order is accepted or a position can be opened — it
+only changes when a `HIGH_RISK`/`NEAR_LIQUIDATION`/`MARGIN_WARNING` label
+fires in `GET /api/simulator/risk`, preserving the same
+permissive-by-default philosophy as the rest of Risk Metrics.
+
+`GET /api/simulator/risk-settings` returns the account's current
+overrides alongside the global defaults (so the dashboard can show which
+are customized). `POST /api/simulator/risk-settings` [admin] is a
+full-replace: each of the four fields either sets that account's
+override or, left `null`, reverts it to the global default — there is no
+partial-update semantics here (unlike the Strategy Journal endpoint)
+because there's no other meaningful value for an unset threshold to
+have. `app.services.futures_sim.risk.compute_risk_metrics` takes the
+resolved overrides as an optional `risk_settings_overrides` dict, still
+zero I/O — the API layer reads the account's four columns and passes
+them in, the function itself does no new query.
+
+Live-verified against the real running server: set a 15% Near-Liquidation
+override for a demo account through the dashboard's RISK tab, confirmed
+via a direct API read that only that one field was overridden (the other
+three stayed `null`), then opened a real BTC position and confirmed
+`GET /risk`'s `thresholds.near_liquidation_pct` reported the overridden
+15% rather than the global 5% default.
+
 ## API surface (as of this document)
 
 ```
@@ -287,6 +321,8 @@ POST   /api/simulator/trades/{id}/journal  [admin]
 GET    /api/simulator/journal-options
 GET    /api/simulator/performance
 GET    /api/simulator/risk
+GET    /api/simulator/risk-settings
+POST   /api/simulator/risk-settings        [admin]
 GET    /api/simulator/ledger
 ```
 
@@ -298,9 +334,9 @@ real order on any real exchange.
 ## Dashboard
 
 A "Futures Simulator" nav item (`app/static/dashboard/app.js`,
-`renderFuturesSimulator`) adds a dedicated page with 8 sub-tabs mirroring
+`renderFuturesSimulator`) adds a dedicated page with 9 sub-tabs mirroring
 the task's own layout: TRADE / POSITIONS / OPEN ORDERS / ORDER HISTORY /
-TRADE HISTORY / PERFORMANCE / ACCOUNT HISTORY / SETTINGS. Every tab is
+TRADE HISTORY / PERFORMANCE / RISK / ACCOUNT HISTORY / SETTINGS. Every tab is
 plain vanilla JS calling the API surface above — no new frontend
 infrastructure, reusing the existing `el`/`table`/`card`/`fetchJSON`/
 `fetchJSONWithAdminKey` helpers and CSS tokens the rest of the dashboard
@@ -329,9 +365,11 @@ colors).
   available margin, max drawdown, daily PnL/loss, total exposure, open
   position count, largest position), a Warnings section (color-coded
   pills reusing the existing `decisionPill`/`.pill` system — no new CSS)
-  that reads "No active warnings" when the account is healthy, and an
-  Open Position Risk table (notional, concentration, distance to
-  liquidation per position).
+  that reads "No active warnings" when the account is healthy, an Open
+  Position Risk table (notional, concentration, distance to liquidation
+  per position), and a Max Risk Settings form (four optional override
+  fields, each showing the global default as its placeholder, plus Save
+  and Reset to Defaults buttons).
 - SETTINGS has the account-name switcher (a lightweight stand-in for the
   task's "New Demo Session" concept — different account names are
   fully separate demo accounts) and the Reset Demo Account button.
@@ -405,10 +443,10 @@ section — summarized here:
 - Performance breakdowns (`by_side`/`by_symbol`/`by_leverage`/`by_strategy`)
   compute over every closed trade with no pagination or date-range filter
   yet — fine at demo-account trade volumes, would need one at scale.
-- The RISK tab renders warnings and metrics but does not yet have
-  user-configurable Max Risk Settings (task's own "optional" note) —
-  the four warning thresholds are server-side settings today, not
-  editable per-account from the dashboard.
+- Max Risk Settings only override the four Risk Metrics warning
+  thresholds — it does not (and, per the task's own permissive-by-default
+  philosophy, should not) block orders, cap leverage, or enforce position
+  limits; it purely changes when a warning label appears.
 
 ## Confirmations
 

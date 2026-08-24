@@ -40,8 +40,22 @@ def _position_risk(position: dict) -> dict:
     }
 
 
+def _resolve_threshold(overrides: dict | None, key: str, default: float) -> float:
+    """Task: Max Risk Settings (optional, per-account) -- an account-level
+    override for one warning threshold, falling back to the global
+    futures_sim_risk_* setting when the account hasn't set one (None)."""
+    if overrides is not None:
+        value = overrides.get(key)
+        if value is not None:
+            return float(value)
+    return default
+
+
 def compute_risk_metrics(
-    account_state: dict, positions: list[dict], todays_realized_pnl: float = 0.0
+    account_state: dict,
+    positions: list[dict],
+    todays_realized_pnl: float = 0.0,
+    risk_settings_overrides: dict | None = None,
 ) -> dict:
     """Task: Risk Metrics (margin ratio, distance to liquidation,
     position concentration, account drawdown, daily loss, largest
@@ -50,8 +64,32 @@ def compute_risk_metrics(
     responsibility to compute (sum of today's closed trades' net_pnl) --
     this function only combines it with the account's current
     unrealized_pnl into a daily total, it does no trade-history query
-    itself."""
+    itself. `risk_settings_overrides` is the optional per-account Max
+    Risk Settings dict (keys: high_margin_ratio_pct, near_liquidation_pct,
+    margin_warning_available_pct, daily_loss_warning_pct) -- any key
+    that's missing or None falls back to the matching global setting."""
     settings = get_settings()
+    high_margin_ratio_threshold = _resolve_threshold(
+        risk_settings_overrides,
+        "high_margin_ratio_pct",
+        settings.futures_sim_risk_high_margin_ratio_pct,
+    )
+    near_liquidation_threshold = _resolve_threshold(
+        risk_settings_overrides,
+        "near_liquidation_pct",
+        settings.futures_sim_risk_near_liquidation_pct,
+    )
+    margin_warning_threshold = _resolve_threshold(
+        risk_settings_overrides,
+        "margin_warning_available_pct",
+        settings.futures_sim_risk_margin_warning_available_pct,
+    )
+    daily_loss_warning_threshold = _resolve_threshold(
+        risk_settings_overrides,
+        "daily_loss_warning_pct",
+        settings.futures_sim_risk_daily_loss_warning_pct,
+    )
+
     equity = float(account_state["equity"])
     available_margin = float(account_state["available_margin"])
     margin_ratio_pct = account_state.get("margin_ratio")
@@ -69,20 +107,14 @@ def compute_risk_metrics(
     daily_loss_pct = round(-100 * daily_pnl / equity, 4) if equity and daily_pnl < 0 else None
 
     warnings = []
-    if (
-        margin_ratio_pct is not None
-        and margin_ratio_pct >= settings.futures_sim_risk_high_margin_ratio_pct
-    ):
+    if margin_ratio_pct is not None and margin_ratio_pct >= high_margin_ratio_threshold:
         warnings.append(
             {
                 "level": "HIGH_RISK",
                 "message": f"Margin ratio {margin_ratio_pct}% is elevated",
             }
         )
-    if (
-        daily_loss_pct is not None
-        and daily_loss_pct >= settings.futures_sim_risk_daily_loss_warning_pct
-    ):
+    if daily_loss_pct is not None and daily_loss_pct >= daily_loss_warning_threshold:
         warnings.append(
             {
                 "level": "HIGH_RISK",
@@ -92,7 +124,7 @@ def compute_risk_metrics(
     for p in position_risks:
         if (
             p["distance_to_liquidation_pct"] is not None
-            and p["distance_to_liquidation_pct"] <= settings.futures_sim_risk_near_liquidation_pct
+            and p["distance_to_liquidation_pct"] <= near_liquidation_threshold
         ):
             warnings.append(
                 {
@@ -103,10 +135,7 @@ def compute_risk_metrics(
                     "position_id": p["position_id"],
                 }
             )
-    if (
-        available_margin_pct is not None
-        and available_margin_pct <= settings.futures_sim_risk_margin_warning_available_pct
-    ):
+    if available_margin_pct is not None and available_margin_pct <= margin_warning_threshold:
         warnings.append(
             {
                 "level": "MARGIN_WARNING",
@@ -125,4 +154,10 @@ def compute_risk_metrics(
         "largest_position": largest_position,
         "positions": position_risks,
         "warnings": warnings,
+        "thresholds": {
+            "high_margin_ratio_pct": high_margin_ratio_threshold,
+            "near_liquidation_pct": near_liquidation_threshold,
+            "margin_warning_available_pct": margin_warning_threshold,
+            "daily_loss_warning_pct": daily_loss_warning_threshold,
+        },
     }

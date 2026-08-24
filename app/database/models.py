@@ -1518,6 +1518,18 @@ class FuturesSimAccount(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Max Risk Settings (task: optional, per-account) -- each NULL means
+    # "use the global futures_sim_risk_* setting"; a non-NULL value
+    # overrides that one warning threshold for this account only. See
+    # app.services.futures_sim.risk for how these combine with the
+    # defaults.
+    risk_high_margin_ratio_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    risk_near_liquidation_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    risk_margin_warning_available_pct: Mapped[float | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
+    risk_daily_loss_warning_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+
     __table_args__ = (
         Index(
             "uq_futures_sim_account_active_name",
