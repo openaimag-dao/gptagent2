@@ -2789,6 +2789,7 @@ Chromium session.
 
 - [`docs/API.md`](docs/API.md) -- full endpoint reference (also live at `/docs` on a running instance)
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) -- Railway + Docker Compose deployment guide, including every real pitfall hit and fixed during this project's actual rollout
+- [`docs/FORECASTING_3_0.md`](docs/FORECASTING_3_0.md) -- closing report for the Forecasting 3.0 program (RMSE, the full 5-baseline challenge, CRPS, calibrated confidence, historical replay leakage validation): what already existed, what was missing, real coverage/win-rate/calibration numbers pulled live from a running instance, and honestly-scoped remaining limitations
 
 ## Configuration
 
