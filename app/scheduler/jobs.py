@@ -30,6 +30,7 @@ from app.services.forecast.engine import (
     check_and_invalidate_forecasts,
     grade_price_forecasts,
 )
+from app.services.futures_sim.funding import apply_funding_to_open_positions
 from app.services.futures_sim.monitor import check_positions_for_triggers
 from app.services.futures_sim.resting_orders import check_resting_orders_for_fills
 from app.services.global_score.engine import GlobalScoreEngine
@@ -117,6 +118,7 @@ FORECAST_WEEKLY_REVIEW_JOB_ID = "broadcast_forecast_weekly_review"
 ALERT_PERFORMANCE_GRADING_JOB_ID = "grade_alert_performance"
 FUTURES_SIM_POSITION_MONITOR_JOB_ID = "check_futures_sim_positions"
 FUTURES_SIM_ORDER_FILL_JOB_ID = "fill_futures_sim_orders"
+FUTURES_SIM_FUNDING_JOB_ID = "apply_futures_sim_funding"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -738,6 +740,21 @@ async def fill_futures_sim_orders_job() -> None:
         logger.exception("Futures Simulator order fill job failed")
 
 
+async def apply_futures_sim_funding_job() -> None:
+    """Futures Simulator (100% demo/paper trading, no real money): charges
+    (or pays) funding to every OPEN demo position, using real funding-rate
+    data (WhaleIntelligenceEngine) where available and a clearly-labeled
+    SIMULATED fallback rate otherwise. Runs every
+    futures_sim_funding_interval_hours, matching real exchanges' 8-hour
+    settlement cadence."""
+    try:
+        charged = await apply_funding_to_open_positions(get_session_factory(), get_redis())
+        if charged:
+            logger.info("Futures Simulator funding: %d position(s) charged", len(charged))
+    except Exception:
+        logger.exception("Futures Simulator funding job failed")
+
+
 async def test_hypotheses_job() -> None:
     engine = HypothesisEngine(get_session_factory())
     try:
@@ -1129,6 +1146,14 @@ def start_scheduler() -> AsyncIOScheduler:
             minutes=settings.futures_sim_position_monitor_interval_minutes, jitter=15
         ),
         id=FUTURES_SIM_ORDER_FILL_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _timed(apply_futures_sim_funding_job),
+        trigger=IntervalTrigger(hours=settings.futures_sim_funding_interval_hours, jitter=300),
+        id=FUTURES_SIM_FUNDING_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,

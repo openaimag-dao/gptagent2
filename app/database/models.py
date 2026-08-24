@@ -1560,6 +1560,13 @@ class FuturesSimPosition(Base):
     initial_margin: Mapped[float] = mapped_column(Numeric(24, 8))
     maintenance_margin: Mapped[float] = mapped_column(Numeric(24, 8))
     realized_pnl: Mapped[float] = mapped_column(Numeric(24, 8), default=0)
+    # Running total of funding fees charged against this position while
+    # OPEN (see app.services.futures_sim.funding). Rolled into the
+    # closing FuturesSimTrade.funding field when the position fully
+    # closes -- partial closes leave it attributed to the remaining
+    # position rather than being proportionally split, a documented
+    # simplification (see docs/FUTURES_SIMULATOR_MATH.md).
+    funding_paid: Mapped[float] = mapped_column(Numeric(24, 8), default=0)
     liquidation_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
     sl_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)
     tp_price: Mapped[float | None] = mapped_column(Numeric(24, 8), nullable=True)

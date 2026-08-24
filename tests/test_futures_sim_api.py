@@ -139,6 +139,7 @@ def _fake_position(**overrides):
         initial_margin=500.0,
         maintenance_margin=40.0,
         realized_pnl=0.0,
+        funding_paid=0.0,
         liquidation_price=95_400.0,
         sl_price=None,
         tp_price=None,

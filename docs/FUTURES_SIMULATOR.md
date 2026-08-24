@@ -165,9 +165,22 @@ amounts are never mixed into one ledger row.
   close/reduce/liquidation/SL/TP event), with `gross_pnl`, `fees`,
   `funding`, `net_pnl`, `roi_pct`, `duration_seconds`, `exit_reason`.
 - `GET /api/simulator/ledger` — the immutable, append-only balance ledger
-  (`DEPOSIT` / `RESET` / `OPEN` / `FEE` / `REALIZED_PNL`, more event types
-  as funding/withdrawal-style events are added), each row carrying the
-  exact signed `amount` and the resulting `balance_after`.
+  (`DEPOSIT` / `RESET` / `OPEN` / `FEE` / `REALIZED_PNL` / `FUNDING`),
+  each row carrying the exact signed `amount` and the resulting
+  `balance_after`.
+
+## Funding
+
+A scheduled job (`apply_futures_sim_funding_job`, every
+`futures_sim_funding_interval_hours` — default every 8 hours, matching
+real exchanges' own settlement cadence) charges (or pays) funding to
+every OPEN position. Uses real funding-rate data from the same
+`WhaleIntelligenceEngine` the Whale Intelligence page already reads
+(CoinGlass primary, CoinGecko derivatives fallback) where available;
+falls back to a configured rate — explicitly labeled `SIMULATED` in the
+ledger entry's description — when no real source has data for that
+symbol. See §13 of the math doc for the exact formula, sign convention,
+and how it interacts with a trade's `funding` field at close time.
 
 ## Performance analytics
 
@@ -279,8 +292,9 @@ exactly what had been pre-filled.
 Tracked in full in `docs/FUTURES_SIMULATOR_MATH.md`'s "Known limitations"
 section — summarized here:
 
-- Funding is not implemented (`funding` is always `0.0` in every PnL
-  calculation).
+- Funding settles on a fixed schedule (not the split-second timestamp a
+  real exchange settles at) and is not proportionally allocated on a
+  partial close — see §13 of the math doc.
 - Resting orders (LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET) do not reserve
   margin at placement time; they are re-checked at fill time and can be
   REJECTED then if margin has become insufficient in the meantime.
