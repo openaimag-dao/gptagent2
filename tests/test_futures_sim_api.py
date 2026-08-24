@@ -635,3 +635,110 @@ async def test_get_risk_combines_account_state_and_open_positions():
     assert payload["positions"][0]["symbol"] == "BTC"
     # daily_pnl combines today's realized trade (25.0) with current unrealized (50.0)
     assert payload["daily_pnl"] == pytest.approx(75.0)
+
+
+# ---- GET /journal-options ---------------------------------------------
+
+
+async def test_get_journal_options_returns_the_canonical_lists():
+    payload = await futures_sim.get_journal_options()
+    assert "Breakout" in payload["strategy_labels"]
+    assert "Good Entry" in payload["self_assessment_tags"]
+
+
+# ---- POST /trades/{id}/journal -----------------------------------------
+
+
+async def test_update_trade_journal_sets_the_provided_fields():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    trade = _fake_trade(account_id=1, strategy_label=None, note=None, self_assessment_tags=[])
+    session_factory, session = _session_ctx(get_return=trade)
+
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
+    ):
+        payload = await futures_sim.update_trade_journal(
+            9,
+            futures_sim.UpdateTradeJournalRequest(
+                strategy_label="Breakout",
+                note="Entered on the daily range break",
+                self_assessment_tags=["Good Entry", "Followed Plan"],
+            ),
+        )
+
+    assert trade.strategy_label == "Breakout"
+    assert trade.note == "Entered on the daily range break"
+    assert trade.self_assessment_tags == ["Good Entry", "Followed Plan"]
+    assert payload["trade"]["strategy_label"] == "Breakout"
+    session.commit.assert_awaited_once()
+
+
+async def test_update_trade_journal_leaves_omitted_fields_unchanged():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    trade = _fake_trade(
+        account_id=1,
+        strategy_label="Trend",
+        note="existing note",
+        self_assessment_tags=["Good Exit"],
+    )
+    session_factory, _session = _session_ctx(get_return=trade)
+
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
+    ):
+        await futures_sim.update_trade_journal(
+            9, futures_sim.UpdateTradeJournalRequest(note="updated note")
+        )
+
+    assert trade.strategy_label == "Trend"  # unchanged (request omitted it)
+    assert trade.note == "updated note"
+    assert trade.self_assessment_tags == ["Good Exit"]  # unchanged
+
+
+async def test_update_trade_journal_404s_when_the_trade_belongs_to_another_account():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    trade = _fake_trade(account_id=2)  # belongs to a different account
+    session_factory, _session = _session_ctx(get_return=trade)
+
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
+    ):
+        with pytest.raises(Exception) as exc_info:
+            await futures_sim.update_trade_journal(9, futures_sim.UpdateTradeJournalRequest())
+    assert exc_info.value.status_code == 404
+
+
+async def test_update_trade_journal_404s_when_the_trade_does_not_exist():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    session_factory, _session = _session_ctx(get_return=None)
+
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
+    ):
+        with pytest.raises(Exception) as exc_info:
+            await futures_sim.update_trade_journal(999, futures_sim.UpdateTradeJournalRequest())
+    assert exc_info.value.status_code == 404
+
+
+async def test_update_trade_journal_rejects_an_unknown_strategy_label():
+    with pytest.raises(Exception) as exc_info:
+        await futures_sim.update_trade_journal(
+            9, futures_sim.UpdateTradeJournalRequest(strategy_label="NotARealLabel")
+        )
+    assert exc_info.value.status_code == 400
+
+
+async def test_update_trade_journal_rejects_an_unknown_self_assessment_tag():
+    with pytest.raises(Exception) as exc_info:
+        await futures_sim.update_trade_journal(
+            9, futures_sim.UpdateTradeJournalRequest(self_assessment_tags=["NotARealTag"])
+        )
+    assert exc_info.value.status_code == 400

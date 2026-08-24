@@ -30,6 +30,12 @@ from app.services.futures_sim.engine import (
     get_mark_price,
     resolve_leverage_bracket,
 )
+from app.services.futures_sim.journal import (
+    SELF_ASSESSMENT_TAGS,
+    STRATEGY_LABELS,
+    InvalidJournalEntry,
+    validate_journal_update,
+)
 from app.services.futures_sim.orders import (
     OrderRejected,
     cancel_order,
@@ -71,6 +77,15 @@ class ClosePositionRequest(BaseModel):
 class SetStopLossTakeProfitRequest(BaseModel):
     sl_price: float | None = None
     tp_price: float | None = None  # either field omitted/None clears that trigger
+    account_name: str = DEFAULT_ACCOUNT_NAME
+
+
+class UpdateTradeJournalRequest(BaseModel):
+    # None means "leave this field unchanged" -- self_assessment_tags=[]
+    # (an empty list, not None) is how a caller clears the tag list.
+    strategy_label: str | None = None
+    note: str | None = None
+    self_assessment_tags: list[str] | None = None
     account_name: str = DEFAULT_ACCOUNT_NAME
 
 
@@ -396,6 +411,45 @@ async def get_trades(
         query = query.order_by(FuturesSimTrade.closed_at.desc()).limit(limit)
         trades = list(await session.scalars(query))
     return {"trades": [_serialize_trade(t) for t in trades]}
+
+
+@router.get("/journal-options")
+async def get_journal_options() -> dict:
+    """Task: Strategy Journal / Trade Review -- the canonical
+    strategy_label and self_assessment_tags values, so the dashboard never
+    hardcodes a second copy of the list that could drift out of sync with
+    the API's own validation (app.services.futures_sim.journal)."""
+    return {"strategy_labels": STRATEGY_LABELS, "self_assessment_tags": SELF_ASSESSMENT_TAGS}
+
+
+@router.post("/trades/{trade_id}/journal", dependencies=[Depends(require_admin_key)])
+async def update_trade_journal(trade_id: int, request: UpdateTradeJournalRequest) -> dict:
+    """Task: Strategy Journal / Trade Review (optional, per-trade). Purely
+    a note-taking layer over a trade that already closed -- never touches
+    PnL, fees, or any financial field on the trade."""
+    try:
+        validate_journal_update(request.strategy_label, request.self_assessment_tags)
+    except InvalidJournalEntry as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(request.account_name)
+    async with get_session_factory()() as session:
+        trade = await session.get(FuturesSimTrade, trade_id)
+        if trade is None or trade.account_id != account.id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No trade {trade_id} on account {request.account_name!r}",
+            )
+        if request.strategy_label is not None:
+            trade.strategy_label = request.strategy_label
+        if request.note is not None:
+            trade.note = request.note
+        if request.self_assessment_tags is not None:
+            trade.self_assessment_tags = request.self_assessment_tags
+        await session.commit()
+        await session.refresh(trade)
+        return {"trade": _serialize_trade(trade)}
 
 
 @router.get("/performance")
