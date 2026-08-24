@@ -5788,6 +5788,12 @@ async function renderFuturesTradeTab() {
   const stopPriceInput = el("input", { type: "number", step: "any", placeholder: "Stop price" });
   const reduceOnlyInput = el("input", { type: "checkbox" });
   const reduceOnlyLabel = el("label", {}, [reduceOnlyInput, " Reduce Only"]);
+  // Filled only by the "USE AI SIGNAL" button below, never automatically --
+  // applied to the resulting position only if the user goes on to click
+  // OPEN LONG/OPEN SHORT themselves (task: the AI forecast must never open
+  // a demo position on its own).
+  const aiSlInput = el("input", { type: "number", step: "any", placeholder: "AI-suggested SL" });
+  const aiTpInput = el("input", { type: "number", step: "any", placeholder: "AI-suggested TP" });
 
   function refreshLeverageOptions() {
     const symbolRow = symbols.find((s) => s.symbol === symbolSelect.value);
@@ -5834,6 +5840,27 @@ async function renderFuturesTradeTab() {
       resultBox.className = result.order.status === "REJECTED" ? "error" : "sub";
       resultBox.textContent =
         `Order ${result.order.status}` + (result.order.reject_reason ? `: ${result.order.reject_reason}` : "");
+
+      // The user's own OPEN LONG/OPEN SHORT click is what confirms
+      // whatever SL/TP the AI signal button (if used) pre-filled -- this
+      // never fires on its own, only as a continuation of that same
+      // explicit click, and only when the order actually opened a position.
+      if (result.position && (aiSlInput.value !== "" || aiTpInput.value !== "")) {
+        try {
+          await fetchJSONWithAdminKey(`/api/simulator/positions/${result.position.position_id}/sl-tp`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sl_price: aiSlInput.value !== "" ? parseFloat(aiSlInput.value) : null,
+              tp_price: aiTpInput.value !== "" ? parseFloat(aiTpInput.value) : null,
+              account_name: futuresAccountName(),
+            }),
+          });
+          resultBox.textContent += " (AI-suggested SL/TP applied)";
+        } catch (slTpErr) {
+          resultBox.textContent += ` (position opened, but SL/TP failed: ${slTpErr.message})`;
+        }
+      }
     } catch (err) {
       resultBox.className = "error";
       resultBox.textContent = `Error: ${err.message}`;
@@ -5867,6 +5894,87 @@ async function renderFuturesTradeTab() {
     )
   );
   wrap.appendChild(resultBox);
+
+  // ---- AI Forecast panel (task: show existing GPTAgent2 forecast, never
+  // auto-trade -- USE AI SIGNAL only pre-fills fields, the user must still
+  // click OPEN LONG/OPEN SHORT themselves) ------------------------------
+  const aiPanel = el("div", { class: "card" });
+  wrap.appendChild(el("h3", {}, "AI Forecast"));
+  wrap.appendChild(aiPanel);
+
+  async function loadAiForecast() {
+    aiPanel.innerHTML = "";
+    aiPanel.appendChild(el("p", { class: "loading" }, "Loading forecast..."));
+    aiSlInput.value = "";
+    aiTpInput.value = "";
+    let forecast;
+    try {
+      forecast = await fetchJSON(`/api/forecast/${encodeURIComponent(symbolSelect.value)}?horizon=24h`);
+    } catch {
+      aiPanel.innerHTML = "";
+      aiPanel.appendChild(el("p", { class: "sub" }, "No AI forecast available for this symbol yet."));
+      return;
+    }
+    aiPanel.innerHTML = "";
+    aiPanel.appendChild(
+      el("div", { class: "grid" }, [
+        card("Current Forecast", forecast.direction, null, changeClass(forecast.expected_change_pct)),
+        card("Probability", forecast.probability_pct != null ? `${forecast.probability_pct}%` : "n/a"),
+        card(
+          "Confidence",
+          forecast.confidence ? `${forecast.confidence.tier} (${forecast.confidence.effective_confidence_pct}%)` : "n/a"
+        ),
+        card("Regime", forecast.regime || "n/a"),
+        card(
+          "Expected Move",
+          forecast.expected_change_pct != null ? fmtPct(forecast.expected_change_pct) : "n/a",
+          null,
+          changeClass(forecast.expected_change_pct)
+        ),
+        card(
+          "Historical Edge",
+          forecast.track_record && forecast.track_record.win_rate_pct != null
+            ? `${forecast.track_record.win_rate_pct}% (n=${forecast.track_record.win_rate_sample_size})`
+            : "n/a"
+        ),
+      ])
+    );
+
+    const bullish = forecast.direction === "Bullish" || forecast.direction === "Strong Bullish";
+    const bearish = forecast.direction === "Bearish" || forecast.direction === "Strong Bearish";
+    const useSignalBtn = el(
+      "button",
+      bullish || bearish ? {} : { disabled: "disabled" },
+      "USE AI SIGNAL (prefill SL/TP)"
+    );
+    useSignalBtn.addEventListener("click", () => {
+      const levels = forecast.key_levels || {};
+      if (bullish) {
+        aiSlInput.value = levels.support_1 ?? "";
+        aiTpInput.value = forecast.target_price ?? levels.resistance_1 ?? "";
+      } else if (bearish) {
+        aiSlInput.value = levels.resistance_1 ?? "";
+        aiTpInput.value = forecast.target_price ?? levels.support_1 ?? "";
+      }
+      resultBox.className = "sub";
+      resultBox.textContent =
+        `AI signal applied: suggested SL ${aiSlInput.value || "n/a"}, TP ${aiTpInput.value || "n/a"} -- ` +
+        `click OPEN ${bullish ? "LONG" : "SHORT"} to confirm (not submitted automatically).`;
+    });
+    aiPanel.appendChild(
+      el("div", { class: "controls" }, [useSignalBtn, aiSlInput, aiTpInput])
+    );
+    aiPanel.appendChild(
+      el(
+        "p",
+        { class: "sub" },
+        "The AI forecast never opens a position by itself -- this only pre-fills the SL/TP fields above; you still choose and click OPEN LONG or OPEN SHORT yourself."
+      )
+    );
+  }
+  symbolSelect.addEventListener("change", loadAiForecast);
+  await loadAiForecast();
+
   return wrap;
 }
 

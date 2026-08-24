@@ -246,6 +246,34 @@ confirmed the resulting position appeared in POSITIONS with the correct
 entry/mark/margin, confirmed PERFORMANCE and ACCOUNT HISTORY rendered
 real data, and confirmed the SETTINGS tab's controls render correctly.
 
+## AI integration
+
+The TRADE tab shows the existing GPTAgent2 forecast for the selected
+symbol (`GET /api/forecast/{symbol}?horizon=24h` — the same endpoint the
+AI Forecast Center on the Overview page already uses, no new forecast
+computation): Current Forecast (direction), Probability, Confidence,
+Regime, Expected Move, and Historical Edge (the forecast's own
+track-record win rate).
+
+**The AI forecast never opens a demo position by itself.** A "USE AI
+SIGNAL" button (disabled when the forecast is `Neutral`) only pre-fills
+two SL/TP suggestion fields on the order form, derived from the
+forecast's `key_levels` (support/resistance) and `target_price`. Those
+fields stay editable and are applied to the resulting position only if
+the user goes on to click OPEN LONG/OPEN SHORT themselves — the same
+explicit click that submits the order also carries whatever is in the
+SL/TP fields at that moment, applied via `POST
+/api/simulator/positions/{id}/sl-tp` right after the position opens. No
+code path anywhere calls `POST /api/simulator/orders` from forecast data
+without that user click in between.
+
+Live-verified in a real headless-Chromium session: loaded the forecast
+panel for a symbol with a real `Bullish` signal, clicked USE AI SIGNAL,
+confirmed the SL/TP fields were pre-filled with real support/resistance-
+derived values (not submitted), then clicked OPEN LONG and confirmed via
+the API that the resulting position's `sl_price`/`tp_price` matched
+exactly what had been pre-filled.
+
 ## Known limitations
 
 Tracked in full in `docs/FUTURES_SIMULATOR_MATH.md`'s "Known limitations"
@@ -262,8 +290,11 @@ section — summarized here:
 - No candlestick/TradingView-style price chart on the TRADE tab yet — this
   dashboard has no OHLC charting primitive anywhere today, only a single-
   series SVG line chart; building one is a dedicated future increment.
-- No AI-forecast integration on this surface yet, and no historical-replay
-  trading mode yet.
+- No historical-replay trading mode yet.
+- The AI signal's suggested SL/TP levels come from the forecast's own
+  `key_levels` (support/resistance) and `target_price` — a reasonable
+  but simplified mapping (bullish: SL at support, TP at target/resistance;
+  bearish: the mirror), not a dedicated risk-sized suggestion.
 - OPEN ORDERS is client-side filtered from the full order-history fetch
   (`status === "NEW"`) rather than a dedicated server-side filter — fine
   at demo-account order volumes.
