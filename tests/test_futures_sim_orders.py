@@ -4,26 +4,33 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.database.models import FuturesSimAccount, FuturesSimPosition
+from app.database.models import FuturesSimAccount, FuturesSimOrder, FuturesSimPosition
 from app.services.futures_sim.orders import (
     OrderRejected,
+    cancel_order,
     close_position,
+    place_limit_order,
     place_market_order,
+    place_stop_order,
     set_stop_loss_take_profit,
 )
 
 
-def _orders_session(scalar_side_effect=None, scalars_return=None, account=None, position_get=None):
-    """`session.get` is now called for two different purposes in orders.py
-    (re-binding the account to this session, and -- in close_position --
-    fetching the position), so it needs to dispatch by model class rather
-    than return one fixed value."""
+def _orders_session(
+    scalar_side_effect=None, scalars_return=None, account=None, position_get=None, order_get=None
+):
+    """`session.get` is called for several different purposes across
+    orders.py (re-binding the account to this session, fetching a
+    position, fetching an order to cancel), so it needs to dispatch by
+    model class rather than return one fixed value."""
 
     async def _get(model, _ident):
         if model is FuturesSimAccount:
             return account
         if model is FuturesSimPosition:
             return position_get
+        if model is FuturesSimOrder:
+            return order_get
         return None
 
     session = AsyncMock()
@@ -714,3 +721,142 @@ async def test_set_stop_loss_take_profit_rejects_when_position_not_open():
         await set_stop_loss_take_profit(
             account, session_factory, position_id=999, sl_price=95_000.0, tp_price=None
         )
+
+
+# ---- place_limit_order --------------------------------------------------
+
+
+async def test_place_limit_order_creates_a_resting_new_order():
+    account = _account()
+    session_factory, session = _orders_session(scalar_side_effect=[None])
+
+    result = await place_limit_order(
+        account,
+        session_factory,
+        AsyncMock(),
+        symbol="BTC",
+        side="BUY",
+        quantity=0.1,
+        leverage=20,
+        price=90_000.0,
+    )
+
+    order = result["order"]
+    assert order.status == "NEW"
+    assert order.order_type == "LIMIT"
+    assert order.price == 90_000.0
+    assert result["idempotent_replay"] is False
+    session.commit.assert_awaited()
+
+
+async def test_place_limit_order_is_idempotent_on_duplicate_client_order_id():
+    existing = SimpleNamespace(id=1, client_order_id="abc")
+    session_factory, session = _orders_session(scalar_side_effect=[existing])
+
+    result = await place_limit_order(
+        _account(),
+        session_factory,
+        AsyncMock(),
+        symbol="BTC",
+        side="BUY",
+        quantity=0.1,
+        leverage=20,
+        price=90_000.0,
+        client_order_id="abc",
+    )
+
+    assert result["idempotent_replay"] is True
+    assert result["order"] is existing
+
+
+async def test_place_limit_order_rejects_non_positive_price():
+    session_factory, _ = _orders_session(scalar_side_effect=[None])
+    with pytest.raises(OrderRejected, match="price must be positive"):
+        await place_limit_order(
+            _account(),
+            session_factory,
+            AsyncMock(),
+            symbol="BTC",
+            side="BUY",
+            quantity=0.1,
+            leverage=20,
+            price=0,
+        )
+
+
+# ---- place_stop_order ----------------------------------------------------
+
+
+async def test_place_stop_order_creates_a_resting_new_order():
+    account = _account()
+    session_factory, session = _orders_session(scalar_side_effect=[None])
+
+    result = await place_stop_order(
+        account,
+        session_factory,
+        AsyncMock(),
+        symbol="BTC",
+        side="SELL",
+        quantity=0.1,
+        leverage=20,
+        stop_price=70_000.0,
+        order_type="STOP_MARKET",
+    )
+
+    order = result["order"]
+    assert order.status == "NEW"
+    assert order.order_type == "STOP_MARKET"
+    assert order.stop_price == 70_000.0
+
+
+async def test_place_stop_order_rejects_invalid_order_type():
+    session_factory, _ = _orders_session(scalar_side_effect=[None])
+    with pytest.raises(OrderRejected, match="STOP_MARKET or TAKE_PROFIT_MARKET"):
+        await place_stop_order(
+            _account(),
+            session_factory,
+            AsyncMock(),
+            symbol="BTC",
+            side="SELL",
+            quantity=0.1,
+            leverage=20,
+            stop_price=70_000.0,
+            order_type="TRAILING_STOP",
+        )
+
+
+# ---- cancel_order ---------------------------------------------------------
+
+
+async def test_cancel_order_cancels_a_resting_new_order():
+    account = _account()
+    order = SimpleNamespace(id=1, account_id=1, status="NEW", cancelled_at=None)
+    session_factory, session = _orders_session(account=account, order_get=order)
+
+    result = await cancel_order(account, session_factory, order_id=1)
+
+    assert result.status == "CANCELLED"
+    assert result.cancelled_at is not None
+
+
+async def test_cancel_order_rejects_when_order_not_found():
+    account = _account()
+    session_factory, session = _orders_session(account=account, order_get=None)
+    with pytest.raises(OrderRejected, match="No order"):
+        await cancel_order(account, session_factory, order_id=999)
+
+
+async def test_cancel_order_rejects_when_order_belongs_to_another_account():
+    account = _account(id=1)
+    order = SimpleNamespace(id=1, account_id=2, status="NEW", cancelled_at=None)
+    session_factory, session = _orders_session(account=account, order_get=order)
+    with pytest.raises(OrderRejected, match="No order"):
+        await cancel_order(account, session_factory, order_id=1)
+
+
+async def test_cancel_order_rejects_an_already_filled_order():
+    account = _account(id=1)
+    order = SimpleNamespace(id=1, account_id=1, status="FILLED", cancelled_at=None)
+    session_factory, session = _orders_session(account=account, order_get=order)
+    with pytest.raises(OrderRejected, match="not cancellable"):
+        await cancel_order(account, session_factory, order_id=1)

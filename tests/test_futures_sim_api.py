@@ -192,8 +192,22 @@ def _session_ctx(scalars_return=None, get_return=None):
 # ---- POST /orders -----------------------------------------------------
 
 
-async def test_place_order_rejects_non_market_order_types_without_touching_the_engine():
+async def test_place_order_rejects_an_unsupported_order_type():
     engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    with patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine):
+        with pytest.raises(Exception) as exc_info:
+            await futures_sim.place_order(
+                futures_sim.PlaceOrderRequest(
+                    symbol="BTC", side="BUY", order_type="TRAILING_STOP", quantity=0.1, leverage=20
+                )
+            )
+    assert exc_info.value.status_code == 400
+
+
+async def test_place_order_limit_requires_a_price():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
     with patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine):
         with pytest.raises(Exception) as exc_info:
             await futures_sim.place_order(
@@ -202,7 +216,79 @@ async def test_place_order_rejects_non_market_order_types_without_touching_the_e
                 )
             )
     assert exc_info.value.status_code == 400
-    engine.get_or_create_account.assert_not_called()
+
+
+async def test_place_order_stop_market_requires_a_stop_price():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    with patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine):
+        with pytest.raises(Exception) as exc_info:
+            await futures_sim.place_order(
+                futures_sim.PlaceOrderRequest(
+                    symbol="BTC",
+                    side="BUY",
+                    order_type="STOP_MARKET",
+                    quantity=0.1,
+                    leverage=20,
+                )
+            )
+    assert exc_info.value.status_code == 400
+
+
+async def test_place_order_limit_delegates_to_place_limit_order():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    order = _fake_order(order_type="LIMIT", status="NEW", price=90_000.0)
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch(
+            "app.api.futures_sim.place_limit_order",
+            AsyncMock(return_value={"order": order, "idempotent_replay": False}),
+        ) as mock_place,
+    ):
+        payload = await futures_sim.place_order(
+            futures_sim.PlaceOrderRequest(
+                symbol="BTC",
+                side="BUY",
+                order_type="LIMIT",
+                quantity=0.1,
+                leverage=20,
+                price=90_000.0,
+            )
+        )
+
+    assert payload["order"]["status"] == "NEW"
+    assert payload["position"] is None
+    mock_place.assert_awaited_once()
+    assert mock_place.call_args.kwargs["price"] == 90_000.0
+
+
+async def test_place_order_stop_market_delegates_to_place_stop_order():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    order = _fake_order(order_type="STOP_MARKET", status="NEW", stop_price=70_000.0)
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch(
+            "app.api.futures_sim.place_stop_order",
+            AsyncMock(return_value={"order": order, "idempotent_replay": False}),
+        ) as mock_place,
+    ):
+        payload = await futures_sim.place_order(
+            futures_sim.PlaceOrderRequest(
+                symbol="BTC",
+                side="SELL",
+                order_type="STOP_MARKET",
+                quantity=0.1,
+                leverage=20,
+                stop_price=70_000.0,
+            )
+        )
+
+    assert payload["order"]["status"] == "NEW"
+    mock_place.assert_awaited_once()
+    assert mock_place.call_args.kwargs["stop_price"] == 70_000.0
+    assert mock_place.call_args.kwargs["order_type"] == "STOP_MARKET"
 
 
 async def test_place_order_delegates_and_serializes_the_result():
@@ -256,9 +342,32 @@ async def test_place_order_turns_order_rejected_into_http_400():
 # ---- DELETE /orders/{id} ------------------------------------------------
 
 
-async def test_cancel_order_is_an_honest_400_since_market_orders_never_rest():
-    with pytest.raises(Exception) as exc_info:
-        await futures_sim.cancel_order(order_id=1)
+async def test_cancel_order_endpoint_delegates_and_serializes_the_result():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    order = _fake_order(status="CANCELLED", order_type="LIMIT")
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch("app.api.futures_sim.cancel_order", AsyncMock(return_value=order)) as mock_cancel,
+    ):
+        payload = await futures_sim.cancel_order_endpoint(order_id=1)
+
+    assert payload["order"]["status"] == "CANCELLED"
+    mock_cancel.assert_awaited_once()
+
+
+async def test_cancel_order_endpoint_turns_order_rejected_into_http_400():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch(
+            "app.api.futures_sim.cancel_order",
+            AsyncMock(side_effect=OrderRejected("Order 1 is FILLED, not cancellable")),
+        ),
+    ):
+        with pytest.raises(Exception) as exc_info:
+            await futures_sim.cancel_order_endpoint(order_id=1)
     assert exc_info.value.status_code == 400
 
 

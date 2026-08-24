@@ -63,10 +63,28 @@ Every account response is explicitly labeled
 
 ## Orders
 
-MARKET orders only today (LIMIT / STOP_MARKET / TAKE_PROFIT_MARKET are
-not yet implemented — `POST /api/simulator/orders` rejects any other
-`order_type` with a 400). A market order fills immediately against the
-current reference price plus configured slippage (§3 of the math doc).
+Four order types: MARKET, LIMIT, STOP_MARKET, TAKE_PROFIT_MARKET.
+
+- **MARKET** fills immediately against the current reference price plus
+  configured slippage (§3 of the math doc).
+- **LIMIT** rests (`status=NEW`) until the current price crosses `price`
+  favorably (a BUY at or below, a SELL at or above), then fills at exactly
+  that price — no slippage, since a guaranteed price is the entire point
+  of a limit order.
+- **STOP_MARKET** / **TAKE_PROFIT_MARKET** rest until the current price
+  crosses `stop_price` (a BUY at or above, a SELL at or below — both order
+  types trigger identically, differing only in intended use, matching
+  real exchange semantics), then fill as a genuine MARKET order (with
+  slippage) from that point on.
+
+A scheduled job (`fill_futures_sim_orders_job`, same cadence as the
+position monitor — every `futures_sim_position_monitor_interval_minutes`)
+fills any resting order whose trigger price has been crossed, since that
+can happen purely from a price move with no further action from the user.
+Deterministic fill model (task's own stated preference over an unrealistic
+partial-fill simulation): a resting order either fills completely or
+stays `NEW` — this simulator has no order book, so there is no
+`PARTIALLY_FILLED`.
 
 - **Idempotent**: every order carries a `client_order_id`
   (client-supplied or server-generated); a duplicate id returns the
@@ -77,13 +95,21 @@ current reference price plus configured slippage (§3 of the math doc).
   reduces/closes, or "flips" it — see §5 of the math doc for the exact
   semantics, including how `reduceOnly` caps rather than flips or errors.
 - **Validated**: side, quantity, margin mode, leverage (against the
-  symbol's own SIMULATED bracket), and available margin are all checked
-  before any state changes; a rejected order is still persisted with
-  `status=REJECTED` and a `reject_reason`, never silently dropped.
+  symbol's own SIMULATED bracket) are checked at placement time; a
+  rejected order is still persisted with `status=REJECTED` and a
+  `reject_reason`, never silently dropped. Available margin is checked at
+  fill time for every order type (MARKET fills immediately, so placement
+  time and fill time are the same instant for it) — a resting order does
+  NOT reserve margin at placement time, so it can still be REJECTED at
+  fill time if margin has become insufficient in the meantime; a
+  documented simplification versus a real exchange's margin-reservation
+  model.
 
-`DELETE /api/simulator/orders/{id}` is an honest 400 today — MARKET orders
-fill synchronously and are never left in a cancellable resting state; this
-will do real work once LIMIT/STOP orders exist.
+`DELETE /api/simulator/orders/{id}` cancels a resting (`status=NEW`)
+LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET order. MARKET orders fill
+synchronously and are never left in a cancellable resting state;
+attempting to cancel one (or an already-FILLED/CANCELLED/REJECTED order)
+is an honest 400, never a silent no-op.
 
 ## Positions
 
@@ -164,7 +190,7 @@ GET    /api/simulator/account
 POST   /api/simulator/account/reset        [admin]
 GET    /api/simulator/symbols
 POST   /api/simulator/orders               [admin]
-DELETE /api/simulator/orders/{id}          [admin]  (honest 400 today)
+DELETE /api/simulator/orders/{id}          [admin]  (cancels a resting order)
 GET    /api/simulator/orders
 GET    /api/simulator/positions
 POST   /api/simulator/positions/{id}/close [admin]
@@ -186,8 +212,9 @@ section — summarized here:
 
 - Funding is not implemented (`funding` is always `0.0` in every PnL
   calculation).
-- LIMIT / STOP_MARKET / TAKE_PROFIT_MARKET order types don't exist yet —
-  MARKET only.
+- Resting orders (LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET) do not reserve
+  margin at placement time; they are re-checked at fill time and can be
+  REJECTED then if margin has become insufficient in the meantime.
 - Mark price is the raw last observed price; the EMA-smoothed "SIMULATED
   MARK PRICE" formula exists as a pure function but isn't wired into live
   position updates yet.

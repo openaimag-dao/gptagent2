@@ -261,6 +261,41 @@ above; SHORT is the mirror image. An inverted SL/TP would either never
 trigger or trigger immediately, neither of which is what "stop loss" or
 "take profit" means.
 
+## 12. LIMIT / STOP_MARKET / TAKE_PROFIT_MARKET fills
+
+`app.services.futures_sim.resting_orders.check_resting_orders_for_fills`
+runs on the same schedule as §11's position monitor and, for every
+`status=NEW` resting order, checks:
+
+```
+LIMIT:                          BUY triggers when price <= order.price
+                                 SELL triggers when price >= order.price
+STOP_MARKET / TAKE_PROFIT_MARKET: BUY triggers when price >= order.stop_price
+                                   SELL triggers when price <= order.stop_price
+```
+
+A LIMIT fill uses `order.price` directly as its `actual_fill_price` — no
+slippage, since a guaranteed price is the entire point of a limit order.
+A triggered STOP_MARKET/TAKE_PROFIT_MARKET fills exactly like a MARKET
+order (§3) against the current price at the moment it triggers, since
+from that moment on it genuinely is a market order.
+
+Both order types share the identical trigger *direction* despite being
+used for opposite intents (a protective stop vs. a target) — this matches
+real exchange semantics, where STOP_MARKET and TAKE_PROFIT_MARKET differ
+only in labeling/intended use, not in execution mechanics.
+
+**Deterministic fill model** (task's own stated preference over an
+unrealistic partial-fill simulation): this simulator has no order book,
+so a resting order either fills completely or stays `NEW` — never
+`PARTIALLY_FILLED`.
+
+**Margin is not reserved at placement time.** A resting order's margin
+sufficiency is checked again at fill time (the same check an immediate
+MARKET fill already does); if the account's available margin has fallen
+below what the order would need by the time it fills, the order is
+REJECTED then rather than being pre-validated and reserved when placed.
+
 ---
 
 ## Known limitations (as of this document)
@@ -272,10 +307,11 @@ trigger or trigger immediately, neither of which is what "stop loss" or
 - Mark price smoothing (§10) exists as a pure function but is not yet
   wired into live position updates — `mark_price` is currently the raw
   last observed price.
-- LIMIT / STOP_MARKET / TAKE_PROFIT_MARKET order types are not yet
-  implemented; only MARKET orders exist today.
-- The position monitor (§11) polls on a schedule rather than reacting
-  instantly to every price tick — a position can theoretically remain past
-  its liquidation price for up to one polling interval before being
-  auto-closed. Fine for a training tool; not a claim of real-time
-  exchange-grade liquidation latency.
+- Resting orders (§12) do not reserve margin at placement time; a
+  documented simplification versus a real exchange's margin-reservation
+  model.
+- The position monitor (§11) and the resting-order fill check (§12) both
+  poll on a schedule rather than reacting instantly to every price tick —
+  a position/order can theoretically remain past its trigger price for up
+  to one polling interval before being auto-closed/filled. Fine for a
+  training tool; not a claim of real-time exchange-grade latency.
