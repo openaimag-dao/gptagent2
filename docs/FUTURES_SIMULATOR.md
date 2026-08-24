@@ -242,6 +242,34 @@ long against live market data (entry 78846.14, liquidation 77584.60 —
 `NEAR_LIQUIDATION` warning naming that position, then closed the
 position and confirmed `/risk` returned to a zeroed, warning-free state.
 
+## Strategy Journal / Trade Review
+
+Optional, per-trade annotations (task's own "optional" note) over history
+that has already happened — editing them never touches PnL, fees,
+balances, or any other financial field. `FuturesSimTrade` carries three
+journal columns (added back in the initial schema migration,
+0044_futures_simulator.py): `strategy_label` (a coarse tag — Breakout /
+Trend / MeanReversion / News / AISignal / Other), `note` (free-text "why
+did I enter/exit"), and `self_assessment_tags` (a Trade Review checklist
+— Good Entry / Good Exit / Followed Plan / Overleveraged / Ignored Stop
+Loss / FOMO Entry / Revenge Trade / Poor Risk/Reward).
+
+`GET /api/simulator/journal-options` returns both canonical lists so the
+dashboard's dropdown/checkboxes are always in sync with
+`app.services.futures_sim.journal`'s own validation — never a second
+hardcoded copy that could drift. `POST
+/api/simulator/trades/{id}/journal` [admin] updates one trade's journal
+fields; each field is optional and independent (`None` means "leave this
+field unchanged", an explicit `[]` clears `self_assessment_tags`), and
+the request 404s if the trade doesn't belong to the given account, 400s
+if `strategy_label` or any tag isn't in the canonical list.
+
+Live-verified with headless Chromium against the real running server:
+opened and closed a real ETH position, used the Trade History tab's
+Edit button to set a strategy label, two self-assessment tags, and a
+note, saved, and confirmed via a direct API read that the trade's
+journal fields persisted exactly as entered.
+
 ## API surface (as of this document)
 
 ```
@@ -255,6 +283,8 @@ GET    /api/simulator/positions
 POST   /api/simulator/positions/{id}/close [admin]
 POST   /api/simulator/positions/{id}/sl-tp [admin]
 GET    /api/simulator/trades
+POST   /api/simulator/trades/{id}/journal  [admin]
+GET    /api/simulator/journal-options
 GET    /api/simulator/performance
 GET    /api/simulator/risk
 GET    /api/simulator/ledger
@@ -287,6 +317,12 @@ colors).
 - POSITIONS has Close 25%/50%/75%/100% buttons and an inline SL/TP
   setter per row.
 - OPEN ORDERS has a Cancel button per resting order.
+- TRADE HISTORY has a Journal column (a one-line summary of that trade's
+  strategy label/tags/note) and an Edit button per row that opens a
+  shared panel below the table — a strategy-label dropdown, self-
+  assessment checkboxes, and a note field, populated from
+  `GET /api/simulator/journal-options` — for the optional Strategy
+  Journal / Trade Review feature.
 - PERFORMANCE renders the overall stat grid plus the by-side/by-symbol/
   by-leverage/by-strategy breakdown tables.
 - RISK renders `GET /api/simulator/risk`'s stat grid (margin ratio,

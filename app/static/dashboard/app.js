@@ -6123,31 +6123,126 @@ async function renderFuturesOrderHistoryTab() {
   return wrap;
 }
 
+function futuresJournalSummary(trade) {
+  const parts = [];
+  if (trade.strategy_label) parts.push(trade.strategy_label);
+  if (trade.self_assessment_tags && trade.self_assessment_tags.length) {
+    parts.push(trade.self_assessment_tags.join(", "));
+  }
+  if (trade.note) parts.push(`"${trade.note}"`);
+  return parts.length ? parts.join(" — ") : "—";
+}
+
 async function renderFuturesTradeHistoryTab() {
-  const data = await safe(`/api/simulator/trades?name=${encodeURIComponent(futuresAccountName())}&limit=100`);
-  const trades = data ? data.trades : [];
+  const [tradesData, optionsData] = await Promise.all([
+    safe(`/api/simulator/trades?name=${encodeURIComponent(futuresAccountName())}&limit=100`),
+    safe("/api/simulator/journal-options"),
+  ]);
+  const trades = tradesData ? tradesData.trades : [];
+  const strategyLabels = optionsData ? optionsData.strategy_labels : [];
+  const selfAssessmentTags = optionsData ? optionsData.self_assessment_tags : [];
   const wrap = el("div", {});
   if (!trades.length) {
     wrap.appendChild(el("p", { class: "sub" }, "No closed trades yet."));
     return wrap;
   }
+
+  // Task: optional Strategy Journal / Trade Review -- purely a note-taking
+  // layer over already-closed trades, never touches PnL/fees/anything
+  // financial. One shared edit panel below the table, populated for
+  // whichever trade's Edit button was last clicked.
+  const editPanel = el("div", { class: "controls", style: "display:none" });
+
+  function closeEditPanel() {
+    editPanel.style.display = "none";
+    editPanel.innerHTML = "";
+  }
+
+  function openEditPanel(trade) {
+    editPanel.innerHTML = "";
+    editPanel.style.display = "";
+
+    const labelSelect = el(
+      "select",
+      {},
+      [el("option", { value: "" }, "-- no label --")].concat(
+        strategyLabels.map((l) => el("option", { value: l }, l))
+      )
+    );
+    labelSelect.value = trade.strategy_label || "";
+    const noteInput = el("textarea", { placeholder: "Why did you enter/exit?", rows: "2" });
+    noteInput.value = trade.note || "";
+
+    const tagCheckboxes = selfAssessmentTags.map((tag) => {
+      const cb = el("input", { type: "checkbox", value: tag });
+      cb.checked = (trade.self_assessment_tags || []).includes(tag);
+      return el("label", { class: "sub" }, [cb, ` ${tag} `]);
+    });
+
+    const statusMsg = el("p", { class: "sub" });
+    const saveBtn = el("button", {}, "Save Journal");
+    const cancelBtn = el("button", {}, "Cancel");
+    cancelBtn.addEventListener("click", closeEditPanel);
+    saveBtn.addEventListener("click", async () => {
+      statusMsg.className = "sub";
+      statusMsg.textContent = "Saving...";
+      try {
+        const checkedTags = tagCheckboxes
+          .map((label) => label.querySelector("input"))
+          .filter((cb) => cb.checked)
+          .map((cb) => cb.value);
+        const result = await fetchJSONWithAdminKey(`/api/simulator/trades/${trade.trade_id}/journal`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            strategy_label: labelSelect.value === "" ? null : labelSelect.value,
+            note: noteInput.value,
+            self_assessment_tags: checkedTags,
+            account_name: futuresAccountName(),
+          }),
+        });
+        trade.strategy_label = result.trade.strategy_label;
+        trade.note = result.trade.note;
+        trade.self_assessment_tags = result.trade.self_assessment_tags;
+        navigate("futures", new URLSearchParams({ tab: "trade-history" }));
+      } catch (err) {
+        statusMsg.className = "error";
+        statusMsg.textContent = `Error: ${err.message}`;
+      }
+    });
+
+    editPanel.appendChild(el("h4", {}, `Journal -- ${trade.symbol} trade #${trade.trade_id}`));
+    editPanel.appendChild(el("div", {}, [el("label", { class: "sub" }, "Strategy: "), labelSelect]));
+    editPanel.appendChild(el("div", {}, tagCheckboxes));
+    editPanel.appendChild(noteInput);
+    editPanel.appendChild(el("div", { class: "controls" }, [saveBtn, cancelBtn]));
+    editPanel.appendChild(statusMsg);
+  }
+
   wrap.appendChild(
     table(
-      ["Symbol", "Side", "Qty", "Entry", "Exit", "Net PnL", "ROI", "Fees", "Exit Reason", "Closed"],
-      trades.map((t) => [
-        t.symbol,
-        el("span", { class: t.side === "LONG" ? "up" : "down" }, t.side),
-        String(t.quantity),
-        fmtNum(t.entry_price),
-        fmtNum(t.exit_price),
-        el("span", { class: changeClass(t.net_pnl) }, fmtNum(t.net_pnl)),
-        el("span", { class: changeClass(t.roi_pct) }, fmtPct(t.roi_pct)),
-        fmtNum(t.fees, 4),
-        t.exit_reason,
-        new Date(t.closed_at).toLocaleString(),
-      ])
+      ["Symbol", "Side", "Qty", "Entry", "Exit", "Net PnL", "ROI", "Fees", "Exit Reason", "Closed", "Journal", ""],
+      trades.map((t) => {
+        const editBtn = el("button", {}, "Edit");
+        editBtn.addEventListener("click", () => openEditPanel(t));
+        return [
+          t.symbol,
+          el("span", { class: t.side === "LONG" ? "up" : "down" }, t.side),
+          String(t.quantity),
+          fmtNum(t.entry_price),
+          fmtNum(t.exit_price),
+          el("span", { class: changeClass(t.net_pnl) }, fmtNum(t.net_pnl)),
+          el("span", { class: changeClass(t.roi_pct) }, fmtPct(t.roi_pct)),
+          fmtNum(t.fees, 4),
+          t.exit_reason,
+          new Date(t.closed_at).toLocaleString(),
+          futuresJournalSummary(t),
+          editBtn,
+        ];
+      })
     )
   );
+  wrap.appendChild(editPanel);
   return wrap;
 }
 
