@@ -19,6 +19,13 @@ COINGECKO_SYMBOL_IDS: dict[str, str] = {
     "SOL": "solana",
     "LINK": "chainlink",
     "UNI": "uniswap",
+    # Futures Simulator (Phase 4): added to cover the simulator's full
+    # 10-symbol supported-asset list -- same provider, no new integration.
+    "BNB": "binancecoin",
+    "XRP": "ripple",
+    "DOGE": "dogecoin",
+    "AVAX": "avalanche-2",
+    "SUI": "sui",
 }
 
 # CoinGecko's free/demo API has no `interval` override (that's Enterprise-plan

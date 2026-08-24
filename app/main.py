@@ -30,6 +30,7 @@ from app.api.executive_summary import router as executive_summary_router
 from app.api.explanation import router as explanation_router
 from app.api.features import router as features_router
 from app.api.forecast import router as forecast_router
+from app.api.futures_sim import router as futures_sim_router
 from app.api.global_score import router as global_score_router
 from app.api.history import router as history_router
 from app.api.hypothesis import router as hypothesis_router
@@ -118,6 +119,7 @@ app.include_router(events_router)
 app.include_router(calendar_router)
 app.include_router(features_router)
 app.include_router(forecast_router)
+app.include_router(futures_sim_router)
 app.include_router(no_trade_router)
 app.include_router(research_router)
 app.include_router(strategy_router)
