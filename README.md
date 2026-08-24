@@ -2790,6 +2790,8 @@ Chromium session.
 - [`docs/API.md`](docs/API.md) -- full endpoint reference (also live at `/docs` on a running instance)
 - [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) -- Railway + Docker Compose deployment guide, including every real pitfall hit and fixed during this project's actual rollout
 - [`docs/FORECASTING_3_0.md`](docs/FORECASTING_3_0.md) -- closing report for the Forecasting 3.0 program (RMSE, the full 5-baseline challenge, CRPS, calibrated confidence, historical replay leakage validation): what already existed, what was missing, real coverage/win-rate/calibration numbers pulled live from a running instance, and honestly-scoped remaining limitations
+- [`docs/FUTURES_SIMULATOR.md`](docs/FUTURES_SIMULATOR.md) -- 100% demo/paper-trading futures terminal (no real money, no real exchange orders): account/order/position model, ONE-WAY mode semantics, margin modes, liquidation/SL/TP monitoring, full API surface, and honestly-scoped remaining limitations; a living overview extended as each increment ships
+- [`docs/FUTURES_SIMULATOR_MATH.md`](docs/FUTURES_SIMULATOR_MATH.md) -- every formula the Futures Simulator uses (margin, PnL, fees, slippage, ROI, ISOLATED and CROSS liquidation price with derivations, account equity, mark price, liquidation/SL/TP trigger logic), each mapped 1:1 to its unit-tested pure function
 
 ## Configuration
 

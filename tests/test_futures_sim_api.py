@@ -413,3 +413,45 @@ async def test_get_ledger_returns_serialized_entries():
     assert len(payload["ledger"]) == 1
     assert payload["ledger"][0]["event_type"] == "DEPOSIT"
     assert payload["ledger"][0]["created_at"] == "2026-08-24T00:00:00+00:00"
+
+
+# ---- POST /positions/{id}/sl-tp -----------------------------------------
+
+
+async def test_set_position_sl_tp_delegates_and_serializes_the_result():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    position = _fake_position(sl_price=95_000.0, tp_price=110_000.0)
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch(
+            "app.api.futures_sim.set_stop_loss_take_profit", AsyncMock(return_value=position)
+        ) as mock_set,
+    ):
+        payload = await futures_sim.set_position_sl_tp(
+            5, futures_sim.SetStopLossTakeProfitRequest(sl_price=95_000.0, tp_price=110_000.0)
+        )
+
+    assert payload["position"]["sl_price"] == 95_000.0
+    assert payload["position"]["tp_price"] == 110_000.0
+    assert mock_set.call_args.kwargs["sl_price"] == 95_000.0
+    assert mock_set.call_args.kwargs["tp_price"] == 110_000.0
+
+
+async def test_set_position_sl_tp_turns_order_rejected_into_http_400():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch(
+            "app.api.futures_sim.set_stop_loss_take_profit",
+            AsyncMock(
+                side_effect=OrderRejected("stop-loss for a LONG position must be below entry price")
+            ),
+        ),
+    ):
+        with pytest.raises(Exception) as exc_info:
+            await futures_sim.set_position_sl_tp(
+                5, futures_sim.SetStopLossTakeProfitRequest(sl_price=999_999.0)
+            )
+    assert exc_info.value.status_code == 400

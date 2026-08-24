@@ -389,4 +389,10 @@ class Settings(BaseSettings):
     # that table, kept deliberately conservative.
     futures_sim_default_max_leverage: int = 20
     futures_sim_default_maintenance_margin_pct: float = 1.0
+    # How often the scheduler scans every OPEN position for liquidation /
+    # stop-loss / take-profit triggers (task: a position can be liquidated
+    # or hit its SL/TP purely from a price move, with no order ever placed
+    # by the user). Kept tight since a demo simulator has no real
+    # exchange-side liquidation engine watching prices in real time.
+    futures_sim_position_monitor_interval_minutes: float = 1.0
     learning_insight_min_gap_pct: float = 15.0
