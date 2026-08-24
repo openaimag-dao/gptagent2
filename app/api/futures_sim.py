@@ -5,19 +5,53 @@ already use (this project has no user/auth model at all -- see
 FuturesSimAccount's own docstring). Read endpoints stay open, matching how
 every other read endpoint in this app already behaves."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import select
 
 from app.api.admin import require_admin_key
 from app.config import get_settings
+from app.database.models import (
+    FuturesSimLedgerEntry,
+    FuturesSimOrder,
+    FuturesSimPosition,
+    FuturesSimTrade,
+)
+from app.database.redis import get_redis
+from app.database.session import get_session_factory
 from app.services.futures_sim.engine import (
     DEFAULT_ACCOUNT_NAME,
     available_leverage_options,
     build_futures_sim_engine,
+    compute_position_pnl,
+    compute_roi_pct,
+    get_current_price,
     resolve_leverage_bracket,
 )
+from app.services.futures_sim.orders import OrderRejected, close_position, place_market_order
 from app.services.realtime.config import parse_watchlist
 
 router = APIRouter(prefix="/api/simulator", tags=["futures-simulator"])
+
+
+class PlaceOrderRequest(BaseModel):
+    symbol: str
+    side: str  # BUY / SELL
+    order_type: str = "MARKET"
+    quantity: float
+    leverage: int = 1
+    margin_mode: str = "ISOLATED"
+    reduce_only: bool = False
+    client_order_id: str | None = None
+    strategy_tag: str = "manual"
+    prediction_id: int | None = None
+    account_name: str = DEFAULT_ACCOUNT_NAME
+
+
+class ClosePositionRequest(BaseModel):
+    quantity: float | None = None
+    percent: float | None = None  # 0-100, alternative to quantity (task: 25/50/75/100%)
+    account_name: str = DEFAULT_ACCOUNT_NAME
 
 
 def _serialize_account_state(state: dict) -> dict:
@@ -27,6 +61,98 @@ def _serialize_account_state(state: dict) -> dict:
         "reset_at": state["reset_at"].isoformat() if state["reset_at"] is not None else None,
         "paper_trading": True,
         "real_funds_used": False,
+    }
+
+
+def _serialize_position(position: FuturesSimPosition) -> dict:
+    return {
+        "position_id": position.id,
+        "account_id": position.account_id,
+        "symbol": position.symbol,
+        "side": position.side,
+        "margin_mode": position.margin_mode,
+        "leverage": position.leverage,
+        "quantity": float(position.quantity),
+        "entry_price": float(position.entry_price),
+        "mark_price": float(position.mark_price),
+        "initial_margin": float(position.initial_margin),
+        "maintenance_margin": float(position.maintenance_margin),
+        "realized_pnl": float(position.realized_pnl),
+        "liquidation_price": float(position.liquidation_price)
+        if position.liquidation_price is not None
+        else None,
+        "sl_price": float(position.sl_price) if position.sl_price is not None else None,
+        "tp_price": float(position.tp_price) if position.tp_price is not None else None,
+        "status": position.status,
+        "close_reason": position.close_reason,
+        "opened_at": position.opened_at.isoformat(),
+        "updated_at": position.updated_at.isoformat(),
+        "closed_at": position.closed_at.isoformat() if position.closed_at is not None else None,
+    }
+
+
+def _serialize_order(order: FuturesSimOrder) -> dict:
+    return {
+        "order_id": order.id,
+        "client_order_id": order.client_order_id,
+        "position_id": order.position_id,
+        "symbol": order.symbol,
+        "side": order.side,
+        "position_side": order.position_side,
+        "order_type": order.order_type,
+        "margin_mode": order.margin_mode,
+        "leverage": order.leverage,
+        "quantity": float(order.quantity),
+        "price": float(order.price) if order.price is not None else None,
+        "stop_price": float(order.stop_price) if order.stop_price is not None else None,
+        "reduce_only": order.reduce_only,
+        "status": order.status,
+        "requested_price": float(order.requested_price)
+        if order.requested_price is not None
+        else None,
+        "estimated_fill_price": float(order.estimated_fill_price)
+        if order.estimated_fill_price is not None
+        else None,
+        "actual_fill_price": float(order.actual_fill_price)
+        if order.actual_fill_price is not None
+        else None,
+        "slippage_pct": float(order.slippage_pct) if order.slippage_pct is not None else None,
+        "filled_quantity": float(order.filled_quantity),
+        "fee_rate_pct": float(order.fee_rate_pct) if order.fee_rate_pct is not None else None,
+        "fee_amount": float(order.fee_amount) if order.fee_amount is not None else None,
+        "reject_reason": order.reject_reason,
+        "strategy_tag": order.strategy_tag,
+        "prediction_id": order.prediction_id,
+        "created_at": order.created_at.isoformat(),
+        "filled_at": order.filled_at.isoformat() if order.filled_at is not None else None,
+        "cancelled_at": order.cancelled_at.isoformat() if order.cancelled_at is not None else None,
+    }
+
+
+def _serialize_trade(trade: FuturesSimTrade) -> dict:
+    return {
+        "trade_id": trade.id,
+        "position_id": trade.position_id,
+        "symbol": trade.symbol,
+        "side": trade.side,
+        "leverage": trade.leverage,
+        "entry_price": float(trade.entry_price),
+        "exit_price": float(trade.exit_price),
+        "quantity": float(trade.quantity),
+        "gross_pnl": float(trade.gross_pnl),
+        "fees": float(trade.fees),
+        "funding": float(trade.funding),
+        "net_pnl": float(trade.net_pnl),
+        "roi_pct": float(trade.roi_pct),
+        "opened_at": trade.opened_at.isoformat(),
+        "closed_at": trade.closed_at.isoformat(),
+        "duration_seconds": trade.duration_seconds,
+        "exit_reason": trade.exit_reason,
+        "strategy_tag": trade.strategy_tag,
+        "prediction_id": trade.prediction_id,
+        "strategy_label": trade.strategy_label,
+        "note": trade.note,
+        "self_assessment_tags": trade.self_assessment_tags,
     }
 
 
@@ -44,6 +170,176 @@ async def reset_account(name: str = DEFAULT_ACCOUNT_NAME) -> dict:
     account = await engine.reset_account(name)
     state = await engine.get_account_state(account)
     return _serialize_account_state(state)
+
+
+@router.post("/orders", dependencies=[Depends(require_admin_key)])
+async def place_order(request: PlaceOrderRequest) -> dict:
+    if request.order_type != "MARKET":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only MARKET orders are supported so far, got {request.order_type!r}",
+        )
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(request.account_name)
+    try:
+        result = await place_market_order(
+            account,
+            get_session_factory(),
+            get_redis(),
+            symbol=request.symbol,
+            side=request.side,
+            quantity=request.quantity,
+            leverage=request.leverage,
+            margin_mode=request.margin_mode,
+            reduce_only=request.reduce_only,
+            client_order_id=request.client_order_id,
+            strategy_tag=request.strategy_tag,
+            prediction_id=request.prediction_id,
+        )
+    except OrderRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "order": _serialize_order(result["order"]),
+        "position": _serialize_position(result["position"])
+        if result["position"] is not None
+        else None,
+        "trade": _serialize_trade(result["trade"]) if result["trade"] is not None else None,
+        "idempotent_replay": result["idempotent_replay"],
+    }
+
+
+@router.delete("/orders/{order_id}", dependencies=[Depends(require_admin_key)])
+async def cancel_order(order_id: int) -> dict:
+    # MARKET orders (the only type this increment supports) fill
+    # synchronously inside place_order and are never left cancellable --
+    # this endpoint exists now (task's own required API surface) and will
+    # do real work once resting LIMIT/STOP orders exist in a later
+    # increment; until then it's an honest 400, never a silent no-op.
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "No cancellable resting orders yet -- only MARKET orders "
+            "(fill immediately) are supported"
+        ),
+    )
+
+
+@router.get("/orders")
+async def get_orders(
+    name: str = DEFAULT_ACCOUNT_NAME, limit: int = Query(50, le=200), symbol: str | None = None
+) -> dict:
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(name)
+    async with get_session_factory()() as session:
+        query = select(FuturesSimOrder).where(FuturesSimOrder.account_id == account.id)
+        if symbol is not None:
+            query = query.where(FuturesSimOrder.symbol == symbol.upper())
+        query = query.order_by(FuturesSimOrder.created_at.desc()).limit(limit)
+        orders = list(await session.scalars(query))
+    return {"orders": [_serialize_order(o) for o in orders]}
+
+
+@router.get("/positions")
+async def get_positions(name: str = DEFAULT_ACCOUNT_NAME, status: str = "OPEN") -> dict:
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(name)
+    async with get_session_factory()() as session:
+        query = select(FuturesSimPosition).where(FuturesSimPosition.account_id == account.id)
+        if status != "ALL":
+            query = query.where(FuturesSimPosition.status == status)
+        query = query.order_by(FuturesSimPosition.opened_at.desc())
+        positions = list(await session.scalars(query))
+
+    serialized = []
+    for position in positions:
+        payload = _serialize_position(position)
+        if position.status == "OPEN":
+            price_info = await get_current_price(
+                get_session_factory(), get_redis(), position.symbol
+            )
+            mark_price = (
+                price_info["price"] if price_info is not None else float(position.mark_price)
+            )
+            pnl = compute_position_pnl(
+                position.side, float(position.entry_price), mark_price, float(position.quantity)
+            )
+            payload["mark_price"] = mark_price
+            payload["unrealized_pnl"] = pnl
+            payload["roi_pct"] = compute_roi_pct(pnl, float(position.initial_margin))
+        serialized.append(payload)
+    return {"positions": serialized}
+
+
+@router.post("/positions/{position_id}/close", dependencies=[Depends(require_admin_key)])
+async def close_position_endpoint(position_id: int, request: ClosePositionRequest) -> dict:
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(request.account_name)
+
+    quantity = request.quantity
+    if quantity is None and request.percent is not None:
+        if not (0 < request.percent <= 100):
+            raise HTTPException(status_code=400, detail="percent must be between 0 and 100")
+        async with get_session_factory()() as session:
+            position = await session.get(FuturesSimPosition, position_id)
+        if position is None:
+            raise HTTPException(status_code=404, detail=f"No position {position_id}")
+        quantity = float(position.quantity) * request.percent / 100
+
+    try:
+        trade = await close_position(
+            account,
+            get_session_factory(),
+            get_redis(),
+            position_id=position_id,
+            quantity=quantity,
+        )
+    except OrderRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"trade": _serialize_trade(trade)}
+
+
+@router.get("/trades")
+async def get_trades(
+    name: str = DEFAULT_ACCOUNT_NAME, limit: int = Query(50, le=200), symbol: str | None = None
+) -> dict:
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(name)
+    async with get_session_factory()() as session:
+        query = select(FuturesSimTrade).where(FuturesSimTrade.account_id == account.id)
+        if symbol is not None:
+            query = query.where(FuturesSimTrade.symbol == symbol.upper())
+        query = query.order_by(FuturesSimTrade.closed_at.desc()).limit(limit)
+        trades = list(await session.scalars(query))
+    return {"trades": [_serialize_trade(t) for t in trades]}
+
+
+@router.get("/ledger")
+async def get_ledger(name: str = DEFAULT_ACCOUNT_NAME, limit: int = Query(100, le=500)) -> dict:
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(name)
+    async with get_session_factory()() as session:
+        query = (
+            select(FuturesSimLedgerEntry)
+            .where(FuturesSimLedgerEntry.account_id == account.id)
+            .order_by(FuturesSimLedgerEntry.created_at.desc())
+            .limit(limit)
+        )
+        entries = list(await session.scalars(query))
+    return {
+        "ledger": [
+            {
+                "id": e.id,
+                "event_type": e.event_type,
+                "amount": float(e.amount),
+                "balance_after": float(e.balance_after),
+                "reference_type": e.reference_type,
+                "reference_id": e.reference_id,
+                "description": e.description,
+                "created_at": e.created_at.isoformat(),
+            }
+            for e in entries
+        ]
+    }
 
 
 @router.get("/symbols")
