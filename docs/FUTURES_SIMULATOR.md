@@ -205,6 +205,47 @@ All mutating endpoints require the `X-Admin-Key` header
 any real exchange credential. No endpoint places, modifies, or cancels a
 real order on any real exchange.
 
+## Dashboard
+
+A "Futures Simulator" nav item (`app/static/dashboard/app.js`,
+`renderFuturesSimulator`) adds a dedicated page with 8 sub-tabs mirroring
+the task's own layout: TRADE / POSITIONS / OPEN ORDERS / ORDER HISTORY /
+TRADE HISTORY / PERFORMANCE / ACCOUNT HISTORY / SETTINGS. Every tab is
+plain vanilla JS calling the API surface above — no new frontend
+infrastructure, reusing the existing `el`/`table`/`card`/`fetchJSON`/
+`fetchJSONWithAdminKey` helpers and CSS tokens the rest of the dashboard
+already uses (two new button modifiers, `.controls button.buy`/`.sell`,
+reuse the existing `--green`/`--red` tokens rather than introducing new
+colors).
+
+- The header shows Demo Balance/Equity/Available/Unrealized PnL/Realized
+  PnL/Margin Ratio, with an explicit "PAPER TRADING / DEMO — REAL FUNDS
+  NOT USED" banner always visible.
+- TRADE has OPEN LONG (green)/OPEN SHORT (red) buttons, symbol/leverage/
+  margin-mode/order-type selectors, and price/stop-price fields that show
+  only for the order types that need them.
+- POSITIONS has Close 25%/50%/75%/100% buttons and an inline SL/TP
+  setter per row.
+- OPEN ORDERS has a Cancel button per resting order.
+- PERFORMANCE renders the overall stat grid plus the by-side/by-symbol/
+  by-leverage/by-strategy breakdown tables.
+- SETTINGS has the account-name switcher (a lightweight stand-in for the
+  task's "New Demo Session" concept — different account names are
+  fully separate demo accounts) and the Reset Demo Account button.
+- Sub-tab navigation goes through the URL (`#futures?tab=positions`), so
+  each tab is a full page render via the existing `navigate()`/hash
+  routing rather than a bespoke local tab switcher — consistent with how
+  every other multi-view page in this dashboard already works.
+- No candlestick/TradingView-style chart yet on the TRADE tab (see Known
+  Limitations) — the only charting primitive in this dashboard today is a
+  single-series SVG line chart with no OHLC support.
+
+Live-verified in a real headless-Chromium session against the running
+server: placed a MARKET order through the UI (real BTC price, real fill),
+confirmed the resulting position appeared in POSITIONS with the correct
+entry/mark/margin, confirmed PERFORMANCE and ACCOUNT HISTORY rendered
+real data, and confirmed the SETTINGS tab's controls render correctly.
+
 ## Known limitations
 
 Tracked in full in `docs/FUTURES_SIMULATOR_MATH.md`'s "Known limitations"
@@ -218,9 +259,14 @@ section — summarized here:
 - Mark price is the raw last observed price; the EMA-smoothed "SIMULATED
   MARK PRICE" formula exists as a pure function but isn't wired into live
   position updates yet.
-- No dashboard UI yet — this increment is API-only.
+- No candlestick/TradingView-style price chart on the TRADE tab yet — this
+  dashboard has no OHLC charting primitive anywhere today, only a single-
+  series SVG line chart; building one is a dedicated future increment.
 - No AI-forecast integration on this surface yet, and no historical-replay
   trading mode yet.
+- OPEN ORDERS is client-side filtered from the full order-history fetch
+  (`status === "NEW"`) rather than a dedicated server-side filter — fine
+  at demo-account order volumes.
 - Performance breakdowns (`by_side`/`by_symbol`/`by_leverage`/`by_strategy`)
   compute over every closed trade with no pagination or date-range filter
   yet — fine at demo-account trade volumes, would need one at scale.

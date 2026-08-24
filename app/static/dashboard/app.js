@@ -5726,6 +5726,506 @@ async function renderAssetDetail(params) {
   return nodes;
 }
 
+// ---- Futures Simulator ----------------------------------------------------
+// 100% demo/paper trading -- every number here comes from the real
+// /api/simulator/* endpoints (real market data drives fills; only the
+// account/position/order state is simulated). No real money, no real
+// Binance orders, ever. See docs/FUTURES_SIMULATOR.md.
+
+const FUTURES_ACCOUNT_NAME_KEY = "futures_sim_account_name";
+function futuresAccountName() {
+  return localStorage.getItem(FUTURES_ACCOUNT_NAME_KEY) || "default";
+}
+
+const FUTURES_TABS = [
+  "trade",
+  "positions",
+  "orders",
+  "order-history",
+  "trade-history",
+  "performance",
+  "account-history",
+  "settings",
+];
+const FUTURES_TAB_LABELS = {
+  trade: "Trade",
+  positions: "Positions",
+  orders: "Open Orders",
+  "order-history": "Order History",
+  "trade-history": "Trade History",
+  performance: "Performance",
+  "account-history": "Account History",
+  settings: "Settings",
+};
+
+async function renderFuturesTradeTab() {
+  const wrap = el("div", {});
+  const symbolsData = await safe("/api/simulator/symbols");
+  const symbols = symbolsData ? symbolsData.symbols : [];
+  if (!symbols.length) {
+    wrap.appendChild(el("p", { class: "error" }, "No symbols available."));
+    return wrap;
+  }
+
+  const symbolSelect = el(
+    "select",
+    {},
+    symbols.map((s) => el("option", { value: s.symbol }, s.symbol))
+  );
+  const leverageSelect = el("select", {});
+  const marginModeSelect = el("select", {}, [
+    el("option", { value: "ISOLATED" }, "ISOLATED"),
+    el("option", { value: "CROSS" }, "CROSS"),
+  ]);
+  const orderTypeSelect = el("select", {}, [
+    el("option", { value: "MARKET" }, "MARKET"),
+    el("option", { value: "LIMIT" }, "LIMIT"),
+    el("option", { value: "STOP_MARKET" }, "STOP_MARKET"),
+    el("option", { value: "TAKE_PROFIT_MARKET" }, "TAKE_PROFIT_MARKET"),
+  ]);
+  const quantityInput = el("input", { type: "number", step: "any", placeholder: "Quantity", value: "0.01" });
+  const priceInput = el("input", { type: "number", step: "any", placeholder: "Limit price" });
+  const stopPriceInput = el("input", { type: "number", step: "any", placeholder: "Stop price" });
+  const reduceOnlyInput = el("input", { type: "checkbox" });
+  const reduceOnlyLabel = el("label", {}, [reduceOnlyInput, " Reduce Only"]);
+
+  function refreshLeverageOptions() {
+    const symbolRow = symbols.find((s) => s.symbol === symbolSelect.value);
+    const options = symbolRow ? symbolRow.leverage_options : [1];
+    leverageSelect.innerHTML = "";
+    for (const lev of options) leverageSelect.appendChild(el("option", { value: String(lev) }, `${lev}x`));
+  }
+  symbolSelect.addEventListener("change", refreshLeverageOptions);
+  refreshLeverageOptions();
+
+  function refreshOrderTypeVisibility() {
+    priceInput.style.display = orderTypeSelect.value === "LIMIT" ? "" : "none";
+    stopPriceInput.style.display =
+      orderTypeSelect.value === "STOP_MARKET" || orderTypeSelect.value === "TAKE_PROFIT_MARKET" ? "" : "none";
+  }
+  orderTypeSelect.addEventListener("change", refreshOrderTypeVisibility);
+  refreshOrderTypeVisibility();
+
+  const resultBox = el("p", { class: "sub" });
+
+  async function submitOrder(side) {
+    resultBox.className = "sub";
+    resultBox.textContent = "Placing order...";
+    try {
+      const body = {
+        symbol: symbolSelect.value,
+        side,
+        order_type: orderTypeSelect.value,
+        quantity: parseFloat(quantityInput.value),
+        leverage: parseInt(leverageSelect.value, 10),
+        margin_mode: marginModeSelect.value,
+        reduce_only: reduceOnlyInput.checked,
+        account_name: futuresAccountName(),
+      };
+      if (orderTypeSelect.value === "LIMIT") body.price = parseFloat(priceInput.value);
+      if (orderTypeSelect.value === "STOP_MARKET" || orderTypeSelect.value === "TAKE_PROFIT_MARKET") {
+        body.stop_price = parseFloat(stopPriceInput.value);
+      }
+      const result = await fetchJSONWithAdminKey("/api/simulator/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      resultBox.className = result.order.status === "REJECTED" ? "error" : "sub";
+      resultBox.textContent =
+        `Order ${result.order.status}` + (result.order.reject_reason ? `: ${result.order.reject_reason}` : "");
+    } catch (err) {
+      resultBox.className = "error";
+      resultBox.textContent = `Error: ${err.message}`;
+    }
+  }
+
+  const openLongBtn = el("button", { class: "buy" }, "OPEN LONG");
+  const openShortBtn = el("button", { class: "sell" }, "OPEN SHORT");
+  openLongBtn.addEventListener("click", () => submitOrder("BUY"));
+  openShortBtn.addEventListener("click", () => submitOrder("SELL"));
+
+  wrap.appendChild(
+    el("div", { class: "controls" }, [
+      symbolSelect,
+      leverageSelect,
+      marginModeSelect,
+      orderTypeSelect,
+      quantityInput,
+      priceInput,
+      stopPriceInput,
+      reduceOnlyLabel,
+      openLongBtn,
+      openShortBtn,
+    ])
+  );
+  wrap.appendChild(
+    el(
+      "p",
+      { class: "sub" },
+      "reduceOnly caps a close at the existing position's size rather than flipping into the opposite side."
+    )
+  );
+  wrap.appendChild(resultBox);
+  return wrap;
+}
+
+async function renderFuturesPositionsTab() {
+  const data = await safe(`/api/simulator/positions?name=${encodeURIComponent(futuresAccountName())}&status=OPEN`);
+  const positions = data ? data.positions : [];
+  const wrap = el("div", {});
+  if (!positions.length) {
+    wrap.appendChild(el("p", { class: "sub" }, "No open positions."));
+    return wrap;
+  }
+
+  const rows = positions.map((p) => {
+    const closeBtns = [25, 50, 75, 100].map((pct) => {
+      const btn = el("button", {}, `${pct}%`);
+      btn.addEventListener("click", async () => {
+        if (!confirm(`Close ${pct}% of this ${p.symbol} ${p.side} position?`)) return;
+        try {
+          await fetchJSONWithAdminKey(`/api/simulator/positions/${p.position_id}/close`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ percent: pct, account_name: futuresAccountName() }),
+          });
+          navigate("futures", new URLSearchParams({ tab: "positions" }));
+        } catch (err) {
+          alert(`Error closing position: ${err.message}`);
+        }
+      });
+      return btn;
+    });
+
+    const slInput = el("input", { type: "number", step: "any", placeholder: "SL", value: p.sl_price ?? "" });
+    const tpInput = el("input", { type: "number", step: "any", placeholder: "TP", value: p.tp_price ?? "" });
+    const setSlTpBtn = el("button", {}, "Set");
+    setSlTpBtn.addEventListener("click", async () => {
+      try {
+        await fetchJSONWithAdminKey(`/api/simulator/positions/${p.position_id}/sl-tp`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sl_price: slInput.value !== "" ? parseFloat(slInput.value) : null,
+            tp_price: tpInput.value !== "" ? parseFloat(tpInput.value) : null,
+            account_name: futuresAccountName(),
+          }),
+        });
+        navigate("futures", new URLSearchParams({ tab: "positions" }));
+      } catch (err) {
+        alert(`Error setting SL/TP: ${err.message}`);
+      }
+    });
+
+    return [
+      p.symbol,
+      el("span", { class: p.side === "LONG" ? "up" : "down" }, p.side),
+      String(p.quantity),
+      fmtNum(p.entry_price),
+      fmtNum(p.mark_price),
+      p.liquidation_price != null ? fmtNum(p.liquidation_price) : "n/a",
+      `${p.leverage}x`,
+      fmtNum(p.initial_margin),
+      el("span", { class: changeClass(p.unrealized_pnl) }, fmtNum(p.unrealized_pnl)),
+      p.roi_pct != null ? el("span", { class: changeClass(p.roi_pct) }, fmtPct(p.roi_pct)) : "n/a",
+      el("div", { class: "controls" }, [slInput, tpInput, setSlTpBtn]),
+      el("div", { class: "controls" }, closeBtns),
+    ];
+  });
+
+  wrap.appendChild(
+    table(
+      ["Symbol", "Side", "Size", "Entry", "Mark", "Liq Price", "Leverage", "Margin", "PnL", "ROI", "SL / TP", "Close"],
+      rows
+    )
+  );
+  return wrap;
+}
+
+async function renderFuturesOpenOrdersTab() {
+  const data = await safe(`/api/simulator/orders?name=${encodeURIComponent(futuresAccountName())}&limit=200`);
+  const orders = (data ? data.orders : []).filter((o) => o.status === "NEW");
+  const wrap = el("div", {});
+  if (!orders.length) {
+    wrap.appendChild(el("p", { class: "sub" }, "No open orders."));
+    return wrap;
+  }
+
+  const rows = orders.map((o) => {
+    const cancelBtn = el("button", {}, "Cancel");
+    cancelBtn.addEventListener("click", async () => {
+      if (!confirm(`Cancel this resting ${o.order_type} order?`)) return;
+      try {
+        await fetchJSONWithAdminKey(
+          `/api/simulator/orders/${o.order_id}?account_name=${encodeURIComponent(futuresAccountName())}`,
+          { method: "DELETE" }
+        );
+        navigate("futures", new URLSearchParams({ tab: "orders" }));
+      } catch (err) {
+        alert(`Error cancelling order: ${err.message}`);
+      }
+    });
+    const triggerPrice = o.price != null ? fmtNum(o.price) : o.stop_price != null ? fmtNum(o.stop_price) : "market";
+    return [
+      o.symbol,
+      el("span", { class: o.side === "BUY" ? "up" : "down" }, o.side),
+      o.order_type,
+      String(o.quantity),
+      triggerPrice,
+      `${o.leverage}x`,
+      o.reduce_only ? "yes" : "no",
+      new Date(o.created_at).toLocaleString(),
+      cancelBtn,
+    ];
+  });
+
+  wrap.appendChild(
+    table(["Symbol", "Side", "Type", "Qty", "Trigger Price", "Leverage", "Reduce Only", "Created", "Cancel"], rows)
+  );
+  return wrap;
+}
+
+async function renderFuturesOrderHistoryTab() {
+  const data = await safe(`/api/simulator/orders?name=${encodeURIComponent(futuresAccountName())}&limit=100`);
+  const orders = data ? data.orders : [];
+  const wrap = el("div", {});
+  if (!orders.length) {
+    wrap.appendChild(el("p", { class: "sub" }, "No orders yet."));
+    return wrap;
+  }
+  wrap.appendChild(
+    table(
+      ["Symbol", "Side", "Type", "Qty", "Filled", "Fill Price", "Fee", "Status", "Created"],
+      orders.map((o) => [
+        o.symbol,
+        el("span", { class: o.side === "BUY" ? "up" : "down" }, o.side),
+        o.order_type,
+        String(o.quantity),
+        String(o.filled_quantity),
+        o.actual_fill_price != null ? fmtNum(o.actual_fill_price) : "n/a",
+        o.fee_amount != null ? fmtNum(o.fee_amount, 4) : "n/a",
+        o.status + (o.reject_reason ? ` (${o.reject_reason})` : ""),
+        new Date(o.created_at).toLocaleString(),
+      ])
+    )
+  );
+  return wrap;
+}
+
+async function renderFuturesTradeHistoryTab() {
+  const data = await safe(`/api/simulator/trades?name=${encodeURIComponent(futuresAccountName())}&limit=100`);
+  const trades = data ? data.trades : [];
+  const wrap = el("div", {});
+  if (!trades.length) {
+    wrap.appendChild(el("p", { class: "sub" }, "No closed trades yet."));
+    return wrap;
+  }
+  wrap.appendChild(
+    table(
+      ["Symbol", "Side", "Qty", "Entry", "Exit", "Net PnL", "ROI", "Fees", "Exit Reason", "Closed"],
+      trades.map((t) => [
+        t.symbol,
+        el("span", { class: t.side === "LONG" ? "up" : "down" }, t.side),
+        String(t.quantity),
+        fmtNum(t.entry_price),
+        fmtNum(t.exit_price),
+        el("span", { class: changeClass(t.net_pnl) }, fmtNum(t.net_pnl)),
+        el("span", { class: changeClass(t.roi_pct) }, fmtPct(t.roi_pct)),
+        fmtNum(t.fees, 4),
+        t.exit_reason,
+        new Date(t.closed_at).toLocaleString(),
+      ])
+    )
+  );
+  return wrap;
+}
+
+function futuresPerformanceStatsGrid(stats) {
+  return el("div", { class: "grid" }, [
+    card("Total Trades", stats.total_trades),
+    card("Win Rate", stats.win_rate_pct != null ? `${stats.win_rate_pct}%` : "n/a"),
+    card("Profit Factor", stats.profit_factor ?? "n/a"),
+    card(
+      "Expectancy",
+      stats.expectancy_pct != null ? fmtPct(stats.expectancy_pct) : "n/a",
+      null,
+      changeClass(stats.expectancy_pct)
+    ),
+    card("Total PnL", fmtNum(stats.total_pnl), null, changeClass(stats.total_pnl)),
+    card("Total Fees", fmtNum(stats.total_fees)),
+    card("Max Drawdown", stats.max_drawdown_pct != null ? `${stats.max_drawdown_pct}%` : "n/a", null, "down"),
+    card("Sharpe", stats.sharpe_ratio ?? "n/a"),
+    card("Sortino", stats.sortino_ratio ?? "n/a"),
+    card("Liquidations", stats.liquidations),
+  ]);
+}
+
+function futuresBreakdownTable(title, breakdown) {
+  const keys = Object.keys(breakdown || {});
+  if (!keys.length) return null;
+  const section = el("div", {}, [el("h3", {}, title)]);
+  section.appendChild(
+    table(
+      ["Group", "Trades", "Win Rate", "Total PnL", "Profit Factor"],
+      keys.map((k) => [
+        k,
+        String(breakdown[k].total_trades),
+        breakdown[k].win_rate_pct != null ? `${breakdown[k].win_rate_pct}%` : "n/a",
+        el("span", { class: changeClass(breakdown[k].total_pnl) }, fmtNum(breakdown[k].total_pnl)),
+        breakdown[k].profit_factor ?? "n/a",
+      ])
+    )
+  );
+  return section;
+}
+
+async function renderFuturesPerformanceTab() {
+  const stats = await safe(`/api/simulator/performance?name=${encodeURIComponent(futuresAccountName())}`);
+  const wrap = el("div", {});
+  if (!stats) {
+    wrap.appendChild(el("p", { class: "error" }, "Performance data unavailable."));
+    return wrap;
+  }
+  wrap.appendChild(el("h3", {}, "Overall"));
+  wrap.appendChild(futuresPerformanceStatsGrid(stats.overall));
+
+  for (const [title, key] of [
+    ["By Side", "by_side"],
+    ["By Symbol", "by_symbol"],
+    ["By Leverage", "by_leverage"],
+    ["By Strategy", "by_strategy"],
+  ]) {
+    const section = futuresBreakdownTable(title, stats[key]);
+    if (section) wrap.appendChild(section);
+  }
+  return wrap;
+}
+
+async function renderFuturesAccountHistoryTab() {
+  const data = await safe(`/api/simulator/ledger?name=${encodeURIComponent(futuresAccountName())}&limit=200`);
+  const entries = data ? data.ledger : [];
+  const wrap = el("div", {});
+  if (!entries.length) {
+    wrap.appendChild(el("p", { class: "sub" }, "No ledger entries yet."));
+    return wrap;
+  }
+  wrap.appendChild(
+    table(
+      ["Event", "Amount", "Balance After", "Description", "Time"],
+      entries.map((e) => [
+        e.event_type,
+        el("span", { class: changeClass(e.amount) }, fmtNum(e.amount, 4)),
+        fmtNum(e.balance_after),
+        e.description,
+        new Date(e.created_at).toLocaleString(),
+      ])
+    )
+  );
+  return wrap;
+}
+
+async function renderFuturesSettingsTab() {
+  const wrap = el("div", {});
+  wrap.appendChild(el("h3", {}, "Demo Account"));
+  wrap.appendChild(
+    el(
+      "p",
+      { class: "sub" },
+      "Switching the account name starts (or resumes) a separate demo account -- useful for comparing strategies side by side."
+    )
+  );
+  const nameInput = el("input", { type: "text", value: futuresAccountName(), placeholder: "Account name" });
+  const switchBtn = el("button", {}, "Switch Account");
+  switchBtn.addEventListener("click", () => {
+    localStorage.setItem(FUTURES_ACCOUNT_NAME_KEY, nameInput.value.trim() || "default");
+    navigate("futures", new URLSearchParams({ tab: "settings" }));
+  });
+  wrap.appendChild(el("div", { class: "controls" }, [nameInput, switchBtn]));
+
+  wrap.appendChild(el("h3", {}, "Reset Demo Account"));
+  wrap.appendChild(
+    el(
+      "p",
+      { class: "sub" },
+      "Resets this account's balance back to the initial demo balance. The old session's full history (orders/trades/ledger) stays queryable forever -- nothing is deleted, only a fresh session starts."
+    )
+  );
+  const resetStatus = el("p", { class: "sub" });
+  const resetBtn = el("button", {}, "Reset Demo Account");
+  resetBtn.addEventListener("click", async () => {
+    if (!confirm("Reset this demo account? Balance returns to the initial demo balance.")) return;
+    try {
+      await fetchJSONWithAdminKey(
+        `/api/simulator/account/reset?name=${encodeURIComponent(futuresAccountName())}`,
+        { method: "POST" }
+      );
+      navigate("futures", new URLSearchParams({ tab: "settings" }));
+    } catch (err) {
+      resetStatus.className = "error";
+      resetStatus.textContent = `Error: ${err.message}`;
+    }
+  });
+  wrap.appendChild(el("div", { class: "controls" }, [resetBtn]));
+  wrap.appendChild(resetStatus);
+  return wrap;
+}
+
+const FUTURES_TAB_RENDERERS = {
+  trade: renderFuturesTradeTab,
+  positions: renderFuturesPositionsTab,
+  orders: renderFuturesOpenOrdersTab,
+  "order-history": renderFuturesOrderHistoryTab,
+  "trade-history": renderFuturesTradeHistoryTab,
+  performance: renderFuturesPerformanceTab,
+  "account-history": renderFuturesAccountHistoryTab,
+  settings: renderFuturesSettingsTab,
+};
+
+async function renderFuturesSimulator(params) {
+  const root = el("div", { class: "futures-sim" });
+  root.appendChild(el("h2", {}, "FUTURES SIMULATOR"));
+  root.appendChild(
+    el("p", {}, [el("span", { class: "pill warning" }, "PAPER TRADING / DEMO — REAL FUNDS NOT USED")])
+  );
+
+  const accountState = await safe(`/api/simulator/account?name=${encodeURIComponent(futuresAccountName())}`);
+  if (accountState) {
+    root.appendChild(
+      el("div", { class: "grid" }, [
+        card("Demo Balance", fmtNum(accountState.wallet_balance)),
+        card("Equity", fmtNum(accountState.equity)),
+        card("Available", fmtNum(accountState.available_margin)),
+        card("Unrealized PnL", fmtNum(accountState.unrealized_pnl), null, changeClass(accountState.unrealized_pnl)),
+        card(
+          "Realized PnL",
+          fmtNum(accountState.realized_pnl_total),
+          null,
+          changeClass(accountState.realized_pnl_total)
+        ),
+        card("Margin Ratio", accountState.margin_ratio != null ? `${accountState.margin_ratio}%` : "n/a"),
+      ])
+    );
+  } else {
+    root.appendChild(el("p", { class: "error" }, "Futures Simulator account unavailable."));
+  }
+
+  const requestedTab = params.get("tab");
+  const currentTab = FUTURES_TABS.includes(requestedTab) ? requestedTab : "trade";
+
+  const tabsRow = el("div", { class: "forecast-tabs" });
+  for (const tab of FUTURES_TABS) {
+    const btn = el("button", { class: `forecast-tab${tab === currentTab ? " active" : ""}` }, FUTURES_TAB_LABELS[tab]);
+    btn.addEventListener("click", () => navigate("futures", new URLSearchParams({ tab })));
+    tabsRow.appendChild(btn);
+  }
+  root.appendChild(tabsRow);
+
+  const body = await FUTURES_TAB_RENDERERS[currentTab]();
+  root.appendChild(body);
+  return root;
+}
+
 const PAGES = {
   overview: renderOverview, forecast2: renderForecast2, forecast2detail: renderForecastDetail, forecast2performance: renderForecastPerformance, forecast2agents: renderForecastAgents, forecast2errors: renderForecastErrorLab, forecast2learning: renderForecastLearningCenter, assetdetail: renderAssetDetail, watchlist: renderWatchlist, consensus: renderConsensus, committee: renderCommittee, terminal: renderTerminal, macro: renderMacro, crypto: renderCrypto,
   stocks: renderStocks,
@@ -5742,6 +6242,7 @@ const PAGES = {
   risk: renderRisk, why: renderExplanation, watchdog: renderWatchdog, status: renderStatus,
   replay: renderReplay, shocks: renderShocks, technical: renderTechnical, scanner: renderScanner,
   memory: renderMemory,
+  futures: renderFuturesSimulator,
   settings: renderSettings,
 };
 
