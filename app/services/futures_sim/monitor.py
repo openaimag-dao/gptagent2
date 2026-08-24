@@ -6,7 +6,14 @@ never touches a real exchange.
 Runs on a schedule (see app.scheduler.jobs.check_futures_sim_positions_job)
 rather than being invoked per-request, since a position can be liquidated
 or hit its SL/TP purely from a price move with no order ever placed by the
-user."""
+user.
+
+Deliberately checks triggers against the raw reference price
+(engine.get_current_price), not the SIMULATED MARK PRICE EMA
+(engine.get_mark_price) that account/position PnL display uses -- a
+liquidation/SL/TP is a real, consequential event and should fire against
+the actual observed price, not a smoothed lagging value that could delay
+or advance it relative to what genuinely happened in the market."""
 
 from redis.asyncio import Redis
 from sqlalchemy import select

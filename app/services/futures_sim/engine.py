@@ -332,6 +332,55 @@ async def get_current_price(
     }
 
 
+_MARK_PRICE_EMA_KEY_PREFIX = "futures_sim:mark_ema:"
+_MARK_PRICE_EMA_TTL_SECONDS = 3600
+
+
+async def get_mark_price(
+    session_factory: async_sessionmaker[AsyncSession], redis: Redis, symbol: str
+) -> dict | None:
+    """SIMULATED MARK PRICE (task's own explicit requirement: mark price
+    must NOT always just be the last traded price). Wraps get_current_price()
+    with the EMA smoothing compute_simulated_mark_price() already
+    implements, applied incrementally: the previous EMA value is persisted
+    in Redis per symbol (`_MARK_PRICE_EMA_KEY_PREFIX`) and blended with
+    each newly observed real reference price, rather than replaying a
+    stored price history -- mathematically identical to feeding a growing
+    list into compute_simulated_mark_price(), without needing to store one.
+
+    Returns the same shape as get_current_price() plus `reference_price`
+    (the real, unsmoothed price get_current_price() returned) and
+    `mark_price_simulated: True` -- every consumer MUST surface that flag
+    (or an equivalent "SIMULATED MARK PRICE" label) rather than presenting
+    the smoothed value as sourced from a real exchange. Returns None
+    (never a fabricated mark price) when get_current_price() itself has
+    nothing for this symbol."""
+    settings = get_settings()
+    price_info = await get_current_price(session_factory, redis, symbol)
+    if price_info is None:
+        return None
+
+    reference_price = price_info["price"]
+    key = f"{_MARK_PRICE_EMA_KEY_PREFIX}{symbol.upper()}"
+    previous_ema_raw = await redis.get(key)
+    if previous_ema_raw is not None:
+        previous_ema = float(previous_ema_raw)
+        mark_price = (
+            settings.futures_sim_mark_price_ema_alpha * reference_price
+            + (1 - settings.futures_sim_mark_price_ema_alpha) * previous_ema
+        )
+    else:
+        mark_price = reference_price
+    await redis.set(key, str(mark_price), ex=_MARK_PRICE_EMA_TTL_SECONDS)
+
+    return {
+        **price_info,
+        "price": mark_price,
+        "reference_price": reference_price,
+        "mark_price_simulated": True,
+    }
+
+
 class FuturesSimEngine:
     """Account-lifecycle service: get-or-create, reset, and live account
     state. Order execution lives in app.services.futures_sim.orders."""
@@ -466,9 +515,14 @@ class FuturesSimEngine:
         maintenance_margin_total = 0.0
         position_states = []
         for position in positions:
-            price_info = await get_current_price(
-                self._session_factory, self._redis, position.symbol
-            )
+            # SIMULATED MARK PRICE (task: never just the last traded
+            # price) -- unrealized PnL, equity, and margin ratio are all
+            # driven by mark price on a real exchange too, so this uses
+            # the same smoothed value get_mark_price() computes, not the
+            # raw reference price. Liquidation/SL/TP trigger checks
+            # (app.services.futures_sim.monitor) deliberately still use
+            # the raw reference price -- see that module's own docstring.
+            price_info = await get_mark_price(self._session_factory, self._redis, position.symbol)
             mark_price = (
                 price_info["price"] if price_info is not None else float(position.mark_price)
             )

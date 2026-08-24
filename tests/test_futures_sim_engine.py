@@ -19,6 +19,7 @@ from app.services.futures_sim.engine import (
     compute_roi_pct,
     compute_simulated_mark_price,
     get_current_price,
+    get_mark_price,
     resolve_max_leverage,
     validate_leverage,
 )
@@ -237,6 +238,50 @@ async def test_get_current_price_none_when_nothing_is_available():
     assert result is None
 
 
+# ---- get_mark_price (SIMULATED MARK PRICE) --------------------------------
+
+
+def _redis_with_ema(previous_ema: float | None):
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=str(previous_ema) if previous_ema is not None else None)
+    redis.set = AsyncMock()
+    return redis
+
+
+async def test_get_mark_price_uses_the_reference_price_when_no_prior_ema_exists():
+    redis = _redis_with_ema(None)
+    with patch(
+        "app.services.futures_sim.engine.get_current_price",
+        AsyncMock(return_value={"price": 100_000.0, "freshness": "live"}),
+    ):
+        result = await get_mark_price(MagicMock(), redis, "BTC")
+
+    assert result["price"] == 100_000.0
+    assert result["reference_price"] == 100_000.0
+    assert result["mark_price_simulated"] is True
+    redis.set.assert_awaited_once()
+
+
+async def test_get_mark_price_blends_with_the_previous_ema():
+    redis = _redis_with_ema(100_000.0)
+    with patch(
+        "app.services.futures_sim.engine.get_current_price",
+        AsyncMock(return_value={"price": 101_000.0, "freshness": "live"}),
+    ):
+        result = await get_mark_price(MagicMock(), redis, "BTC")
+
+    # alpha=0.3 default: 0.3*101_000 + 0.7*100_000 = 100_300
+    assert result["price"] == pytest.approx(100_300.0)
+    assert result["reference_price"] == 101_000.0
+    assert result["price"] != result["reference_price"]  # deliberately not just the last price
+
+
+async def test_get_mark_price_none_when_no_reference_price_is_available():
+    with patch("app.services.futures_sim.engine.get_current_price", AsyncMock(return_value=None)):
+        result = await get_mark_price(MagicMock(), AsyncMock(), "MADEUP")
+    assert result is None
+
+
 # ---- Account lifecycle ------------------------------------------------
 
 
@@ -350,7 +395,14 @@ async def test_get_account_state_includes_open_position_unrealized_pnl():
     )
     session_factory, session = _futures_sim_session(get_return=account)
     session.scalars = AsyncMock(return_value=[open_position])
-    engine = FuturesSimEngine(session_factory, AsyncMock())
+    # get_account_state now sources mark price via get_mark_price(), which
+    # reads/writes an EMA state key in Redis -- a fresh mock with no prior
+    # EMA (get returns None) means the first observation is used as-is,
+    # matching this test's own un-smoothed expected value.
+    redis_mock = AsyncMock()
+    redis_mock.get = AsyncMock(return_value=None)
+    redis_mock.set = AsyncMock()
+    engine = FuturesSimEngine(session_factory, redis_mock)
 
     tick = SimpleNamespace(price=102_000.0, event_timestamp=datetime.now(UTC), source="coinbase")
     with patch(

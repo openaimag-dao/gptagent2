@@ -205,24 +205,38 @@ genuinely needs persisting (a high-water mark can't be recovered from
 current state alone) and are ratcheted forward whenever a freshly computed
 equity exceeds the stored peak.
 
-## 10. Mark price (SIMULATED when smoothed)
+## 10. Mark price (SIMULATED MARK PRICE)
 
 ```
-mark = recent_prices[0]
-for price in recent_prices[1:]:
-    mark = alpha * price + (1 - alpha) * mark          # alpha = 0.3 default
+mark = alpha * reference_price + (1 - alpha) * previous_mark      # alpha = 0.3 default
 ```
 
-An exponential moving average over recently observed real prices —
-deliberately **not** just the latest traded price (the task's own explicit
+An exponential moving average over the real reference price — deliberately
+**not** just the latest traded price (the task's own explicit
 requirement), since this project has no separate real index-price feed to
-blend with the way a real exchange's mark price does. `compute_simulated_mark_price`
-exists as a pure function today; it is not yet wired into the live
-position `mark_price` field or `get_current_price()` (both currently use
-the raw last observed tick/candle price directly) — wiring the EMA
-smoothing into periodic mark-price updates is a documented, deferred
-increment. Any consumer of a smoothed value must label it "SIMULATED MARK
-PRICE," never present it as sourced from a real exchange.
+blend with the way a real exchange's mark price does.
+`engine.get_mark_price()` applies this incrementally: the previous EMA
+value is persisted in Redis per symbol (`futures_sim:mark_ema:{symbol}`,
+1-hour TTL) and blended with each newly observed real reference price
+from `get_current_price()` — mathematically identical to
+`compute_simulated_mark_price()`'s own list-based formula (still used
+directly by its own unit tests), without needing to store a price
+history. Every response carries `mark_price_simulated: true` alongside
+the value, and the raw `reference_price` it was blended from, so a
+consumer never has to guess.
+
+**Where it's used:** account/position unrealized PnL, equity, and margin
+ratio (`FuturesSimEngine.get_account_state()`) and the `GET
+/api/simulator/positions` live-enrichment path — matching how mark price
+drives PnL/margin on a real exchange too.
+
+**Where it's deliberately NOT used:** liquidation/SL/TP trigger checks
+(`app.services.futures_sim.monitor`) and resting-order fill checks
+(`app.services.futures_sim.resting_orders`) both check the raw,
+unsmoothed reference price from `get_current_price()` — a liquidation or
+a resting order's fill is a real, consequential event and should fire
+against what genuinely happened in the market, not a smoothed lagging
+value that could delay or advance it.
 
 ## 11. Liquidation / SL / TP monitoring
 
@@ -341,9 +355,10 @@ documented simplification).
 
 - The ISOLATED liquidation formula (§8a) does not net in the liquidating
   fill's own taker fee.
-- Mark price smoothing (§10) exists as a pure function but is not yet
-  wired into live position updates — `mark_price` is currently the raw
-  last observed price.
+- The persisted `futures_sim_positions.mark_price` column (set at open/
+  increase time) is never updated after that — §10's live SIMULATED MARK
+  PRICE is always computed fresh at read time instead, so the stored
+  column is a historical snapshot only, never read for PnL/display.
 - Resting orders (§12) do not reserve margin at placement time; a
   documented simplification versus a real exchange's margin-reservation
   model.
