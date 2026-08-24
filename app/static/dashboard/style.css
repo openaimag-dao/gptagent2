@@ -220,6 +220,12 @@ pre.summary {
   font-weight: 600;
   cursor: pointer;
 }
+/* Futures Simulator: LONG/SHORT (BUY/SELL) buttons reuse the existing
+   --green/--red tokens .up/.down/.pill already use, never a new color --
+   "positive"/"negative" must mean the same color everywhere. */
+.controls button.buy { background: var(--green); color: #04140a; }
+.controls button.sell { background: var(--red); color: #200604; }
+.controls button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .error { color: var(--red); font-size: 13px; }
 .loading { color: var(--muted); font-size: 13px; }
