@@ -11,9 +11,13 @@ reused at least one function, column, table, or module that already
 existed before it started — confirmed in each PR's own description with
 file:line references to the code being extended.
 
-This report was written after PR #140 merged, with every number pulled
+This report was written after PR #143 merged, with every number pulled
 live from a running instance against the local Postgres database (not
-estimated or fabricated) — see each section below for exactly how.
+estimated or fabricated) — see each section below for exactly how. It was
+first published after PR #140 (ten increments) and updated in place after
+PR #143 (twelve) once two more real, spec-named gaps were found on
+re-audit; see the note at the end of WHAT WAS CHANGED for what changed
+between those two versions.
 
 ---
 
@@ -48,6 +52,14 @@ Confirmed present and working before this program started (Forecasting
   `forecast_version` making lineage explicit).
 - **Crypto daily history sync, stale Forecast Center root-cause fix**:
   both already shipped.
+- **NO_TRADE / stale-data confidence discount**: `NoTradeEngine`
+  (`app/services/trade_setup/no_trade.py`) already exists as a separate,
+  mature gate; forecast confidence was already discounted for stale/poor
+  data via `data_quality_score` feeding `classify_conviction()`'s
+  `effective_confidence_pct`, and LIVE/RECENT/DELAYED/STALE freshness
+  badges already existed on every official card. This program persisted
+  and surfaced that existing discount (see increment 8) rather than
+  building a second gate.
 
 ## WHAT WAS MISSING
 
@@ -71,6 +83,11 @@ this program:
   (`effective_confidence_pct`) and `compute_data_quality_score()`, and
   already returned in the live `compute()` payload, but never *persisted*
   — an official row lost them the moment it was written.
+- **Empirical quantile coverage validation** — CRPS and the probability-
+  calibration curve both existed (the latter only after this program's
+  own increment 1) but neither answers "is the persisted P10-P90 band's
+  own WIDTH honest" — a third, distinct calibration question the original
+  spec named explicitly and that stayed unanswered until increment 12.
 - **Rolling performance windows (7D/30D/90D)** on the official-forecast
   API — the underlying `since` filter existed (built for the Telegram
   weekly digest) but was never exposed via the dashboard/API.
@@ -80,15 +97,18 @@ this program:
   `grading_pending_count`/`stale_forecast_count`.
 - **Telegram `/forecast SYMBOL`** — no command existed to check an
   official call plus its own track record from Telegram.
-- **Error Lab → Forecast Detail click-through** — Error Lab listed wrong
-  calls but didn't link to their full detail page.
+- **Error Lab → Forecast Detail click-through**, and **prediction ID /
+  CRPS / P10-P90 visibility on the daily cards and Detail page** — Error
+  Lab listed wrong calls but didn't link to their full detail page; and
+  after increments 8-9 added `crps_pct`/quantiles to the API, neither was
+  actually rendered anywhere until increment 11 caught it on re-audit.
 - **Historical replay / no-leakage validation** — the leakage-safe design
   was already followed by convention in every baseline function's own
   docstring, but nothing *proved* it; a bug could have shipped silently.
 
 ## WHAT WAS CHANGED
 
-Ten increments, each its own PR, each independently tested and live-
+Twelve increments, each its own PR, each independently tested and live-
 verified against a real local Postgres/Redis instance before merge (no
 speculative "should work" claims — every increment includes a live
 verification note in its own PR description):
@@ -105,13 +125,17 @@ verification note in its own PR description):
 | 8 | #138 | `calibrated_confidence_pct`/`data_quality_score` persisted and surfaced on official cards |
 | 9 | #139 | CRPS over the persisted p10-p90 quantile distribution |
 | 10 | #140 | Historical replay leakage validation (test-only, no production code changed) |
+| 11 | #142 | Prediction ID + CRPS/P10-P90 visibility on daily cards and Detail page (closed a rendering gap increments 8-9 left open) |
+| 12 | #143 | Empirical quantile coverage validation (P10-P90 ≈ 80%, P25-P75 ≈ 50%) |
 
 Every increment that touched `price_forecast_snapshots` used an additive,
 nullable-by-default migration — no backfill, no data rewrite, honest
-`None` for rows that predate a column. Migrations `0040`-`0043` (this
-window): `zero_return_baseline_error_pct`, `regime_mean_baseline_error_pct`,
+`None` for rows that predate a column. Migrations `0040`-`0043`:
+`zero_return_baseline_error_pct`, `regime_mean_baseline_error_pct`,
 `calibrated_confidence_pct`+`data_quality_score`,
-`p10_pct..p90_pct`+`crps_pct`.
+`p10_pct..p90_pct`+`crps_pct`. Increments 11-12 needed no new migration —
+both were pure display/aggregation work over columns already persisted by
+increment 9.
 
 **Explicitly not done, on purpose:** no new engine, no new AI agent, no
 change to the production forecast math (`ForecastEngine.compute()`'s
@@ -119,18 +143,28 @@ actual target/direction/probability formula is untouched by this entire
 program) — every increment only extended grading, measurement, and
 display around the existing forecast.
 
+**Between the first and second publish of this report:** this report was
+first written and published as PR #141 after ten increments, itself
+presented as the closing deliverable. On the next work session, re-reading
+the report's own REMAINING LIMITATIONS section against the original spec
+surfaced two more concrete, safely-actionable gaps it had missed
+(increments 11 and 12 above) — both low-risk, additive, and directly
+enabled by infrastructure the first ten increments had already built. This
+version reflects that update; the honest possibility remains that another
+re-read finds a thirteenth.
+
 ## TEST RESULTS
 
-**1622 → 1636 → 1668 passed**, zero failures at every step (numbers pulled
-from each PR's own recorded test plan, not estimated): 1622 immediately
-before increment 1 (PR #131's own baseline), 1636 after increment 4 (PR
-#134), **1668 verified live just now** via `pytest -q` against this
-branch at `origin/main` tip after PR #140. `ruff check` and
-`ruff format --check` clean on every file touched across all ten
-increments. Every increment independently ran the full suite before and
-after its own change and before merge — no increment shipped with a red
-suite, and no increment's new tests were later found broken by a
-subsequent increment.
+**1622 → 1636 → 1668 → 1671 passed**, zero failures at every step (numbers
+cross-checked against each PR's own recorded test plan via the GitHub API,
+not estimated): 1622 immediately before increment 1 (PR #131's own
+baseline), 1636 after increment 4 (PR #134), 1668 after increment 10 (PR
+#140), **1671 verified live just now** via `pytest -q` against this branch
+at `origin/main` tip after PR #143. `ruff check` and `ruff format --check`
+clean on every file touched across all twelve increments. Every increment
+independently ran the full suite before and after its own change and
+before merge — no increment shipped with a red suite, and no increment's
+new tests were later found broken by a subsequent increment.
 
 ## FORECAST COVERAGE BY ASSET
 
@@ -139,15 +173,17 @@ rows only, `is_official_daily = true`) on this environment's database:
 
 | Asset | Official rows | First date | Last date |
 |---|---|---|---|
-| BTC | 5 | 2026-08-12 | 2026-08-23 |
-| SOL | 4 | 2026-08-16 | 2026-08-23 |
-| LINK | 3 | 2026-08-19 | 2026-08-23 |
-| UNI | 3 | 2026-08-21 | 2026-08-23 |
+| BTC | 6 | 2026-08-12 | 2026-08-24 |
+| SOL | 5 | 2026-08-16 | 2026-08-24 |
+| LINK | 4 | 2026-08-19 | 2026-08-24 |
+| UNI | 4 | 2026-08-21 | 2026-08-24 |
 
 All four official symbols have at least one official forecast; coverage is
-still shallow (3-5 days each) because this is a development/sandbox
+still shallow (4-6 days each) because this is a development/sandbox
 database, not a long-running production deployment — sample sizes below
-are correspondingly small and flagged as such throughout.
+are correspondingly small and flagged as such throughout. (Row counts grew
+by one per asset since this report's first publish — the daily job kept
+running normally between sessions, exactly as designed.)
 
 ## GRADING COVERAGE BY ASSET
 
@@ -158,14 +194,16 @@ have no direction to grade):
 
 | Asset | Evaluated | Direction-graded | Neutral (excluded from direction grading) |
 |---|---|---|---|
-| BTC | 4 / 5 | 4 | 0 |
-| SOL | 4 / 4 | 4 | 0 |
-| LINK | 3 / 3 | 3 | 0 |
-| UNI | 3 / 3 | 2 | 1 |
-| **Total** | **14 / 15** | **13** | **1** |
+| BTC | 6 / 6 | 6 | 0 |
+| SOL | 5 / 5 | 5 | 0 |
+| LINK | 4 / 4 | 4 | 0 |
+| UNI | 4 / 4 | 2 | 2 |
+| **Total** | **19 / 19** | **17** | **2** |
 
-The one still-ungraded row (BTC) has not yet had its 24h horizon elapse
-in stored history at the time this report was generated.
+Every official row currently in this database has had its 24h horizon
+elapse and been graded — none pending at the time this update was written
+(the one BTC row still pending in the report's first publish has since
+graded).
 
 ## WIN RATE BY ASSET
 
@@ -175,11 +213,11 @@ estimate with real caution, exactly as the CI communicates):
 
 | Asset | Graded | Direction accuracy | 95% CI | Avg \|error\| | RMSE | Target reached |
 |---|---|---|---|---|---|---|
-| BTC | 4 | 75.0% | 30.1-95.4% | 1.40% | 1.73% | 75.0% |
-| SOL | 4 | 75.0% | 30.1-95.4% | 1.22% | 1.40% | 25.0% |
-| LINK | 3 | 33.3% | 6.2-79.2% | 1.28% | 1.70% | 66.7% |
+| BTC | 6 | 66.7% | 30.0-90.3% | 1.36% | 1.60% | 50.0% |
+| SOL | 5 | 60.0% | 23.1-88.2% | 1.44% | 1.62% | 20.0% |
+| LINK | 4 | 50.0% | 15.0-85.0% | 1.16% | 1.53% | 75.0% |
 | UNI | 2 | 100.0% | 34.2-100% | 0.85% | 0.89% | 50.0% |
-| **Overall** | **13** | **69.2%** | **42.4-87.3%** | **1.23%** | **1.52%** | **53.9%** |
+| **Overall** | **17** | **64.7%** | **41.3-82.7%** | **1.28%** | **1.52%** | **47.1%** |
 
 ## WIN RATE BY HORIZON
 
@@ -190,7 +228,7 @@ horizons). `HORIZONS` (`24h`/`3d`/`7d`/`30d`) exists and is used by the
 intraday/live `GET /api/forecast/{symbol}?horizon=` endpoint, but 3d/7d/30d
 are never persisted as official rows — so there is honestly nothing to
 report at those horizons for the official surface, and no artificial rows
-were added to make this table look more populated than it is. All 13
+were added to make this table look more populated than it is. All 17
 direction-graded official rows above are 24h.
 
 ## WIN RATE BY REGIME
@@ -199,19 +237,18 @@ Pulled live from the same `official/performance` endpoint's
 `regime_breakdown` (via `derive_regime_performance_breakdown`, which gates
 on `agent_performance_min_sample_size`):
 
-| Regime | Sample size | Accuracy | Status |
-|---|---|---|---|
-| accumulation | 8 | — | INSUFFICIENT SAMPLE |
-| neutral | 2 | — | INSUFFICIENT SAMPLE |
-| risk_off | 3 | — | INSUFFICIENT SAMPLE |
+| Regime | Sample size | Accuracy | 95% CI | Status |
+|---|---|---|---|---|
+| accumulation | 11 | 81.8% | 52.3-94.9% | **sufficient** |
+| neutral | 3 | — | — | INSUFFICIENT SAMPLE |
+| risk_off | 3 | — | — | INSUFFICIENT SAMPLE |
 
-Every regime bucket in this environment is below the configured minimum
-sample size, so accuracy is honestly withheld rather than shown from too
-few data points — this is the gating working as designed, not a bug. (The
-separate Prediction Accuracy pipeline's `by_regime_horizon` view, over a
-larger 32-row sample that includes non-official intraday grades, does show
-one regime/horizon cell — `neutral`/`24h`, n=14 — crossing its own
-sufficiency threshold: 50.0% direction accuracy there.)
+Unlike the report's first publish (where every regime bucket was below the
+sufficiency floor), `accumulation` has now crossed it at n=11 and reports
+a real 81.8% direction accuracy — still a wide 95% CI (52-95%), so this is
+directional evidence, not proof, but it's the first regime-level number in
+this program with enough sample to say anything at all. `neutral` and
+`risk_off` remain honestly withheld.
 
 ## CALIBRATION
 
@@ -221,45 +258,68 @@ Pulled live from `official/performance`'s `calibration` curve
 | Stated probability bucket | Count | Avg stated | Observed accuracy | Gap | Sufficiency |
 |---|---|---|---|---|---|
 | 40-60% | 3 | 55.0% | 0.0% | +55.0% | INSUFFICIENT |
-| 60-80% | 10 | 65.2% | 90.0% | -24.8% | INSUFFICIENT |
+| 60-80% | 14 | 65.79% | 78.57% | -12.78% | INSUFFICIENT |
 
-Both buckets are marked `INSUFFICIENT` by `classify_calibration_reliability`
-at this sample size — the dashboard and this report both surface that
-label rather than asserting either bucket is "well calibrated" or "poorly
-calibrated." The 40-60% bucket's 0% observed accuracy on n=3 is a
-striking-looking number that would be irresponsible to generalize from;
-it needs materially more graded history before any calibration claim is
-defensible.
+Both buckets are still marked `INSUFFICIENT` by
+`classify_calibration_reliability` at this sample size. The 60-80%
+bucket's gap narrowed from -24.8pp to -12.8pp as more rows graded between
+this report's two versions — exactly the kind of noisy, small-sample
+movement that's why the sufficiency label exists, not evidence of a real
+trend on its own.
+
+## QUANTILE COVERAGE VALIDATION
+
+New in increment 12 — pulled live from `official/performance`'s new
+`quantile_coverage` field, checking whether the realized return actually
+falls inside the persisted P10-P90/P25-P75 bands about as often as each
+band's own width implies it should:
+
+| Band | Expected coverage | Sample size | Observed coverage | Gap | Sufficiency |
+|---|---|---|---|---|---|
+| P10-P90 | 80% | 3 | 0.0% | -80.0pp | INSUFFICIENT |
+| P25-P75 | 50% | 3 | 0.0% | -50.0pp | INSUFFICIENT |
+
+Read honestly: at n=3 this is far below the sufficiency floor and must
+not be generalized — but the raw number (0% observed vs. 80%/50%
+expected) is a real, striking miss worth watching as more rows qualify.
+Sample size is small specifically because a row needs BOTH a resolved
+direction AND persisted quantiles to count here, and quantile persistence
+only started with increment 9 partway through this program — most
+currently-graded official rows predate it. This will grow automatically
+as the daily job keeps running past increment 9's merge; no code change
+needed.
 
 ## BASELINE EDGE
 
-Pulled live from `/api/accuracy`'s overall summary (32 graded rows across
+Pulled live from `/api/accuracy`'s overall summary (67 graded rows across
 both official and non-official intraday forecasts — this is the
 Prediction Accuracy pipeline, a deliberately separate, larger-sample view
 from the official-only scorecard above):
 
 | Baseline | Forecast's own accuracy/error | Baseline's accuracy/error | Beats baseline? |
 |---|---|---|---|
-| Random walk (50% constant) | 56.25% direction accuracy | 50% | **Yes** |
-| Momentum ("last move continues") | 56.25% | 38.1% | **Yes** |
-| Historical mean (unconditional) | 1.0503% avg abs error | 0.3615% | **No** |
-| Zero return ("assume no change") | 1.0503% | 0.2214% | **No** |
+| Random walk (50% constant) | 65.22% direction accuracy | 50% | **Yes** |
+| Momentum ("last move continues") | 65.22% | 30.36% | **Yes** |
+| Historical mean (unconditional) | 1.1131% avg abs error | 0.3759% | **No** |
+| Zero return ("assume no change") | 1.1131% | 0.3363% | **No** |
 | Regime mean (conditioned on regime) | — | — (no data) | Not evaluable in this environment |
 
 Read honestly: the forecast beats the two *directional* baselines (random
 walk, momentum) but currently has a **larger point-forecast error** than
 either the historical-mean or zero-return naive baselines at this sample
-size. This is exactly the kind of finding the 5-baseline challenge exists
-to surface rather than hide — a forecast can be directionally useful while
-still not (yet, at n=32) beating "predict no change" on raw magnitude. The
-regime-mean baseline is not evaluable in this sandbox: `reconstruct_regime_at`
-needs at least 4 of 7 macro/equity history tables (`SPX/VIX/DXY/GOLD/
-US10Y/FEDRATE`), all of which are empty here because `yfinance` calls fail
-in this network environment (see README's own "Known operational
-limitation: Yahoo Finance" section — a pre-existing, already-documented
-constraint, not something this program introduced). The code path itself
-is unit-tested with real synthetic data and confirmed correct
-independent of this environment's data availability.
+size — the same pattern as the report's first publish, and still true at
+roughly double the sample (67 vs. 32 rows). This is exactly the kind of
+finding the 5-baseline challenge exists to surface rather than hide — a
+forecast can be directionally useful while still not (yet) beating
+"predict no change" on raw magnitude. The regime-mean baseline is still
+not evaluable in this sandbox: `reconstruct_regime_at` needs at least 4 of
+7 macro/equity history tables (`SPX/VIX/DXY/GOLD/US10Y/FEDRATE`), all of
+which are empty here because `yfinance` calls fail in this network
+environment (see README's own "Known operational limitation: Yahoo
+Finance" section — a pre-existing, already-documented constraint, not
+something this program introduced). The code path itself is unit-tested
+with real synthetic data and confirmed correct independent of this
+environment's data availability.
 
 ## REMAINING LIMITATIONS
 
@@ -272,23 +332,24 @@ raised them:
   current system consistent/auditable/measurable/self-evaluating; only
   after proven OOS improvement is changing production forecasting math
   allowed." This program built the measurement infrastructure (baselines,
-  CRPS, calibration, leakage validation) that a future champion/challenger
-  effort would need to make that comparison honestly — but with only
-  13-32 graded rows currently in this environment, there is not yet enough
-  out-of-sample history to run a statistically meaningful A/B/C/D
-  comparison. Starting it now would risk exactly the "small-sample
+  CRPS, calibration, quantile coverage, leakage validation) that a future
+  champion/challenger effort would need to make that comparison honestly —
+  but with only 17-67 graded rows currently in this environment, there is
+  not yet enough out-of-sample history to run a statistically meaningful
+  A/B/C/D comparison. Starting it now would risk exactly the "small-sample
   overclaiming" this whole program was built to prevent.
 - **Regime-mean baseline data availability** — the code is correct and
   tested (see BASELINE EDGE above), but is starved of real data in this
   sandbox by the pre-existing Yahoo Finance limitation. This will resolve
   itself once run somewhere with real yfinance access, no code change
   needed.
-- **Sample sizes throughout** — every table in this report is small (2-32
+- **Sample sizes throughout** — every table in this report is small (2-67
   rows). Every number above is reported honestly with its real sample
   size and, where the codebase's own gating says so, marked
-  `INSUFFICIENT SAMPLE` rather than a bare percentage. This will improve
-  automatically as the official daily job keeps running; no code change is
-  needed to "unlock" more history, only time.
+  `INSUFFICIENT SAMPLE` rather than a bare percentage. `accumulation`
+  regime crossing its sufficiency floor between this report's two versions
+  is a preview of how the rest of these tables will fill in over time; no
+  code change is needed to "unlock" more history, only time.
 - **3d/7d/30d official horizons** — currently 24h-only for the official
   surface, by original design, not an oversight of this program (see WIN
   RATE BY HORIZON above).
