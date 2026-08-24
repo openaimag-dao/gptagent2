@@ -1698,7 +1698,10 @@ function forecastDailyCard(f) {
   const cls = d.includes("bullish") ? "up" : d.includes("bearish") ? "down" : "neutral";
   const isActive = !f.forecast_status || f.forecast_status.toLowerCase() === "active";
   return el("div", { class: "card" }, [
-    el("div", { class: "label" }, f.symbol),
+    el("div", { class: "label" }, [
+      el("a", { href: `#forecast2detail?id=${f.id}` }, f.symbol),
+      ` (ID ${f.id})`,
+    ]),
     el("div", { class: `value ${cls}` }, `${f.direction} ${f.probability_pct}%`),
     el(
       "div",
@@ -1830,6 +1833,7 @@ async function renderForecastDetail(params) {
   const f = data.forecast;
   const label = forecastOutcomeLabel(f);
   nodes.push(el("h2", {}, `${f.symbol} -- ${f.official_forecast_date || "n/a"}`));
+  nodes.push(el("p", { class: "sub" }, `Prediction ID: ${f.id}`));
   nodes.push(
     el("div", { class: "grid" }, [
       el("div", { class: "card" }, [
@@ -1879,8 +1883,31 @@ async function renderForecastDetail(params) {
             `(stated ${f.confidence_tier || "n/a"})`
         ),
       ]),
+      el("div", { class: "card" }, [
+        el("div", { class: "label" }, "CRPS"),
+        el("div", { class: "value" }, f.crps_pct != null ? fmtPct(f.crps_pct) : "n/a"),
+        el(
+          "div",
+          { class: "sub" },
+          "Proper scoring rule over the full P10-P90 distribution, not just the point error"
+        ),
+      ]),
     ])
   );
+
+  const q = f.forward_return_quantiles;
+  if (q && q.p50_pct != null) {
+    nodes.push(el("h2", {}, "Forecast Distribution (P10-P90)"));
+    nodes.push(
+      el("div", { class: "grid" }, [
+        card("P10", fmtPct(q.p10_pct)),
+        card("P25", fmtPct(q.p25_pct)),
+        card("P50 (Median)", fmtPct(q.p50_pct)),
+        card("P75", fmtPct(q.p75_pct)),
+        card("P90", fmtPct(q.p90_pct)),
+      ])
+    );
+  }
 
   nodes.push(el("h2", {}, "Input Snapshot"));
   nodes.push(
