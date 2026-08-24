@@ -143,6 +143,20 @@ amounts are never mixed into one ledger row.
   as funding/withdrawal-style events are added), each row carrying the
   exact signed `amount` and the resulting `balance_after`.
 
+## Performance analytics
+
+`GET /api/simulator/performance` computes overall stats (total/winning/
+losing trades, win rate, profit factor, avg win/loss, expectancy, total
+PnL/fees/funding, max drawdown, Sharpe, Sortino, liquidation count) over
+every closed trade on the account, plus the same stats broken down by
+side (LONG/SHORT), symbol, leverage, and strategy tag (manual vs
+ai_assisted — the task's AI vs User performance comparison). Built on
+`app.services.futures_sim.performance.compute_performance_stats`, a pure
+function that reuses `app.services.backtest.metrics` (Sharpe/Sortino/max
+drawdown/profit factor/etc.) rather than a parallel metrics engine — each
+trade's ROI-on-margin feeds those ratios as its "return," the same
+equity-curve-over-a-return-sequence model that module already assumes.
+
 ## API surface (as of this document)
 
 ```
@@ -156,6 +170,7 @@ GET    /api/simulator/positions
 POST   /api/simulator/positions/{id}/close [admin]
 POST   /api/simulator/positions/{id}/sl-tp [admin]
 GET    /api/simulator/trades
+GET    /api/simulator/performance
 GET    /api/simulator/ledger
 ```
 
@@ -177,10 +192,11 @@ section — summarized here:
   MARK PRICE" formula exists as a pure function but isn't wired into live
   position updates yet.
 - No dashboard UI yet — this increment is API-only.
-- No performance-analytics endpoint yet (`app.services.backtest.metrics`
-  is ready to reuse for one).
 - No AI-forecast integration on this surface yet, and no historical-replay
   trading mode yet.
+- Performance breakdowns (`by_side`/`by_symbol`/`by_leverage`/`by_strategy`)
+  compute over every closed trade with no pagination or date-range filter
+  yet — fine at demo-account trade volumes, would need one at scale.
 
 ## Confirmations
 

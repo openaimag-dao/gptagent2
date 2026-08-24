@@ -387,6 +387,38 @@ async def test_get_trades_returns_serialized_trade_history():
     assert payload["trades"][0]["net_pnl"] == 196.0
 
 
+# ---- GET /performance ---------------------------------------------------
+
+
+async def test_get_performance_returns_overall_and_breakdown_stats():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    session_factory, session = _session_ctx(scalars_return=[_fake_trade()])
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
+    ):
+        payload = await futures_sim.get_performance()
+
+    assert payload["overall"]["total_trades"] == 1
+    assert payload["overall"]["winning_trades"] == 1
+    assert "BTC" in payload["by_symbol"]
+
+
+async def test_get_performance_with_no_trades_returns_zeroed_stats():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    session_factory, session = _session_ctx(scalars_return=[])
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
+    ):
+        payload = await futures_sim.get_performance()
+
+    assert payload["overall"]["total_trades"] == 0
+    assert payload["by_symbol"] == {}
+
+
 # ---- GET /ledger ------------------------------------------------------
 
 

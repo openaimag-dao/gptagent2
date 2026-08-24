@@ -34,6 +34,7 @@ from app.services.futures_sim.orders import (
     place_market_order,
     set_stop_loss_take_profit,
 )
+from app.services.futures_sim.performance import compute_performance_stats
 from app.services.realtime.config import parse_watchlist
 
 router = APIRouter(prefix="/api/simulator", tags=["futures-simulator"])
@@ -343,6 +344,20 @@ async def get_trades(
         query = query.order_by(FuturesSimTrade.closed_at.desc()).limit(limit)
         trades = list(await session.scalars(query))
     return {"trades": [_serialize_trade(t) for t in trades]}
+
+
+@router.get("/performance")
+async def get_performance(name: str = DEFAULT_ACCOUNT_NAME) -> dict:
+    """Task: Performance Analytics -- overall stats plus breakdowns by
+    Long/Short, symbol, leverage, and strategy tag, over every closed
+    trade on this account. Reuses app.services.backtest.metrics (task's
+    own anti-duplication mandate) rather than a new metrics engine."""
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(name)
+    async with get_session_factory()() as session:
+        query = select(FuturesSimTrade).where(FuturesSimTrade.account_id == account.id)
+        trades = list(await session.scalars(query))
+    return compute_performance_stats(trades)
 
 
 @router.get("/ledger")
