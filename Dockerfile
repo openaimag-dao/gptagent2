@@ -17,4 +17,10 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form (not exec-array) so $PORT actually expands -- Railway (and
+# similar PaaS hosts) inject a dynamic PORT env var and route their proxy
+# to it; a hardcoded port means the platform's health check/proxy can
+# never reach the container, which is exactly Railway's "Application
+# failed to respond" error. Defaults to 8000 when PORT isn't set (e.g.
+# docker-compose, which doesn't set it).
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
