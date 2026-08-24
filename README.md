@@ -2631,6 +2631,49 @@ Momentum Score, the 11-agent AI Consensus grid, and the AI Explanation
 table all rendered correctly, and horizon-tab switching (24h/3d/7d/30d)
 correctly re-fetched and re-rendered every new section.
 
+## Futures Simulator
+
+A 100% demo/paper-trading futures terminal added inside this project's
+existing architecture, built entirely on real market data with zero real
+money, real Binance orders, withdrawals, or live trading anywhere in the
+codebase -- no Binance API keys are ever accepted or stored. `GET
+/api/simulator/*` (`app/api/futures_sim.py`) and `app/services/futures_sim/`
+implement a full demo account/order/position/trade/ledger model: 10
+symbols at 1x-75x leverage with SIMULATED per-symbol brackets, ISOLATED
+and CROSS margin, ONE-WAY position mode, MARKET/LIMIT/STOP_MARKET/
+TAKE_PROFIT_MARKET orders with a deterministic (no partial-fill) fill
+model, a documented ISOLATED/CROSS liquidation engine, position-level
+SL/TP, an EMA-smoothed SIMULATED MARK PRICE used for live PnL/equity
+display (never for liquidation/trigger checks, which use the raw
+reference price), real-data-when-available funding with an explicitly
+labeled SIMULATED fallback, an immutable account ledger, Performance
+Analytics (overall + by-side/symbol/leverage/strategy breakdowns, reusing
+the existing backtest metrics engine), Risk Metrics (margin ratio,
+distance to liquidation, concentration, daily loss) with permissive
+HIGH_RISK/NEAR_LIQUIDATION/MARGIN_WARNING labels and optional per-account
+Max Risk Settings overrides, and an optional Strategy Journal (per-trade
+label/note/self-assessment tags) for Trade Review. The dashboard's
+"Futures Simulator" nav item (`app/static/dashboard/app.js`,
+`renderFuturesSimulator`) adds a 9-tab page (TRADE / POSITIONS / OPEN
+ORDERS / ORDER HISTORY / TRADE HISTORY / PERFORMANCE / RISK / ACCOUNT
+HISTORY / SETTINGS) built entirely from the existing dashboard primitives
+-- no new frontend infrastructure. The TRADE tab shows the existing AI
+Forecast Center's real forecast for the selected symbol and lets a user
+optionally prefill SL/TP from it, but the AI forecast never opens a demo
+position by itself -- every order is the result of an explicit user
+click.
+
+Every increment was live-verified against the real running
+Postgres+Redis-backed server (curl and headless-Chromium Playwright
+sessions) with real market data, never mocked-only. Full detail --
+every formula (margin, PnL, fees, slippage, ROI, ISOLATED/CROSS
+liquidation price derivations, mark price, funding), the complete API
+surface, the dashboard's tab-by-tab behavior, and an honestly-scoped
+"Known limitations" list (no candlestick/OHLC chart yet, no historical-
+replay trading mode yet) -- lives in `docs/FUTURES_SIMULATOR.md` and
+`docs/FUTURES_SIMULATOR_MATH.md`, kept current as a living document
+across every increment rather than summarized once here.
+
 ## Known operational limitation: Yahoo Finance
 
 Plain `yfinance` scrapes Yahoo Finance's undocumented endpoints -- there is
