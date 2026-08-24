@@ -390,9 +390,11 @@ class Settings(BaseSettings):
     futures_sim_default_max_leverage: int = 20
     futures_sim_default_maintenance_margin_pct: float = 1.0
     # How often the scheduler scans every OPEN position for liquidation /
-    # stop-loss / take-profit triggers (task: a position can be liquidated
-    # or hit its SL/TP purely from a price move, with no order ever placed
-    # by the user). Kept tight since a demo simulator has no real
-    # exchange-side liquidation engine watching prices in real time.
+    # stop-loss / take-profit triggers, and every resting LIMIT/STOP_MARKET
+    # /TAKE_PROFIT_MARKET order for a crossed trigger price (task: both can
+    # happen purely from a price move, with no further action from the
+    # user). Shared by both jobs since they're the same "how fresh does
+    # simulator state need to be" cadence. Kept tight since a demo
+    # simulator has no real exchange-side engine watching prices live.
     futures_sim_position_monitor_interval_minutes: float = 1.0
     learning_insight_min_gap_pct: float = 15.0

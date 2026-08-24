@@ -31,6 +31,7 @@ from app.services.forecast.engine import (
     grade_price_forecasts,
 )
 from app.services.futures_sim.monitor import check_positions_for_triggers
+from app.services.futures_sim.resting_orders import check_resting_orders_for_fills
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.pipeline import run_sync
 from app.services.history.registry import build_registry, find_symbol_config
@@ -115,6 +116,7 @@ OFFICIAL_DAILY_FORECAST_JOB_ID = "generate_official_daily_forecast"
 FORECAST_WEEKLY_REVIEW_JOB_ID = "broadcast_forecast_weekly_review"
 ALERT_PERFORMANCE_GRADING_JOB_ID = "grade_alert_performance"
 FUTURES_SIM_POSITION_MONITOR_JOB_ID = "check_futures_sim_positions"
+FUTURES_SIM_ORDER_FILL_JOB_ID = "fill_futures_sim_orders"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -722,6 +724,20 @@ async def check_futures_sim_positions_job() -> None:
         logger.exception("Futures Simulator position monitor job failed")
 
 
+async def fill_futures_sim_orders_job() -> None:
+    """Futures Simulator (100% demo/paper trading, no real orders): fills
+    any resting LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET order whose trigger
+    price has been crossed by the current mark price -- a resting order
+    can fill purely from a price move, with no further action from the
+    user, so this has to run on a schedule too."""
+    try:
+        filled = await check_resting_orders_for_fills(get_session_factory(), get_redis())
+        if filled:
+            logger.info("Futures Simulator order fill: %d resting order(s) filled", len(filled))
+    except Exception:
+        logger.exception("Futures Simulator order fill job failed")
+
+
 async def test_hypotheses_job() -> None:
     engine = HypothesisEngine(get_session_factory())
     try:
@@ -1103,6 +1119,16 @@ def start_scheduler() -> AsyncIOScheduler:
             minutes=settings.futures_sim_position_monitor_interval_minutes, jitter=15
         ),
         id=FUTURES_SIM_POSITION_MONITOR_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _timed(fill_futures_sim_orders_job),
+        trigger=IntervalTrigger(
+            minutes=settings.futures_sim_position_monitor_interval_minutes, jitter=15
+        ),
+        id=FUTURES_SIM_ORDER_FILL_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,

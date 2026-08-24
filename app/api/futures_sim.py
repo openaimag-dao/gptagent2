@@ -30,8 +30,11 @@ from app.services.futures_sim.engine import (
 )
 from app.services.futures_sim.orders import (
     OrderRejected,
+    cancel_order,
     close_position,
+    place_limit_order,
     place_market_order,
+    place_stop_order,
     set_stop_loss_take_profit,
 )
 from app.services.futures_sim.performance import compute_performance_stats
@@ -43,10 +46,12 @@ router = APIRouter(prefix="/api/simulator", tags=["futures-simulator"])
 class PlaceOrderRequest(BaseModel):
     symbol: str
     side: str  # BUY / SELL
-    order_type: str = "MARKET"
+    order_type: str = "MARKET"  # MARKET / LIMIT / STOP_MARKET / TAKE_PROFIT_MARKET
     quantity: float
     leverage: int = 1
     margin_mode: str = "ISOLATED"
+    price: float | None = None  # required for LIMIT
+    stop_price: float | None = None  # required for STOP_MARKET / TAKE_PROFIT_MARKET
     reduce_only: bool = False
     client_order_id: str | None = None
     strategy_tag: str = "manual"
@@ -186,28 +191,70 @@ async def reset_account(name: str = DEFAULT_ACCOUNT_NAME) -> dict:
 
 @router.post("/orders", dependencies=[Depends(require_admin_key)])
 async def place_order(request: PlaceOrderRequest) -> dict:
-    if request.order_type != "MARKET":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Only MARKET orders are supported so far, got {request.order_type!r}",
-        )
     engine = build_futures_sim_engine()
     account = await engine.get_or_create_account(request.account_name)
     try:
-        result = await place_market_order(
-            account,
-            get_session_factory(),
-            get_redis(),
-            symbol=request.symbol,
-            side=request.side,
-            quantity=request.quantity,
-            leverage=request.leverage,
-            margin_mode=request.margin_mode,
-            reduce_only=request.reduce_only,
-            client_order_id=request.client_order_id,
-            strategy_tag=request.strategy_tag,
-            prediction_id=request.prediction_id,
-        )
+        if request.order_type == "MARKET":
+            result = await place_market_order(
+                account,
+                get_session_factory(),
+                get_redis(),
+                symbol=request.symbol,
+                side=request.side,
+                quantity=request.quantity,
+                leverage=request.leverage,
+                margin_mode=request.margin_mode,
+                reduce_only=request.reduce_only,
+                client_order_id=request.client_order_id,
+                strategy_tag=request.strategy_tag,
+                prediction_id=request.prediction_id,
+            )
+        elif request.order_type == "LIMIT":
+            if request.price is None:
+                raise HTTPException(status_code=400, detail="price is required for LIMIT orders")
+            result = await place_limit_order(
+                account,
+                get_session_factory(),
+                get_redis(),
+                symbol=request.symbol,
+                side=request.side,
+                quantity=request.quantity,
+                leverage=request.leverage,
+                price=request.price,
+                margin_mode=request.margin_mode,
+                reduce_only=request.reduce_only,
+                client_order_id=request.client_order_id,
+                strategy_tag=request.strategy_tag,
+                prediction_id=request.prediction_id,
+            )
+            result = {**result, "position": None, "trade": None}
+        elif request.order_type in ("STOP_MARKET", "TAKE_PROFIT_MARKET"):
+            if request.stop_price is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"stop_price is required for {request.order_type} orders",
+                )
+            result = await place_stop_order(
+                account,
+                get_session_factory(),
+                get_redis(),
+                symbol=request.symbol,
+                side=request.side,
+                quantity=request.quantity,
+                leverage=request.leverage,
+                stop_price=request.stop_price,
+                order_type=request.order_type,
+                margin_mode=request.margin_mode,
+                reduce_only=request.reduce_only,
+                client_order_id=request.client_order_id,
+                strategy_tag=request.strategy_tag,
+                prediction_id=request.prediction_id,
+            )
+            result = {**result, "position": None, "trade": None}
+        else:
+            raise HTTPException(
+                status_code=400, detail=f"Unsupported order_type {request.order_type!r}"
+            )
     except OrderRejected as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
@@ -221,19 +268,19 @@ async def place_order(request: PlaceOrderRequest) -> dict:
 
 
 @router.delete("/orders/{order_id}", dependencies=[Depends(require_admin_key)])
-async def cancel_order(order_id: int) -> dict:
-    # MARKET orders (the only type this increment supports) fill
-    # synchronously inside place_order and are never left cancellable --
-    # this endpoint exists now (task's own required API surface) and will
-    # do real work once resting LIMIT/STOP orders exist in a later
-    # increment; until then it's an honest 400, never a silent no-op.
-    raise HTTPException(
-        status_code=400,
-        detail=(
-            "No cancellable resting orders yet -- only MARKET orders "
-            "(fill immediately) are supported"
-        ),
-    )
+async def cancel_order_endpoint(order_id: int, account_name: str = DEFAULT_ACCOUNT_NAME) -> dict:
+    """Cancels a resting (status=NEW) LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET
+    order. MARKET orders fill synchronously inside POST /orders and are
+    never left cancellable -- attempting to cancel one (or an
+    already-FILLED/CANCELLED/REJECTED order) is an honest 400 via
+    OrderRejected, never a silent no-op."""
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(account_name)
+    try:
+        order = await cancel_order(account, get_session_factory(), order_id=order_id)
+    except OrderRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"order": _serialize_order(order)}
 
 
 @router.get("/orders")
