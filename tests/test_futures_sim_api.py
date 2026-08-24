@@ -598,3 +598,40 @@ async def test_set_position_sl_tp_turns_order_rejected_into_http_400():
                 5, futures_sim.SetStopLossTakeProfitRequest(sl_price=999_999.0)
             )
     assert exc_info.value.status_code == 400
+
+
+# ---- GET /risk ------------------------------------------------------
+
+
+async def test_get_risk_combines_account_state_and_open_positions():
+    engine = AsyncMock()
+    engine.get_or_create_account.return_value = SimpleNamespace(id=1)
+    engine.get_account_state.return_value = {
+        "equity": 10_000.0,
+        "available_margin": 9_000.0,
+        "unrealized_pnl": 50.0,
+        "margin_ratio": 15.0,
+        "max_drawdown_pct": 2.0,
+    }
+    position = _fake_position(liquidation_price=95_400.0)
+    trade = _fake_trade(net_pnl=25.0)
+    session = AsyncMock()
+    session.scalars = AsyncMock(side_effect=[[position], [trade]])
+    session.__aenter__.return_value = session
+    session_factory = MagicMock(return_value=session)
+
+    with (
+        patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
+        patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
+        patch(
+            "app.api.futures_sim.get_mark_price",
+            AsyncMock(return_value={"price": 102_000.0}),
+        ),
+    ):
+        payload = await futures_sim.get_risk()
+
+    assert payload["margin_ratio_pct"] == 15.0
+    assert payload["open_position_count"] == 1
+    assert payload["positions"][0]["symbol"] == "BTC"
+    # daily_pnl combines today's realized trade (25.0) with current unrealized (50.0)
+    assert payload["daily_pnl"] == pytest.approx(75.0)

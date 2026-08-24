@@ -5,6 +5,8 @@ already use (this project has no user/auth model at all -- see
 FuturesSimAccount's own docstring). Read endpoints stay open, matching how
 every other read endpoint in this app already behaves."""
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -38,6 +40,7 @@ from app.services.futures_sim.orders import (
     set_stop_loss_take_profit,
 )
 from app.services.futures_sim.performance import compute_performance_stats
+from app.services.futures_sim.risk import compute_risk_metrics
 from app.services.realtime.config import parse_watchlist
 
 router = APIRouter(prefix="/api/simulator", tags=["futures-simulator"])
@@ -407,6 +410,57 @@ async def get_performance(name: str = DEFAULT_ACCOUNT_NAME) -> dict:
         query = select(FuturesSimTrade).where(FuturesSimTrade.account_id == account.id)
         trades = list(await session.scalars(query))
     return compute_performance_stats(trades)
+
+
+@router.get("/risk")
+async def get_risk(name: str = DEFAULT_ACCOUNT_NAME) -> dict:
+    """Task: Risk Metrics -- margin ratio, distance to liquidation,
+    position concentration, account drawdown, daily loss, largest
+    position/exposure, with HIGH RISK/NEAR LIQUIDATION/MARGIN WARNING
+    labels. Permissive by default (never blocks anything) -- see
+    app.services.futures_sim.risk's own module docstring."""
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(name)
+    account_state = await engine.get_account_state(account)
+
+    async with get_session_factory()() as session:
+        open_positions = list(
+            await session.scalars(
+                select(FuturesSimPosition).where(
+                    FuturesSimPosition.account_id == account.id,
+                    FuturesSimPosition.status == "OPEN",
+                )
+            )
+        )
+        today_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        todays_trades = list(
+            await session.scalars(
+                select(FuturesSimTrade).where(
+                    FuturesSimTrade.account_id == account.id,
+                    FuturesSimTrade.closed_at >= today_start,
+                )
+            )
+        )
+    todays_realized_pnl = sum(float(t.net_pnl) for t in todays_trades)
+
+    positions = []
+    for position in open_positions:
+        price_info = await get_mark_price(get_session_factory(), get_redis(), position.symbol)
+        mark_price = price_info["price"] if price_info is not None else float(position.mark_price)
+        positions.append(
+            {
+                "position_id": position.id,
+                "symbol": position.symbol,
+                "side": position.side,
+                "quantity": float(position.quantity),
+                "mark_price": mark_price,
+                "liquidation_price": float(position.liquidation_price)
+                if position.liquidation_price is not None
+                else None,
+            }
+        )
+
+    return compute_risk_metrics(account_state, positions, todays_realized_pnl)
 
 
 @router.get("/ledger")
