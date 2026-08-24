@@ -4267,6 +4267,7 @@ function accuracyStatCards(stats) {
     card("Evaluated", stats.evaluated_count),
     card("Direction Accuracy", stats.direction_accuracy_pct != null ? `${stats.direction_accuracy_pct}%` : "n/a"),
     card("Avg Abs Error", stats.avg_abs_error_pct != null ? `${stats.avg_abs_error_pct}%` : "n/a"),
+    card("Avg CRPS", stats.avg_crps_pct != null ? `${stats.avg_crps_pct}%` : "n/a"),
     card("Confidence Accuracy", stats.confidence_accuracy_pct != null ? `${stats.confidence_accuracy_pct}%` : "n/a"),
     card("Target Hit Rate", stats.target_hit_rate_pct != null ? `${stats.target_hit_rate_pct}%` : "n/a"),
   ]);

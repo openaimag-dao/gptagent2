@@ -48,6 +48,7 @@ def _serialize_official(row) -> dict:
         else None,
         "error_type": row.error_type,
         "evaluated_at": row.evaluated_at.isoformat() if row.evaluated_at is not None else None,
+        "crps_pct": float(row.crps_pct) if row.crps_pct is not None else None,
     }
 
 
@@ -89,8 +90,10 @@ def _serialize_official_detail(row) -> dict:
     candle this was computed from), forecast_version/model_version/
     invalidation fields (is this still the live call for its day, or
     superseded, and which revision of the forecast formula produced it --
-    see FORECAST_MODEL_VERSION's own docstring), and the four baseline
-    comparisons already graded alongside it."""
+    see FORECAST_MODEL_VERSION's own docstring), the four baseline
+    comparisons already graded alongside it, and forward_return_quantiles
+    (the p10-p90 distribution CRPS is scored against, on the base
+    payload's own error_pct/crps_pct scale)."""
     payload = _serialize_official(row)
     payload.update(
         {
@@ -116,6 +119,13 @@ def _serialize_official_detail(row) -> dict:
             "regime_mean_baseline_error_pct": float(row.regime_mean_baseline_error_pct)
             if row.regime_mean_baseline_error_pct is not None
             else None,
+            "forward_return_quantiles": {
+                "p10_pct": float(row.p10_pct) if row.p10_pct is not None else None,
+                "p25_pct": float(row.p25_pct) if row.p25_pct is not None else None,
+                "p50_pct": float(row.p50_pct) if row.p50_pct is not None else None,
+                "p75_pct": float(row.p75_pct) if row.p75_pct is not None else None,
+                "p90_pct": float(row.p90_pct) if row.p90_pct is not None else None,
+            },
         }
     )
     return payload

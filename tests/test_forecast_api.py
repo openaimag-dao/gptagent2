@@ -188,6 +188,12 @@ def _official_row(**overrides):
         "historical_mean_baseline_error_pct": None,
         "zero_return_baseline_error_pct": None,
         "regime_mean_baseline_error_pct": None,
+        "crps_pct": None,
+        "p10_pct": None,
+        "p25_pct": None,
+        "p50_pct": None,
+        "p75_pct": None,
+        "p90_pct": None,
     }
     fields.update(overrides)
     return SimpleNamespace(**fields)
@@ -361,6 +367,45 @@ async def test_forecast_detail_serializes_all_four_baseline_comparisons():
     assert detail["historical_mean_baseline_error_pct"] == 2.5
     assert detail["zero_return_baseline_error_pct"] == 5.0
     assert detail["regime_mean_baseline_error_pct"] == 3.5
+
+
+async def test_forecast_detail_serializes_crps_and_quantiles():
+    row = _official_row(
+        crps_pct=0.92,
+        p10_pct=0.0,
+        p25_pct=2.0,
+        p50_pct=4.0,
+        p75_pct=6.0,
+        p90_pct=8.0,
+    )
+    engine = AsyncMock()
+    engine.get_forecast_detail.return_value = {"forecast": row, "agents": []}
+    with patch("app.api.forecast.build_forecast_engine", return_value=engine):
+        payload = await forecast.get_forecast_detail(1)
+
+    detail = payload["forecast"]
+    assert detail["crps_pct"] == 0.92
+    assert detail["forward_return_quantiles"] == {
+        "p10_pct": 0.0,
+        "p25_pct": 2.0,
+        "p50_pct": 4.0,
+        "p75_pct": 6.0,
+        "p90_pct": 8.0,
+    }
+
+
+async def test_official_daily_honestly_reports_missing_crps_for_old_rows():
+    row = _official_row()
+    engine = AsyncMock()
+    engine.get_official_daily.return_value = {"BTC": row}
+    with (
+        patch("app.api.forecast.build_forecast_engine", return_value=engine),
+        patch("app.api.forecast._official_forecast_symbols", return_value=("BTC",)),
+        patch("app.api.forecast.get_job_next_run", return_value=None),
+    ):
+        payload = await forecast.get_official_daily_forecasts()
+
+    assert payload["forecasts"][0]["crps_pct"] is None
 
 
 async def test_forecast_detail_404_when_not_found():

@@ -1010,6 +1010,57 @@ def compute_regime_mean_baseline_return_pct(
     return round(100 * sum(prior) / len(prior), 4)
 
 
+# Forecasting 3.0 (Phase 5/12/13): the 5 quantile levels this table persists
+# (p10/p25/p50/p75/p90) -- shared between _persist() writing them and
+# compute_crps_pct() reading them back, so the two stay in sync by
+# construction rather than by convention.
+CRPS_QUANTILE_LEVELS: tuple[tuple[float, str], ...] = (
+    (0.10, "p10_pct"),
+    (0.25, "p25_pct"),
+    (0.50, "p50_pct"),
+    (0.75, "p75_pct"),
+    (0.90, "p90_pct"),
+)
+
+
+def compute_pinball_loss(tau: float, quantile_value: float, realized_value: float) -> float:
+    """Pure function: the quantile (pinball) loss for one stated quantile
+    -- the standard building block CRPS is discretely approximated from
+    when only a handful of quantiles (not a full CDF) are available.
+    Asymmetric by design: understating a high quantile is penalized more
+    than overstating it (and vice versa for a low quantile), which is
+    what makes a full quantile SET jointly scoreable as one proper rule
+    rather than N independent errors."""
+    if realized_value >= quantile_value:
+        return (realized_value - quantile_value) * tau
+    return (quantile_value - realized_value) * (1 - tau)
+
+
+def compute_crps_pct(
+    quantiles: dict[str, float | None], realized_return_pct: float
+) -> float | None:
+    """Pure function: Forecasting 3.0 -- Continuous Ranked Probability
+    Score, approximated as 2x the mean pinball loss across this row's own
+    p10/p25/p50/p75/p90 forward-return quantiles (see compute_pinball_loss)
+    against the REALIZED forward return (same 100*(realized-current)/
+    current basis error_pct and every baseline error above already use,
+    so this stays comparable in magnitude to those). This is a proper
+    scoring rule over the whole predicted DISTRIBUTION, not just the
+    point forecast MAE/RMSE score -- a well-calibrated, correctly-shaped
+    distribution scores better even when its median misses by the same
+    amount a narrower/wider one would. None when this row has no
+    quantiles to score (persisted before this column existed, or
+    ProbabilityEngine had no sample to report one)."""
+    losses = [
+        compute_pinball_loss(tau, quantiles[key], realized_return_pct)
+        for tau, key in CRPS_QUANTILE_LEVELS
+        if quantiles.get(key) is not None
+    ]
+    if not losses:
+        return None
+    return round(2 * sum(losses) / len(losses), 4)
+
+
 def grade_confidence(error_pct: float, expected_volatility_pct: float | None) -> bool | None:
     """Pure function: did the real error stay within this forecast's own
     ATR-derived expected volatility band -- the same "no better than
@@ -1053,7 +1104,12 @@ async def grade_price_forecasts(
     .compute() already pays every cycle for the exact same reconstruction,
     so this doesn't introduce a new cost tier), to regime-tag `rows` and
     condition the naive baseline return on each forecast's own recorded
-    `regime_at_forecast`. Returns how many rows were graded this call."""
+    `regime_at_forecast`. Forecasting 3.0 (Phase 5/12/13): also fills in
+    `crps_pct` -- a proper scoring rule over this row's own persisted
+    p10..p90 quantiles (see compute_crps_pct), scored against the same
+    realized-return figure zero_return_baseline_error_pct already
+    computes, reused rather than recomputed. Returns how many rows were
+    graded this call."""
     async with session_factory() as session:
         ungraded = list(
             await session.scalars(
@@ -1134,12 +1190,23 @@ async def grade_price_forecasts(
             db_row.historical_mean_baseline_error_pct = compute_historical_mean_baseline_error_pct(
                 historical_mean_baseline_return_pct, current_price, realized_price
             )
-            db_row.zero_return_baseline_error_pct = compute_zero_return_baseline_error_pct(
+            zero_return_error_pct = compute_zero_return_baseline_error_pct(
                 current_price, realized_price
             )
+            db_row.zero_return_baseline_error_pct = zero_return_error_pct
             db_row.regime_mean_baseline_error_pct = compute_historical_mean_baseline_error_pct(
                 regime_mean_baseline_return_pct, current_price, realized_price
             )
+            quantiles = {
+                key: float(getattr(snapshot, key))
+                if getattr(snapshot, key, None) is not None
+                else None
+                for _, key in CRPS_QUANTILE_LEVELS
+            }
+            # zero_return_baseline_error_pct is exactly the realized forward
+            # return on the same 100*(realized-current)/current basis CRPS
+            # needs -- reused rather than recomputed.
+            db_row.crps_pct = compute_crps_pct(quantiles, zero_return_error_pct)
             db_row.evaluated_at = datetime.now(UTC)
             db_row.forecast_status = status_after_grading(db_row.forecast_status)
             graded += 1
@@ -1689,7 +1756,12 @@ class ForecastEngine:
         also persists `calibrated_confidence_pct`/`data_quality_score` --
         both already computed this cycle (payload["confidence"]
         ["effective_confidence_pct"] / payload["data_quality"]
-        ["data_quality_score"]), just never written to the row before."""
+        ["data_quality_score"]), just never written to the row before.
+        Forecasting 3.0 (Phase 5/12/13): also persists `p10_pct`..`p90_pct`
+        from payload["forward_return_quantiles"] (ProbabilityEngine's own
+        empirical quantiles, already computed this cycle) so a later
+        grading pass can score this specific row's own distribution via
+        CRPS, not just its point forecast."""
         today = datetime.now(UTC).date()
         async with self._session_factory() as session:
             if is_official_daily:
@@ -1735,6 +1807,11 @@ class ForecastEngine:
                 confidence_tier=confidence_tier,
                 calibrated_confidence_pct=payload["confidence"]["effective_confidence_pct"],
                 data_quality_score=payload["data_quality"]["data_quality_score"],
+                p10_pct=payload["forward_return_quantiles"].get("p10_pct"),
+                p25_pct=payload["forward_return_quantiles"].get("p25_pct"),
+                p50_pct=payload["forward_return_quantiles"].get("p50_pct"),
+                p75_pct=payload["forward_return_quantiles"].get("p75_pct"),
+                p90_pct=payload["forward_return_quantiles"].get("p90_pct"),
                 checkpoints=payload["price_path"],
                 distribution=payload["probability_distribution"],
                 key_levels=payload["key_levels"],

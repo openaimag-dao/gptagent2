@@ -1329,6 +1329,32 @@ class PriceForecastSnapshot(Base):
     # event/model-attribution error types would require causal analysis
     # this table has no evidence for -- see the Learning Center follow-up).
     error_type: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # Forecasting 3.0 (Phase 5/12/13): the same empirical forward-return
+    # quantiles ProbabilityEngine already computes every cycle (mirrors
+    # ProbabilitySnapshot's own p10_pct..p90_pct columns) -- already
+    # returned in compute()'s live payload as `forward_return_quantiles`
+    # but, like calibrated_confidence_pct/data_quality_score before this,
+    # never persisted onto the forecast row itself. Persisting them here
+    # (not just joining back to ProbabilitySnapshot, which has no stored
+    # link to this row) is what makes CRPS computable at grading time
+    # against this specific forecast's own distribution. Nullable: honestly
+    # absent for rows persisted before these columns existed, or when
+    # ProbabilityEngine had no quantile sample to report.
+    p10_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p25_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p50_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p75_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    p90_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # Forecasting 3.0 (Phase 5/12/13): Continuous Ranked Probability Score,
+    # a proper scoring rule over the whole predicted distribution (the
+    # p10..p90 quantiles above) rather than just the point forecast
+    # error_pct measures -- a DISTINCT metric from MAE/RMSE, not a
+    # replacement (see compute_crps_pct's own docstring for the pinball-
+    # loss approximation used). Filled in by grade_price_forecasts() at
+    # the same time as error_pct, from the same realized outcome, zero
+    # extra I/O. Nullable: honestly absent when this row has no quantiles
+    # to score against.
+    crps_pct: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, index=True
     )
