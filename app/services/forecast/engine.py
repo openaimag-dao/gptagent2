@@ -745,6 +745,46 @@ def derive_official_calibration_curve(
     return result
 
 
+def compute_quantile_coverage(
+    graded: list[tuple[float, float, float]],
+    expected_coverage_pct: float,
+) -> dict:
+    """Pure function: Forecasting 3.0 (Phase 13) -- empirical quantile
+    coverage validation. A well-calibrated P10-P90 band should, across
+    many graded forecasts, actually CONTAIN the realized outcome about
+    80% of the time (P90 - P10 = 80 percentage points of the
+    distribution by construction) -- if it contains it much more or
+    much less often, the persisted quantiles are systematically too
+    wide or too narrow, a distinct failure mode from a wrong median
+    (CRPS/error_pct) or a wrong stated probability (the calibration
+    curve above). `graded` is (lower_quantile_pct, upper_quantile_pct,
+    realized_return_pct) triples, already filtered upstream to graded
+    rows; a row missing either quantile bound is honestly excluded
+    (`is not None` in the caller), never treated as a miss. Reuses
+    `classify_calibration_reliability` for the same sample-sufficiency
+    semantics every other calibration view in this app already uses --
+    a coverage number from too few graded rows is exactly as
+    untrustworthy as a calibration bucket from too few, and is labeled
+    the same way."""
+    if not graded:
+        return {
+            "sample_size": 0,
+            "expected_coverage_pct": expected_coverage_pct,
+            "observed_coverage_pct": None,
+            "coverage_gap_pct": None,
+            "sample_sufficiency": classify_calibration_reliability(0),
+        }
+    within = sum(1 for lower, upper, realized in graded if lower <= realized <= upper)
+    observed = round(100 * within / len(graded), 2)
+    return {
+        "sample_size": len(graded),
+        "expected_coverage_pct": expected_coverage_pct,
+        "observed_coverage_pct": observed,
+        "coverage_gap_pct": round(observed - expected_coverage_pct, 2),
+        "sample_sufficiency": classify_calibration_reliability(len(graded)),
+    }
+
+
 def derive_regime_performance_breakdown(
     graded: list[tuple[str, bool]], min_sample_size: int
 ) -> list[dict]:
@@ -1993,6 +2033,25 @@ class ForecastEngine:
         top-level "is the official forecast surface any good" view, one
         query over price_forecast_snapshots, no new tables.
 
+        Forecasting 3.0 (Phase 13): also returns `quantile_coverage` --
+        empirical coverage validation for the persisted P10-P90 and
+        P25-P75 quantile bands (does the realized return actually fall
+        inside the stated band about as often as the band's own width
+        implies it should?), scored against the same
+        `zero_return_baseline_error_pct` figure (realized return relative
+        to current_price, the same basis the quantiles themselves are
+        computed on) every graded row already has. Same
+        `direction_correct IS NOT NULL` scoping as every other field this
+        method returns -- a Neutral call's quantiles are honestly excluded
+        here too, for consistency with the rest of this scorecard, not
+        because they're meaningless.
+
+        Distinct from CRPS (a per-forecast proper scoring rule over the
+        whole distribution) and the probability-calibration curve above
+        (whether the STATED probability_pct matches observed accuracy) --
+        this is a THIRD, separate calibration question: whether the
+        WIDTH of the distribution itself is honest.
+
         `since` (Forecasting 2.0 weekly review digest): when given,
         restricts to forecasts GRADED at or after `since` --
         evaluated_at, not computed_at, since "how did we do this week"
@@ -2019,6 +2078,11 @@ class ForecastEngine:
                         PriceForecastSnapshot.error_pct,
                         PriceForecastSnapshot.target_reached,
                         PriceForecastSnapshot.regime_at_forecast,
+                        PriceForecastSnapshot.p10_pct,
+                        PriceForecastSnapshot.p25_pct,
+                        PriceForecastSnapshot.p75_pct,
+                        PriceForecastSnapshot.p90_pct,
+                        PriceForecastSnapshot.zero_return_baseline_error_pct,
                     ).where(*filters)
                 )
             )
@@ -2051,11 +2115,30 @@ class ForecastEngine:
             [(r.regime_at_forecast, r.direction_correct) for r in rows if r.regime_at_forecast],
             get_settings().agent_performance_min_sample_size,
         )
+        p10_p90_graded = [
+            (float(r.p10_pct), float(r.p90_pct), float(r.zero_return_baseline_error_pct))
+            for r in rows
+            if r.p10_pct is not None
+            and r.p90_pct is not None
+            and r.zero_return_baseline_error_pct is not None
+        ]
+        p25_p75_graded = [
+            (float(r.p25_pct), float(r.p75_pct), float(r.zero_return_baseline_error_pct))
+            for r in rows
+            if r.p25_pct is not None
+            and r.p75_pct is not None
+            and r.zero_return_baseline_error_pct is not None
+        ]
+        quantile_coverage = {
+            "p10_p90": compute_quantile_coverage(p10_p90_graded, 80.0),
+            "p25_p75": compute_quantile_coverage(p25_p75_graded, 50.0),
+        }
         return {
             "summary": summary,
             "by_symbol": by_symbol,
             "calibration": calibration,
             "regime_breakdown": regime_breakdown,
+            "quantile_coverage": quantile_coverage,
         }
 
     async def get_operational_health(self, symbols: tuple[str, ...]) -> dict:

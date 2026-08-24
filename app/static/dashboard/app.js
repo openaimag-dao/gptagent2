@@ -2153,6 +2153,39 @@ async function renderForecastPerformance() {
     } else {
       results.appendChild(el("p", { class: "sub" }, "No regime-tagged graded forecasts yet."));
     }
+
+    results.appendChild(el("h2", {}, "Quantile Coverage Validation"));
+    results.appendChild(
+      el(
+        "p",
+        { class: "sub" },
+        "Does the realized return actually fall inside the forecast's own stated band as often as the band's width implies it should?"
+      )
+    );
+    const coverage = data.quantile_coverage;
+    if (coverage && (coverage.p10_p90.sample_size > 0 || coverage.p25_p75.sample_size > 0)) {
+      results.appendChild(
+        table(
+          ["Band", "Expected Coverage", "Sample Size", "Observed Coverage", "Gap", "Sufficiency"],
+          [
+            ["P10-P90", coverage.p10_p90],
+            ["P25-P75", coverage.p25_p75],
+          ].map(([label, c]) => [
+            label,
+            `${c.expected_coverage_pct}%`,
+            String(c.sample_size),
+            c.observed_coverage_pct != null ? `${c.observed_coverage_pct}%` : "n/a",
+            c.coverage_gap_pct != null ? fmtPct(c.coverage_gap_pct) : "n/a",
+            decisionPill(
+              c.sample_sufficiency.toUpperCase(),
+              c.sample_sufficiency === "reliable" ? "good" : c.sample_sufficiency === "usable" ? "neutral" : "bad"
+            ),
+          ])
+        )
+      );
+    } else {
+      results.appendChild(el("p", { class: "sub" }, "No graded forecasts with a persisted quantile band yet."));
+    }
   }
 
   await load("all");
