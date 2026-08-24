@@ -30,6 +30,7 @@ from app.services.forecast.engine import (
     check_and_invalidate_forecasts,
     grade_price_forecasts,
 )
+from app.services.futures_sim.monitor import check_positions_for_triggers
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.pipeline import run_sync
 from app.services.history.registry import build_registry, find_symbol_config
@@ -113,6 +114,7 @@ FORECAST_INVALIDATION_JOB_ID = "invalidate_forecasts"
 OFFICIAL_DAILY_FORECAST_JOB_ID = "generate_official_daily_forecast"
 FORECAST_WEEKLY_REVIEW_JOB_ID = "broadcast_forecast_weekly_review"
 ALERT_PERFORMANCE_GRADING_JOB_ID = "grade_alert_performance"
+FUTURES_SIM_POSITION_MONITOR_JOB_ID = "check_futures_sim_positions"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -703,6 +705,23 @@ async def grade_alert_performance_job() -> None:
         logger.exception("Alert performance grading job failed")
 
 
+async def check_futures_sim_positions_job() -> None:
+    """Futures Simulator (100% demo/paper trading, no real orders):
+    auto-closes any OPEN demo position whose current mark price has
+    crossed its liquidation price, stop-loss, or take-profit -- a
+    position can hit one of these purely from a price move, with no order
+    ever placed by the user, so this has to run on a schedule rather than
+    only in response to a request."""
+    try:
+        closures = await check_positions_for_triggers(get_session_factory(), get_redis())
+        if closures:
+            logger.info(
+                "Futures Simulator position monitor: %d position(s) auto-closed", len(closures)
+            )
+    except Exception:
+        logger.exception("Futures Simulator position monitor job failed")
+
+
 async def test_hypotheses_job() -> None:
     engine = HypothesisEngine(get_session_factory())
     try:
@@ -1074,6 +1093,16 @@ def start_scheduler() -> AsyncIOScheduler:
         _timed(grade_alert_performance_job),
         trigger=IntervalTrigger(minutes=settings.analysis_interval_minutes, jitter=300),
         id=ALERT_PERFORMANCE_GRADING_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _timed(check_futures_sim_positions_job),
+        trigger=IntervalTrigger(
+            minutes=settings.futures_sim_position_monitor_interval_minutes, jitter=15
+        ),
+        id=FUTURES_SIM_POSITION_MONITOR_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,

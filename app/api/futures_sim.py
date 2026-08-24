@@ -28,7 +28,12 @@ from app.services.futures_sim.engine import (
     get_current_price,
     resolve_leverage_bracket,
 )
-from app.services.futures_sim.orders import OrderRejected, close_position, place_market_order
+from app.services.futures_sim.orders import (
+    OrderRejected,
+    close_position,
+    place_market_order,
+    set_stop_loss_take_profit,
+)
 from app.services.realtime.config import parse_watchlist
 
 router = APIRouter(prefix="/api/simulator", tags=["futures-simulator"])
@@ -51,6 +56,12 @@ class PlaceOrderRequest(BaseModel):
 class ClosePositionRequest(BaseModel):
     quantity: float | None = None
     percent: float | None = None  # 0-100, alternative to quantity (task: 25/50/75/100%)
+    account_name: str = DEFAULT_ACCOUNT_NAME
+
+
+class SetStopLossTakeProfitRequest(BaseModel):
+    sl_price: float | None = None
+    tp_price: float | None = None  # either field omitted/None clears that trigger
     account_name: str = DEFAULT_ACCOUNT_NAME
 
 
@@ -296,6 +307,27 @@ async def close_position_endpoint(position_id: int, request: ClosePositionReques
     except OrderRejected as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"trade": _serialize_trade(trade)}
+
+
+@router.post("/positions/{position_id}/sl-tp", dependencies=[Depends(require_admin_key)])
+async def set_position_sl_tp(position_id: int, request: SetStopLossTakeProfitRequest) -> dict:
+    """Task: position-level Stop Loss / Take Profit. Never triggered by
+    the AI forecast automatically -- the user sets these explicitly (or
+    clears one by omitting it), and they're checked on every scheduled
+    app.services.futures_sim.monitor.check_positions_for_triggers pass."""
+    engine = build_futures_sim_engine()
+    account = await engine.get_or_create_account(request.account_name)
+    try:
+        position = await set_stop_loss_take_profit(
+            account,
+            get_session_factory(),
+            position_id=position_id,
+            sl_price=request.sl_price,
+            tp_price=request.tp_price,
+        )
+    except OrderRejected as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"position": _serialize_position(position)}
 
 
 @router.get("/trades")

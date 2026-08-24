@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.database.models import FuturesSimAccount, FuturesSimPosition
-from app.services.futures_sim.orders import OrderRejected, close_position, place_market_order
+from app.services.futures_sim.orders import (
+    OrderRejected,
+    close_position,
+    place_market_order,
+    set_stop_loss_take_profit,
+)
 
 
 def _orders_session(scalar_side_effect=None, scalars_return=None, account=None, position_get=None):
@@ -117,6 +122,84 @@ async def test_open_new_short_position_via_market_order():
     position = result["position"]
     assert position.side == "SHORT"
     assert position.entry_price == pytest.approx(99_980.0)  # -0.02% slippage
+
+
+async def test_open_new_position_cross_mode_computes_liquidation_price_from_account_equity():
+    account = _account(wallet_balance=10_000.0)
+    session_factory, session = _orders_session(
+        scalar_side_effect=[None, None], account=account, scalars_return=[]
+    )
+
+    with patch("app.services.futures_sim.orders.get_current_price", _price(100_000.0)):
+        result = await place_market_order(
+            account,
+            session_factory,
+            AsyncMock(),
+            symbol="BTC",
+            side="BUY",
+            quantity=0.1,
+            leverage=20,
+            margin_mode="CROSS",
+        )
+
+    position = result["position"]
+    assert position.margin_mode == "CROSS"
+    # $10k of account equity backing a $500-margin position is an enormous
+    # cushion -- liquidation price is far below (much more negative than)
+    # the ISOLATED equivalent for the same inputs (95_400.0).
+    assert position.liquidation_price < 0
+
+
+async def test_cross_liquidation_price_accounts_for_other_open_positions_unrealized_pnl():
+    async def _price_by_symbol(_session_factory, _redis, symbol):
+        return {"price": 100_000.0 if symbol == "BTC" else 2_500.0}
+
+    # baseline: no other open positions
+    account_alone = _account(wallet_balance=10_000.0)
+    session_factory_alone, _ = _orders_session(
+        scalar_side_effect=[None, None], account=account_alone, scalars_return=[]
+    )
+    with patch(
+        "app.services.futures_sim.orders.get_current_price", AsyncMock(side_effect=_price_by_symbol)
+    ):
+        result_alone = await place_market_order(
+            account_alone,
+            session_factory_alone,
+            AsyncMock(),
+            symbol="BTC",
+            side="BUY",
+            quantity=0.1,
+            leverage=20,
+            margin_mode="CROSS",
+        )
+
+    # same account, but with an ETH LONG that's up $500 in unrealized PnL
+    account_with_gain = _account(wallet_balance=10_000.0)
+    other_position = _open_position(
+        id=2, symbol="ETH", side="LONG", quantity=1.0, entry_price=2_000.0, mark_price=2_000.0
+    )
+    session_factory_with_gain, _ = _orders_session(
+        scalar_side_effect=[None, None], account=account_with_gain, scalars_return=[other_position]
+    )
+    with patch(
+        "app.services.futures_sim.orders.get_current_price", AsyncMock(side_effect=_price_by_symbol)
+    ):
+        result_with_gain = await place_market_order(
+            account_with_gain,
+            session_factory_with_gain,
+            AsyncMock(),
+            symbol="BTC",
+            side="BUY",
+            quantity=0.1,
+            leverage=20,
+            margin_mode="CROSS",
+        )
+
+    # more account equity (from the other position's unrealized gain) ->
+    # more cushion -> a LONG's liquidation price moves further away (lower)
+    assert (
+        result_with_gain["position"].liquidation_price < result_alone["position"].liquidation_price
+    )
 
 
 async def test_open_new_position_rejects_insufficient_margin():
@@ -553,3 +636,81 @@ async def test_close_position_rejects_when_no_market_data():
         pytest.raises(OrderRejected, match="No market data available"),
     ):
         await close_position(account, session_factory, AsyncMock(), position_id=position.id)
+
+
+# ---- set_stop_loss_take_profit -----------------------------------------
+
+
+async def test_set_stop_loss_take_profit_sets_both_prices():
+    position = _open_position(side="LONG", entry_price=100_000.0)
+    account = _account()
+    session_factory, session = _orders_session(account=account, position_get=position)
+
+    result = await set_stop_loss_take_profit(
+        account, session_factory, position_id=position.id, sl_price=95_000.0, tp_price=110_000.0
+    )
+
+    assert result.sl_price == 95_000.0
+    assert result.tp_price == 110_000.0
+
+
+async def test_set_stop_loss_take_profit_clears_a_trigger_with_none():
+    position = _open_position(side="LONG", entry_price=100_000.0, sl_price=95_000.0)
+    account = _account()
+    session_factory, session = _orders_session(account=account, position_get=position)
+
+    result = await set_stop_loss_take_profit(
+        account, session_factory, position_id=position.id, sl_price=None, tp_price=None
+    )
+
+    assert result.sl_price is None
+    assert result.tp_price is None
+
+
+async def test_set_stop_loss_rejects_long_sl_above_entry():
+    position = _open_position(side="LONG", entry_price=100_000.0)
+    account = _account()
+    session_factory, session = _orders_session(account=account, position_get=position)
+    with pytest.raises(OrderRejected, match="stop-loss for a LONG"):
+        await set_stop_loss_take_profit(
+            account, session_factory, position_id=position.id, sl_price=101_000.0, tp_price=None
+        )
+
+
+async def test_set_take_profit_rejects_long_tp_below_entry():
+    position = _open_position(side="LONG", entry_price=100_000.0)
+    account = _account()
+    session_factory, session = _orders_session(account=account, position_get=position)
+    with pytest.raises(OrderRejected, match="take-profit for a LONG"):
+        await set_stop_loss_take_profit(
+            account, session_factory, position_id=position.id, sl_price=None, tp_price=99_000.0
+        )
+
+
+async def test_set_stop_loss_rejects_short_sl_below_entry():
+    position = _open_position(side="SHORT", entry_price=100_000.0)
+    account = _account()
+    session_factory, session = _orders_session(account=account, position_get=position)
+    with pytest.raises(OrderRejected, match="stop-loss for a SHORT"):
+        await set_stop_loss_take_profit(
+            account, session_factory, position_id=position.id, sl_price=99_000.0, tp_price=None
+        )
+
+
+async def test_set_take_profit_rejects_short_tp_above_entry():
+    position = _open_position(side="SHORT", entry_price=100_000.0)
+    account = _account()
+    session_factory, session = _orders_session(account=account, position_get=position)
+    with pytest.raises(OrderRejected, match="take-profit for a SHORT"):
+        await set_stop_loss_take_profit(
+            account, session_factory, position_id=position.id, sl_price=None, tp_price=101_000.0
+        )
+
+
+async def test_set_stop_loss_take_profit_rejects_when_position_not_open():
+    account = _account()
+    session_factory, session = _orders_session(account=account, position_get=None)
+    with pytest.raises(OrderRejected, match="No open position"):
+        await set_stop_loss_take_profit(
+            account, session_factory, position_id=999, sl_price=95_000.0, tp_price=None
+        )

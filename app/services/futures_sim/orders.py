@@ -34,6 +34,7 @@ from app.database.models import (
     FuturesSimTrade,
 )
 from app.services.futures_sim.engine import (
+    compute_cross_liquidation_price,
     compute_fee,
     compute_initial_margin,
     compute_isolated_liquidation_price,
@@ -76,20 +77,66 @@ async def _open_position_for_symbol(
     )
 
 
-def _recompute_liquidation_price(
-    position: FuturesSimPosition, maintenance_margin_pct: float
+async def _other_open_positions_unrealized_pnl(
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    redis: Redis,
+    account_id: int,
+    exclude_position_id: int | None,
+) -> float:
+    """Sum of every OTHER open position's unrealized PnL for this account --
+    the cushion CROSS liquidation math adds on top of a position's own
+    initial margin (task: "available account equity участвует в
+    поддержании позиций"). `exclude_position_id` is None for a brand-new
+    position that hasn't been flushed yet (nothing to exclude, since it
+    can't appear in this query's results anyway)."""
+    query = select(FuturesSimPosition).where(
+        FuturesSimPosition.account_id == account_id, FuturesSimPosition.status == "OPEN"
+    )
+    if exclude_position_id is not None:
+        query = query.where(FuturesSimPosition.id != exclude_position_id)
+    other_positions = list(await session.scalars(query))
+    total = 0.0
+    for other in other_positions:
+        price_info = await get_current_price(session_factory, redis, other.symbol)
+        mark = price_info["price"] if price_info is not None else float(other.mark_price)
+        total += compute_position_pnl(
+            other.side, float(other.entry_price), mark, float(other.quantity)
+        )
+    return total
+
+
+async def _recompute_liquidation_price(
+    session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    redis: Redis,
+    account: FuturesSimAccount,
+    position: FuturesSimPosition,
+    maintenance_margin_pct: float,
 ) -> None:
-    """ISOLATED only for now (task: cross liquidation needs whole-account
-    equity, wired in a later increment once multi-position cross accounts
-    are exercised end-to-end) -- CROSS positions keep `liquidation_price`
-    None until then rather than showing a number computed with the wrong
-    formula."""
+    """ISOLATED: this position's own initial margin is the only cushion.
+    CROSS: the rest of the account's equity (wallet balance plus every
+    OTHER open position's unrealized PnL) adds to that cushion, so a CROSS
+    position generally liquidates later than the same position would in
+    ISOLATED mode -- see compute_cross_liquidation_price's own docstring
+    for the full derivation."""
     if position.margin_mode == "ISOLATED":
         position.liquidation_price = compute_isolated_liquidation_price(
             position.side, float(position.entry_price), position.leverage, maintenance_margin_pct
         )
     else:
-        position.liquidation_price = None
+        other_pnl = await _other_open_positions_unrealized_pnl(
+            session, session_factory, redis, account.id, position.id
+        )
+        other_account_equity = float(account.wallet_balance) + other_pnl
+        position.liquidation_price = compute_cross_liquidation_price(
+            position.side,
+            float(position.entry_price),
+            float(position.quantity),
+            float(position.initial_margin),
+            float(position.maintenance_margin),
+            other_account_equity,
+        )
 
 
 async def place_market_order(
@@ -210,6 +257,8 @@ async def place_market_order(
                 raise OrderRejected(order.reject_reason)
             position = await _open_new_position(
                 session,
+                session_factory,
+                redis,
                 account,
                 symbol,
                 opens_side,
@@ -228,7 +277,9 @@ async def place_market_order(
                 session.add(order)
                 await session.commit()
                 raise OrderRejected(order.reject_reason)
-            await _increase_position(session, account, position, quantity, fill, fee_info)
+            await _increase_position(
+                session, session_factory, redis, account, position, quantity, fill, fee_info
+            )
         else:
             # Fee for the close leg is computed on close_quantity, not the
             # full requested `quantity` -- when quantity exceeds the
@@ -241,6 +292,8 @@ async def place_market_order(
             close_fee_info = compute_fee(close_quantity * fill["actual_fill_price"], is_maker=False)
             trade = await _close_or_reduce_position(
                 session,
+                session_factory,
+                redis,
                 account,
                 position,
                 close_quantity,
@@ -257,6 +310,8 @@ async def place_market_order(
                 flip_fee = compute_fee(remainder * fill["actual_fill_price"], is_maker=False)
                 position = await _open_new_position(
                     session,
+                    session_factory,
+                    redis,
                     account,
                     symbol,
                     opens_side,
@@ -291,6 +346,8 @@ async def place_market_order(
 
 async def _open_new_position(
     session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    redis: Redis,
     account: FuturesSimAccount,
     symbol: str,
     side: str,
@@ -326,10 +383,12 @@ async def _open_new_position(
         maintenance_margin=maintenance_margin,
         status="OPEN",
     )
-    _recompute_liquidation_price(position, maintenance_margin_pct)
     session.add(position)
+    await session.flush()  # assigns position.id before the CROSS-mode exclusion query below
+    await _recompute_liquidation_price(
+        session, session_factory, redis, account, position, maintenance_margin_pct
+    )
     await _apply_fee(session, account, fee_info["fee_amount"], reference_type="POSITION")
-    await session.flush()
     session.add(
         FuturesSimLedgerEntry(
             account_id=account.id,
@@ -349,6 +408,8 @@ async def _open_new_position(
 
 async def _increase_position(
     session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    redis: Redis,
     account: FuturesSimAccount,
     position: FuturesSimPosition,
     quantity: float,
@@ -380,7 +441,9 @@ async def _increase_position(
     position.initial_margin = initial_margin
     position.maintenance_margin = maintenance_margin
     position.updated_at = datetime.now(UTC)
-    _recompute_liquidation_price(position, maintenance_margin_pct)
+    await _recompute_liquidation_price(
+        session, session_factory, redis, account, position, maintenance_margin_pct
+    )
     await _apply_fee(session, account, fee_info["fee_amount"], reference_type="POSITION")
     session.add(
         FuturesSimLedgerEntry(
@@ -399,6 +462,8 @@ async def _increase_position(
 
 async def _close_or_reduce_position(
     session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    redis: Redis,
     account: FuturesSimAccount,
     position: FuturesSimPosition,
     close_quantity: float,
@@ -455,7 +520,9 @@ async def _close_or_reduce_position(
         maintenance_margin_pct = resolve_maintenance_margin_pct(position.symbol)
         position.initial_margin = compute_initial_margin(notional, position.leverage)
         position.maintenance_margin = compute_maintenance_margin(notional, maintenance_margin_pct)
-        _recompute_liquidation_price(position, maintenance_margin_pct)
+        await _recompute_liquidation_price(
+            session, session_factory, redis, account, position, maintenance_margin_pct
+        )
     position.updated_at = now
 
     session.add(
@@ -535,9 +602,10 @@ async def close_position(
     exit_reason: str = "MANUAL",
 ) -> FuturesSimTrade:
     """Task: "Close / Close 25% / Close 50% / Close 75% / Close 100%" --
-    `quantity=None` means full close. Reused by SL/TP/liquidation triggers
-    in later increments (`exit_reason` is how those differ from a manual
-    close)."""
+    `quantity=None` means full close. Also the primitive
+    app.services.futures_sim.monitor.check_positions_for_triggers uses for
+    SL/TP/liquidation auto-closes (`exit_reason` is how those differ from
+    a manual close)."""
     async with session_factory() as session:
         # See the matching comment in place_market_order: `account` may
         # have been loaded by a different, already-closed session -- rebind
@@ -562,8 +630,60 @@ async def close_position(
         fee_info = compute_fee(close_quantity * fill["actual_fill_price"], is_maker=False)
 
         trade = await _close_or_reduce_position(
-            session, account, position, close_quantity, fill, fee_info, exit_reason=exit_reason
+            session,
+            session_factory,
+            redis,
+            account,
+            position,
+            close_quantity,
+            fill,
+            fee_info,
+            exit_reason=exit_reason,
         )
         await session.commit()
         await session.refresh(trade)
         return trade
+
+
+async def set_stop_loss_take_profit(
+    account: FuturesSimAccount,
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    position_id: int,
+    sl_price: float | None,
+    tp_price: float | None,
+) -> FuturesSimPosition:
+    """Task: position-level Stop Loss / Take Profit. Sets (or clears, by
+    passing None) the trigger prices on an OPEN position -- these are
+    plain price triggers checked on every
+    app.services.futures_sim.monitor.check_positions_for_triggers pass,
+    not real conditional orders placed on any exchange. Validated against
+    the position's own side and entry price so a SL/TP can never be set on
+    the wrong side of entry (a LONG's stop-loss must sit below entry and
+    its take-profit above; SHORT is the mirror image) -- an inverted
+    SL/TP would either never trigger or trigger immediately, neither of
+    which is what "stop loss" or "take profit" means."""
+    async with session_factory() as session:
+        account = await session.get(FuturesSimAccount, account.id)
+        position = await session.get(FuturesSimPosition, position_id)
+        if position is None or position.status != "OPEN" or position.account_id != account.id:
+            raise OrderRejected(f"No open position {position_id} on this account")
+
+        entry_price = float(position.entry_price)
+        if sl_price is not None:
+            if position.side == "LONG" and sl_price >= entry_price:
+                raise OrderRejected("stop-loss for a LONG position must be below entry price")
+            if position.side == "SHORT" and sl_price <= entry_price:
+                raise OrderRejected("stop-loss for a SHORT position must be above entry price")
+        if tp_price is not None:
+            if position.side == "LONG" and tp_price <= entry_price:
+                raise OrderRejected("take-profit for a LONG position must be above entry price")
+            if position.side == "SHORT" and tp_price >= entry_price:
+                raise OrderRejected("take-profit for a SHORT position must be below entry price")
+
+        position.sl_price = sl_price
+        position.tp_price = tp_price
+        position.updated_at = datetime.now(UTC)
+        await session.commit()
+        await session.refresh(position)
+        return position
