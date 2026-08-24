@@ -25,7 +25,7 @@ from app.services.futures_sim.engine import (
     build_futures_sim_engine,
     compute_position_pnl,
     compute_roi_pct,
-    get_current_price,
+    get_mark_price,
     resolve_leverage_bracket,
 )
 from app.services.futures_sim.orders import (
@@ -314,9 +314,9 @@ async def get_positions(name: str = DEFAULT_ACCOUNT_NAME, status: str = "OPEN") 
     for position in positions:
         payload = _serialize_position(position)
         if position.status == "OPEN":
-            price_info = await get_current_price(
-                get_session_factory(), get_redis(), position.symbol
-            )
+            # SIMULATED MARK PRICE (task: never just the last traded
+            # price) -- see engine.get_mark_price's own docstring.
+            price_info = await get_mark_price(get_session_factory(), get_redis(), position.symbol)
             mark_price = (
                 price_info["price"] if price_info is not None else float(position.mark_price)
             )
@@ -324,6 +324,7 @@ async def get_positions(name: str = DEFAULT_ACCOUNT_NAME, status: str = "OPEN") 
                 position.side, float(position.entry_price), mark_price, float(position.quantity)
             )
             payload["mark_price"] = mark_price
+            payload["mark_price_simulated"] = True
             payload["unrealized_pnl"] = pnl
             payload["roi_pct"] = compute_roi_pct(pnl, float(position.initial_margin))
         serialized.append(payload)

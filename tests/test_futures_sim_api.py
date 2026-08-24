@@ -401,14 +401,15 @@ async def test_get_positions_enriches_open_positions_with_live_mark_price_and_pn
         patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
         patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
         patch(
-            "app.api.futures_sim.get_current_price",
-            AsyncMock(return_value={"price": 102_000.0}),
+            "app.api.futures_sim.get_mark_price",
+            AsyncMock(return_value={"price": 102_000.0, "mark_price_simulated": True}),
         ),
     ):
         payload = await futures_sim.get_positions()
 
     row = payload["positions"][0]
     assert row["mark_price"] == 102_000.0
+    assert row["mark_price_simulated"] is True
     assert row["unrealized_pnl"] == pytest.approx(200.0)  # (102000-100000)*0.1
     assert row["roi_pct"] == pytest.approx(40.0)  # 200/500 margin
 
@@ -421,7 +422,7 @@ async def test_get_positions_does_not_enrich_closed_positions():
     with (
         patch("app.api.futures_sim.build_futures_sim_engine", return_value=engine),
         patch("app.api.futures_sim.get_session_factory", return_value=session_factory),
-        patch("app.api.futures_sim.get_current_price") as mock_price,
+        patch("app.api.futures_sim.get_mark_price") as mock_price,
     ):
         payload = await futures_sim.get_positions(status="ALL")
 

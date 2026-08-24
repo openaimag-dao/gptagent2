@@ -182,6 +182,19 @@ ledger entry's description — when no real source has data for that
 symbol. See §13 of the math doc for the exact formula, sign convention,
 and how it interacts with a trade's `funding` field at close time.
 
+## Mark price
+
+Position `mark_price`, unrealized PnL, account equity, and margin ratio
+are all driven by a **SIMULATED MARK PRICE** (`GET
+/api/simulator/positions` and account state both carry
+`mark_price_simulated: true` alongside the value) — an EMA over the real
+reference price, deliberately not just the last traded price (task's own
+explicit requirement). Liquidation, SL/TP, and resting-order fill checks
+deliberately use the raw, unsmoothed reference price instead, since those
+are consequential events that should fire against what genuinely happened
+in the market. See §10 of the math doc for the exact formula and the
+full where-it's-used/where-it's-not breakdown.
+
 ## Performance analytics
 
 `GET /api/simulator/performance` computes overall stats (total/winning/
@@ -298,9 +311,6 @@ section — summarized here:
 - Resting orders (LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET) do not reserve
   margin at placement time; they are re-checked at fill time and can be
   REJECTED then if margin has become insufficient in the meantime.
-- Mark price is the raw last observed price; the EMA-smoothed "SIMULATED
-  MARK PRICE" formula exists as a pure function but isn't wired into live
-  position updates yet.
 - No candlestick/TradingView-style price chart on the TRADE tab yet — this
   dashboard has no OHLC charting primitive anywhere today, only a single-
   series SVG line chart; building one is a dedicated future increment.

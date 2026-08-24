@@ -408,4 +408,11 @@ class Settings(BaseSettings):
     # is rarely exactly 0 on a real exchange) and not fabricated per-symbol
     # variation.
     futures_sim_simulated_funding_rate_pct: float = 0.01
+    # Smoothing factor for the SIMULATED MARK PRICE EMA (task: mark price
+    # must not always be just the last traded price) -- higher tracks the
+    # real reference price more closely, lower smooths harder. 0.3 is a
+    # standard EMA smoothing choice, not tuned against any real exchange's
+    # own mark-price formula (this project has no real index-price feed to
+    # match against).
+    futures_sim_mark_price_ema_alpha: float = 0.3
     learning_insight_min_gap_pct: float = 15.0
