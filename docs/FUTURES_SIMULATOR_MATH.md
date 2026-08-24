@@ -296,12 +296,49 @@ MARKET fill already does); if the account's available margin has fallen
 below what the order would need by the time it fills, the order is
 REJECTED then rather than being pre-validated and reserved when placed.
 
+## 13. Funding
+
+```
+notional     = quantity * mark_price
+funding_fee  = notional * funding_rate_pct / 100
+signed_fee   = funding_fee   if side == LONG   (LONG pays when the rate is positive)
+             = -funding_fee  if side == SHORT  (SHORT is the exact mirror)
+```
+
+`app.services.futures_sim.funding.apply_funding_to_open_positions` runs
+on a schedule (`futures_sim_funding_interval_hours`, default every 8
+hours — matching real exchanges' own settlement cadence) and, for every
+OPEN position, debits (or credits, when `signed_fee` is negative)
+`account.wallet_balance` directly and accumulates the amount on
+`position.funding_paid`.
+
+**Real vs. SIMULATED** (task: "Funding using real data if available else
+'unavailable', simulated funding explicitly labeled SIMULATED"):
+`funding_rate_pct` comes from `WhaleIntelligenceEngine.get_snapshot()` —
+the same CoinGlass-primary/CoinGecko-derivatives-fallback source the
+Whale Intelligence page already uses, no new market-data integration.
+CoinGecko's `funding_rate` field is already a percentage (verified
+directly against its live `/derivatives` response: a raw value of
+`0.007731` for Binance's BTCUSDT perpetual corresponds to Binance's own
+displayed `0.0077%` funding rate, not `0.7731%`), so no unit conversion
+happens beyond that. When neither source has a rate for a symbol, the
+configured `futures_sim_simulated_funding_rate_pct` is used instead, and
+every ledger entry it produces is labeled `SIMULATED` in its
+description — never presented as real.
+
+**Reporting on closed trades:** funding is debited/credited to the
+wallet the moment it's charged, exactly like a real exchange — it is
+*not* subtracted again from `net_pnl` at position-close time.
+`FuturesSimTrade.funding` is a pure reporting field, set to the
+position's accumulated `funding_paid` only when a close fully closes the
+position (a partial close leaves the accumulated funding attributed to
+the remaining position rather than proportionally splitting it — a
+documented simplification).
+
 ---
 
 ## Known limitations (as of this document)
 
-- Funding is not yet implemented; `funding` is hardcoded to `0.0` in every
-  PnL calculation.
 - The ISOLATED liquidation formula (§8a) does not net in the liquidating
   fill's own taker fee.
 - Mark price smoothing (§10) exists as a pure function but is not yet
@@ -310,6 +347,13 @@ REJECTED then rather than being pre-validated and reserved when placed.
 - Resting orders (§12) do not reserve margin at placement time; a
   documented simplification versus a real exchange's margin-reservation
   model.
+- Funding (§13) uses `mark_price` (the position's own last-recorded
+  price) rather than a freshly-fetched price at settlement time, and
+  settles on a fixed schedule rather than the split-second timestamp a
+  real exchange settles at.
+- Funding on a partial close is not proportionally allocated between the
+  closed and remaining quantity (§13) — it stays with the remaining
+  position until it fully closes.
 - The position monitor (§11) and the resting-order fill check (§12) both
   poll on a schedule rather than reacting instantly to every price tick —
   a position/order can theoretically remain past its trigger price for up

@@ -95,6 +95,7 @@ def _serialize_position(position: FuturesSimPosition) -> dict:
         "initial_margin": float(position.initial_margin),
         "maintenance_margin": float(position.maintenance_margin),
         "realized_pnl": float(position.realized_pnl),
+        "funding_paid": float(position.funding_paid),
         "liquidation_price": float(position.liquidation_price)
         if position.liquidation_price is not None
         else None,

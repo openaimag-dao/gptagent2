@@ -397,4 +397,15 @@ class Settings(BaseSettings):
     # simulator state need to be" cadence. Kept tight since a demo
     # simulator has no real exchange-side engine watching prices live.
     futures_sim_position_monitor_interval_minutes: float = 1.0
+    # Real exchanges settle funding every 8 hours -- matched here so the
+    # simulator's funding cadence "feels" like the real thing rather than
+    # an arbitrary interval.
+    futures_sim_funding_interval_hours: float = 8.0
+    # Used ONLY when a symbol's real funding rate is unavailable (no
+    # CoinGlass/CoinGecko derivatives data) -- explicitly labeled
+    # SIMULATED wherever charged (task: never present a simulated number
+    # as real). A small, realistic-magnitude fraction, not zero (funding
+    # is rarely exactly 0 on a real exchange) and not fabricated per-symbol
+    # variation.
+    futures_sim_simulated_funding_rate_pct: float = 0.01
     learning_insight_min_gap_pct: float = 15.0

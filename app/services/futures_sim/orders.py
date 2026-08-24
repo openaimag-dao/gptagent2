@@ -519,11 +519,22 @@ async def _close_or_reduce_position(
     entry_price = float(position.entry_price)
     gross_pnl = compute_position_pnl(position.side, entry_price, fill_price, close_quantity)
     fee_amount = fee_info["fee_amount"]
+    # Funding is deliberately NOT subtracted again here: it already left
+    # (or entered) the account's wallet_balance at the moment each
+    # funding settlement was charged (app.services.futures_sim.funding),
+    # exactly like a real exchange. `trade.funding` below is purely a
+    # reporting field showing how much funding this trade's position
+    # accrued over its lifetime, not a second deduction.
     net_pnl = compute_net_pnl(gross_pnl, fee_amount, funding=0.0)
     margin_used = compute_initial_margin(close_quantity * entry_price, position.leverage)
     roi_pct = compute_roi_pct(net_pnl, margin_used)
 
     now = datetime.now(UTC)
+    remaining_quantity = float(position.quantity) - close_quantity
+    # Rolled into the trade only on a full close (see funding_paid's own
+    # docstring on FuturesSimPosition for why partial closes don't
+    # proportionally split it).
+    trade_funding = float(position.funding_paid) if remaining_quantity <= 1e-12 else 0.0
     trade = FuturesSimTrade(
         account_id=account.id,
         position_id=position.id,
@@ -535,7 +546,7 @@ async def _close_or_reduce_position(
         quantity=close_quantity,
         gross_pnl=gross_pnl,
         fees=fee_amount,
-        funding=0.0,
+        funding=trade_funding,
         net_pnl=net_pnl,
         roi_pct=roi_pct if roi_pct is not None else 0.0,
         opened_at=position.opened_at,
@@ -546,7 +557,6 @@ async def _close_or_reduce_position(
     )
     session.add(trade)
 
-    remaining_quantity = float(position.quantity) - close_quantity
     account.wallet_balance = float(account.wallet_balance) + net_pnl
     account.realized_pnl_total = float(account.realized_pnl_total) + net_pnl
     account.fees_paid_total = float(account.fees_paid_total) + fee_amount

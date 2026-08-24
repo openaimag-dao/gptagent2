@@ -65,6 +65,7 @@ def _open_position(**overrides):
         initial_margin=500.0,
         maintenance_margin=40.0,
         realized_pnl=0.0,
+        funding_paid=0.0,
         liquidation_price=None,
         status="OPEN",
         opened_at=datetime.now(UTC),
