@@ -228,6 +228,12 @@ class HistoryTimeframe(str, enum.Enum):
     DAILY = "1d"
     FOUR_HOUR = "4h"
     ONE_HOUR = "1h"
+    # Futures Simulator candlestick chart: real candles aggregated from the
+    # live tick feed going forward (no honest historical backfill exists at
+    # this resolution) -- see app/services/realtime/aggregator.py. Only ever
+    # written for crypto symbols; see registry.py's realtime_timeframes.
+    FIFTEEN_MINUTE = "15m"
+    FIVE_MINUTE = "5m"
 
 
 class _HistoryCandleMixin:

@@ -10,6 +10,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.api.reports import build_report_generator
 from app.config import get_settings
+from app.database.models import CryptoHistory
 from app.database.redis import get_redis
 from app.database.session import get_session_factory
 from app.services.agents.orchestrator import build_agent_orchestrator
@@ -36,6 +37,7 @@ from app.services.futures_sim.resting_orders import check_resting_orders_for_fil
 from app.services.global_score.engine import GlobalScoreEngine
 from app.services.history.pipeline import run_sync
 from app.services.history.registry import build_registry, find_symbol_config
+from app.services.history.repository import prune_candles
 from app.services.history.schemas import Timeframe
 from app.services.hypothesis.engine import HypothesisEngine
 from app.services.market.aggregator import MarketDataAggregator
@@ -46,6 +48,7 @@ from app.services.portfolio.advisor import PortfolioAdvisorEngine
 from app.services.portfolio.engine import PortfolioEngine
 from app.services.probability.engine import ProbabilityEngine
 from app.services.ranking.engine import RankingEngine
+from app.services.realtime.aggregator import aggregate_five_minute_candles
 from app.services.realtime.config import parse_watchlist
 from app.services.reliability.engine import AgentReliabilityEngine
 from app.services.replay.engine import MarketReplayEngine, get_replay_comparison
@@ -119,6 +122,8 @@ ALERT_PERFORMANCE_GRADING_JOB_ID = "grade_alert_performance"
 FUTURES_SIM_POSITION_MONITOR_JOB_ID = "check_futures_sim_positions"
 FUTURES_SIM_ORDER_FILL_JOB_ID = "fill_futures_sim_orders"
 FUTURES_SIM_FUNDING_JOB_ID = "apply_futures_sim_funding"
+REALTIME_CANDLE_JOB_ID = "aggregate_realtime_candles"
+REALTIME_CANDLE_PRUNE_JOB_ID = "prune_realtime_candles"
 
 # Named session reports and their fire time in UTC. Approximate, DST-naive by
 # design (documented in the README): Asia (Tokyo ~9am JST), Europe (London
@@ -765,6 +770,45 @@ async def apply_futures_sim_funding_job() -> None:
         logger.exception("Futures Simulator funding job failed")
 
 
+async def aggregate_realtime_candles_job() -> None:
+    """Futures Simulator chart: rolls the live Coinbase tick feed forward
+    into real 5m candles (and derives 15m from finished 5m candles) --
+    see app/services/realtime/aggregator.py's own module docstring for the
+    full honesty rationale (real prices, coarsely sampled, never
+    fabricated/backfilled)."""
+    try:
+        finalized = await aggregate_five_minute_candles(get_session_factory(), get_redis())
+        if finalized:
+            logger.info("Realtime candle aggregation: finalized a 5m candle for %s", finalized)
+    except Exception:
+        logger.exception("Realtime candle aggregation job failed")
+
+
+async def prune_realtime_candles_job() -> None:
+    """Keeps the realtime-aggregated 5m/15m crypto_history rows bounded --
+    at 288 candles/day/symbol these would otherwise grow unbounded, and
+    fill_missing_indicators loads the full stored series on every call.
+    Deletes rows, never truncates the indicator-computation input window
+    (see prune_candles's own docstring for why that distinction matters)."""
+    settings = get_settings()
+    cutoff = datetime.now(UTC) - timedelta(days=settings.realtime_candle_retention_days)
+    try:
+        session_factory = get_session_factory()
+        watchlist = parse_watchlist(settings.realtime_watchlist)
+        total_pruned = 0
+        for symbol in watchlist:
+            for timeframe in (Timeframe.FIVE_MINUTE, Timeframe.FIFTEEN_MINUTE):
+                total_pruned += await prune_candles(
+                    session_factory, CryptoHistory, symbol, timeframe, cutoff
+                )
+        if total_pruned:
+            logger.info(
+                "Realtime candle retention: pruned %d row(s) older than %s", total_pruned, cutoff
+            )
+    except Exception:
+        logger.exception("Realtime candle retention job failed")
+
+
 async def test_hypotheses_job() -> None:
     engine = HypothesisEngine(get_session_factory())
     try:
@@ -1164,6 +1208,22 @@ def start_scheduler() -> AsyncIOScheduler:
         _timed(apply_futures_sim_funding_job),
         trigger=IntervalTrigger(hours=settings.futures_sim_funding_interval_hours, jitter=300),
         id=FUTURES_SIM_FUNDING_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _timed(aggregate_realtime_candles_job),
+        trigger=IntervalTrigger(minutes=settings.realtime_candle_interval_minutes, jitter=5),
+        id=REALTIME_CANDLE_JOB_ID,
+        next_run_time=datetime.now(UTC),
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _timed(prune_realtime_candles_job),
+        trigger=IntervalTrigger(hours=24, jitter=600),
+        id=REALTIME_CANDLE_PRUNE_JOB_ID,
         next_run_time=datetime.now(UTC),
         max_instances=1,
         coalesce=True,

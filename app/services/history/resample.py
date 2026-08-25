@@ -4,6 +4,7 @@ from app.services.history.schemas import Candle, Timeframe
 
 _RULE_BY_TIMEFRAME: dict[Timeframe, str] = {
     Timeframe.FOUR_HOUR: "4h",
+    Timeframe.FIFTEEN_MINUTE: "15min",
 }
 
 
@@ -33,8 +34,20 @@ def resample_candles(candles: list[Candle], target: Timeframe) -> list[Candle]:
         .sort_index()
     )
 
+    # min_count=1 on the volume sum: a bucket with zero real (non-null)
+    # volume observations sums to NaN (-> None below), not 0 -- pandas'
+    # default sum() of an all-NaN group is 0.0, which would silently turn
+    # "we don't have volume data" (the realtime-aggregated 5m candles this
+    # feeds 15m from -- see app/services/realtime/aggregator.py) into a
+    # fabricated "confirmed zero volume" claim.
     resampled = frame.resample(rule).agg(
-        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
+        {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": lambda s: s.sum(min_count=1),
+        }
     )
     resampled = resampled.dropna(subset=["open", "high", "low", "close"])
 

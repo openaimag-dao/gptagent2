@@ -6243,18 +6243,7 @@ async function renderFuturesTradeTab() {
       })
     );
 
-    if (chartTimeframe === "5m" || chartTimeframe === "15m") {
-      chartContainer.appendChild(
-        el(
-          "p",
-          { class: "sub" },
-          `Real ${chartTimeframe} candles are being recorded from the live price feed starting now -- ` +
-            "check back soon as history accumulates."
-        )
-      );
-      return;
-    }
-
+    const isRealtimeTimeframe = chartTimeframe === "5m" || chartTimeframe === "15m";
     const loadingMsg = el("p", { class: "loading" }, "Loading chart...");
     chartContainer.appendChild(loadingMsg);
     const data = await safe(
@@ -6263,9 +6252,27 @@ async function renderFuturesTradeTab() {
     chartContainer.removeChild(loadingMsg);
     if (!data || !data.candles || !data.candles.length) {
       chartContainer.appendChild(
-        el("p", { class: "sub" }, "No chart data available for this symbol/timeframe yet.")
+        el(
+          "p",
+          { class: "sub" },
+          isRealtimeTimeframe
+            ? `Real ${chartTimeframe} candles are being recorded from the live price feed starting ` +
+              "now -- check back soon as history accumulates."
+            : "No chart data available for this symbol/timeframe yet."
+        )
       );
       return;
+    }
+    if (isRealtimeTimeframe) {
+      chartContainer.appendChild(
+        el(
+          "p",
+          { class: "sub" },
+          `Built from the live Coinbase feed, sampled about once a minute since ` +
+            `${new Date(data.candles[0].timestamp).toLocaleString()} -- real prices, not a full ` +
+            "trade tape. No volume data available."
+        )
+      );
     }
     chartContainer.appendChild(candleChart(data.candles, { timeframe: chartTimeframe }));
   }
