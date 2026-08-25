@@ -347,9 +347,12 @@ colors).
 - The header shows Demo Balance/Equity/Available/Unrealized PnL/Realized
   PnL/Margin Ratio, with an explicit "PAPER TRADING / DEMO — REAL FUNDS
   NOT USED" banner always visible.
-- TRADE has OPEN LONG (green)/OPEN SHORT (red) buttons, symbol/leverage/
-  margin-mode/order-type selectors, and price/stop-price fields that show
-  only for the order types that need them.
+- TRADE is a two-column layout (`.trade-layout`, chart left / order panel
+  right, collapsing to one column under 900px): a candlestick chart with
+  timeframe tabs (5m/15m/1h/4h/1d) on the left, and OPEN LONG (green)/OPEN
+  SHORT (red) buttons, symbol/leverage/margin-mode/order-type selectors,
+  a live USD notional line, and price/stop-price fields that show only
+  for the order types that need them, on the right.
 - POSITIONS has Close 25%/50%/75%/100% buttons and an inline SL/TP
   setter per row.
 - OPEN ORDERS has a Cancel button per resting order.
@@ -377,9 +380,6 @@ colors).
   each tab is a full page render via the existing `navigate()`/hash
   routing rather than a bespoke local tab switcher — consistent with how
   every other multi-view page in this dashboard already works.
-- No candlestick/TradingView-style chart yet on the TRADE tab (see Known
-  Limitations) — the only charting primitive in this dashboard today is a
-  single-series SVG line chart with no OHLC support.
 
 Live-verified in a real headless-Chromium session against the running
 server: placed a MARKET order through the UI (real BTC price, real fill),
@@ -389,6 +389,71 @@ real data, and confirmed the SETTINGS tab's controls render correctly.
 Separately verified the RISK tab against a real 50x BTC position: the
 rendered margin ratio, daily PnL, total exposure, and a NEAR_LIQUIDATION
 warning naming the position all matched the API response exactly.
+
+### Candlestick chart
+
+`candleChart()`/`rsiPanel()` (`app/static/dashboard/app.js`) are hand-
+rolled raw-SVG functions, following the same `document.createElementNS`
+convention as the dashboard's existing `svgLineChart`/`svgRadarChart` —
+no charting library, matching this project's no-build-step rule.
+Candles + SMA 20/50/200 + RSI come straight from the existing
+`GET /api/history/{symbol}?timeframe=X&limit=180` endpoint (no new
+backend work for 1h/4h/1d) — every indicator drawn was already computed
+and stored by `app.services.history.indicators`, reused, not
+recomputed. RSI (not MACD) is the sub-panel: it has a fixed 0–100 domain
+independent of the symbol's price magnitude, and its Wilder-14 warm-up
+lights up ~2.5x sooner than MACD's 12/26/9, which matters once 5m
+candles (below) start from zero history.
+
+**Honesty limitation, discovered and handled deliberately, not
+papered over**: CoinGecko's `/market_chart` endpoint (the source behind
+`crypto_history`'s `1d`/`1h` rows) returns one price point per period,
+not true OHLC — its own docstring in
+`app/services/history/providers/coingecko.py` says so, and
+`open=high=low=close` for every such row. So **`1d` and `1h` candles are
+flat**; only `4h` (resampled from several distinct hourly points) has
+genuine wicks. Rather than draw fake candle bodies for `1d`/`1h`,
+`candleChart()` detects the flat case and falls back to a close-price
+line + the same SMA/RSI overlays, with a visible caption naming the
+reason. `5m`/`15m` tabs are visible now but show "not enough data yet"
+until real 5m candles start accumulating from the live tick feed (a
+separate, already-planned increment — see Known limitations).
+
+The crypto history sync job (`sync_crypto_daily_history_job`,
+`app/scheduler/jobs.py`) was widened from DAILY-only to also keep 1h/4h
+fresh on its existing hourly schedule — those two timeframes previously
+only had data if a human had run a manual full sync at least once, which
+would have shipped the chart with visibly stale 1h/4h tabs from day one.
+
+Live-verified against the real running server: confirmed `4h` renders
+real (non-flat) candle bodies from real synced data, confirmed `1d`
+renders the honest flat-OHLC line fallback with its caption, and
+confirmed `5m` shows the not-enough-data-yet placeholder.
+
+### Live ticker marquee and Overview Open Positions widget
+
+A horizontally auto-scrolling ticker marquee (`mountTickerMarquee()`,
+pure-CSS `@keyframes` animation, no JS animation loop) sits in `#topbar`
+— outside `#content`, which `render()` replaces on every navigation — so
+it survives page changes without restarting its scroll. It reuses the
+existing `RealtimeStore` singleton's `subscribe()` (not `.mount()`,
+which would have silently broken Overview's existing `liveTicker()` grid
+or itself, since `.mount()` tears down whichever component mounted
+previously) — no new SSE connection, no new data source.
+
+The Overview page also gets an **Open Positions** widget
+(`renderOverviewOpenPositions()`), reading the same
+`GET /api/simulator/positions?status=OPEN` the Positions tab already
+uses. It is always rendered, even with zero open positions ("No open
+demo positions.") — the task's own ask was that positions be visible on
+the main page, so the section's presence is never itself a signal.
+
+Live-verified against the real running server: confirmed the marquee
+renders all 10 watchlist symbols and survives navigating from Overview
+to the Futures Simulator page; confirmed the Overview widget in both
+states — zero open positions, and a real opened ETH position (correct
+symbol/side/qty/entry/mark/notional/PnL/ROI, matching the Positions tab
+exactly).
 
 ## AI integration
 
@@ -429,9 +494,18 @@ section — summarized here:
 - Resting orders (LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET) do not reserve
   margin at placement time; they are re-checked at fill time and can be
   REJECTED then if margin has become insufficient in the meantime.
-- No candlestick/TradingView-style price chart on the TRADE tab yet — this
-  dashboard has no OHLC charting primitive anywhere today, only a single-
-  series SVG line chart; building one is a dedicated future increment.
+- The candlestick chart's `1d`/`1h` timeframes render a close-price line,
+  not real candle bodies — CoinGecko's price-history endpoint returns one
+  price point per period for those timeframes, not true OHLC (see the
+  Dashboard section's "Candlestick chart" subsection). Only `4h` has
+  genuine wicks today.
+- `5m`/`15m` chart timeframes show a placeholder ("not enough data yet")
+  — real 5m/15m candles accumulated from the live tick feed, plus the
+  schema/aggregation-job work that requires, is a separate, already-
+  scoped follow-up increment, not yet implemented.
+- The chart has no crosshair/hover OHLC readout yet, and only RSI (not
+  MACD) is available as an indicator sub-panel — both are documented,
+  deliberately deferred polish, not oversights.
 - No historical-replay trading mode yet.
 - The AI signal's suggested SL/TP levels come from the forecast's own
   `key_levels` (support/resistance) and `target_price` — a reasonable

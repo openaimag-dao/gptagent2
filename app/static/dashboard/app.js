@@ -368,6 +368,280 @@ function svgLineChart(values, { width = 600, height = 160 } = {}) {
   return svg;
 }
 
+const CANDLE_CHART_GEOM = { w: 900, h: 440, padL: 6, padR: 64, padT: 10, priceH: 300, gap: 12, indH: 84 };
+let _candleClipCounter = 0;
+
+function _candleGeom() {
+  const g = CANDLE_CHART_GEOM;
+  const plotW = g.w - g.padL - g.padR;
+  const priceTop = g.padT;
+  const priceBot = priceTop + g.priceH;
+  const indTop = priceBot + g.gap;
+  const indBot = indTop + g.indH;
+  return { ...g, plotW, priceTop, priceBot, indTop, indBot };
+}
+
+function fmtChartAxisTime(iso, timeframe) {
+  const d = new Date(iso);
+  const p2 = (x) => String(x).padStart(2, "0");
+  if (timeframe === "1d") return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+  if (timeframe === "4h" || timeframe === "1h") return `${p2(d.getUTCDate())} ${p2(d.getUTCHours())}:00`;
+  return `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;
+}
+
+// Binance/TradingView-style candlestick chart with SMA overlays and an RSI
+// sub-panel -- raw SVG DOM construction like svgLineChart/svgRadarChart
+// above, no charting library (this dashboard has no build step). `candles`
+// is /api/history's `candles` array (oldest first). CoinGecko's price-
+// history endpoint returns one price point per period, not true OHLC (see
+// app/services/history/providers/coingecko.py's own docstring) -- so 1d/1h
+// candles from that source are flat (open=high=low=close). Rather than draw
+// fake wicks, this detects that case and falls back to a close-price line +
+// SMA overlays + RSI, with a visible caption naming the reason: an honest
+// degrade, never a fabricated candle body.
+function candleChart(candles, { timeframe = "1d" } = {}) {
+  const geom = _candleGeom();
+  const wrap = el("div", { class: "candle-chart-wrap" });
+
+  if (!candles || !candles.length) {
+    wrap.appendChild(el("p", { class: "sub" }, "No chart data available."));
+    return wrap;
+  }
+
+  const isFlat = candles.every((c) => c.high === c.low);
+  if (isFlat) {
+    wrap.appendChild(
+      el(
+        "p",
+        { class: "sub" },
+        "CoinGecko's price-history endpoint returns one price point per period -- no true OHLC for this timeframe, showing close-price line instead."
+      )
+    );
+  }
+
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const c of candles) {
+    if (c.low != null) lo = Math.min(lo, c.low);
+    if (c.high != null) hi = Math.max(hi, c.high);
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+    wrap.appendChild(el("p", { class: "sub" }, "No chart data available."));
+    return wrap;
+  }
+  const padV = (hi - lo) * 0.06 || Math.abs(hi) * 0.01 || 1;
+  lo -= padV;
+  hi += padV;
+  const span = hi - lo || 1;
+  const yPrice = (v) => geom.priceBot - ((v - lo) / span) * geom.priceH;
+
+  const n = candles.length;
+  const slot = geom.plotW / n;
+  const bodyW = Math.max(1, slot * 0.62);
+  const cx = (i) => geom.padL + slot * i + slot / 2;
+  const bodyX = (i) => cx(i) - bodyW / 2;
+
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${geom.w} ${geom.h}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  svg.setAttribute("class", "candle-chart");
+
+  // Price gridlines + axis labels
+  const gGrid = document.createElementNS(SVG_NS, "g");
+  const TICKS = 4;
+  for (let t = 0; t <= TICKS; t++) {
+    const v = lo + (span * t) / TICKS;
+    const y = yPrice(v);
+    const line = document.createElementNS(SVG_NS, "line");
+    line.setAttribute("x1", geom.padL);
+    line.setAttribute("x2", geom.w - geom.padR);
+    line.setAttribute("y1", y.toFixed(2));
+    line.setAttribute("y2", y.toFixed(2));
+    line.setAttribute("class", "chart-grid");
+    gGrid.appendChild(line);
+    const label = document.createElementNS(SVG_NS, "text");
+    label.setAttribute("x", geom.w - geom.padR + 6);
+    label.setAttribute("y", y.toFixed(2));
+    label.setAttribute("class", "chart-axis-label");
+    label.setAttribute("dominant-baseline", "middle");
+    label.textContent = fmtNum(v);
+    gGrid.appendChild(label);
+  }
+  svg.appendChild(gGrid);
+
+  // Candle bodies + wicks (or a close-price line for the flat/degenerate case)
+  const gCandles = document.createElementNS(SVG_NS, "g");
+  if (isFlat) {
+    const points = candles.map((c, i) => `${cx(i).toFixed(2)},${yPrice(c.close).toFixed(2)}`).join(" ");
+    const line = document.createElementNS(SVG_NS, "polyline");
+    line.setAttribute("points", points);
+    line.setAttribute("class", "candle-close-line");
+    gCandles.appendChild(line);
+  } else {
+    for (let i = 0; i < n; i++) {
+      const c = candles[i];
+      const cls = c.close >= c.open ? "candle-up" : "candle-down";
+      const wick = document.createElementNS(SVG_NS, "line");
+      wick.setAttribute("x1", cx(i).toFixed(2));
+      wick.setAttribute("x2", cx(i).toFixed(2));
+      wick.setAttribute("y1", yPrice(c.high).toFixed(2));
+      wick.setAttribute("y2", yPrice(c.low).toFixed(2));
+      wick.setAttribute("class", `candle-wick ${cls}`);
+      gCandles.appendChild(wick);
+
+      const yTop = yPrice(Math.max(c.open, c.close));
+      const yBot = yPrice(Math.min(c.open, c.close));
+      const rect = document.createElementNS(SVG_NS, "rect");
+      rect.setAttribute("x", bodyX(i).toFixed(2));
+      rect.setAttribute("y", yTop.toFixed(2));
+      rect.setAttribute("width", bodyW.toFixed(2));
+      rect.setAttribute("height", Math.max(1, yBot - yTop).toFixed(2));
+      rect.setAttribute("class", `candle-body ${cls}`);
+      gCandles.appendChild(rect);
+    }
+  }
+  svg.appendChild(gCandles);
+
+  // SMA overlays, clipped to the price panel so an out-of-range SMA-200
+  // doesn't distort the y-scale for the candles themselves.
+  const clipId = `candle-clip-${_candleClipCounter++}`;
+  const defs = document.createElementNS(SVG_NS, "defs");
+  const clipPath = document.createElementNS(SVG_NS, "clipPath");
+  clipPath.setAttribute("id", clipId);
+  const clipRect = document.createElementNS(SVG_NS, "rect");
+  clipRect.setAttribute("x", geom.padL);
+  clipRect.setAttribute("y", geom.priceTop);
+  clipRect.setAttribute("width", geom.plotW);
+  clipRect.setAttribute("height", geom.priceH);
+  clipPath.appendChild(clipRect);
+  defs.appendChild(clipPath);
+  svg.appendChild(defs);
+
+  const gOverlays = document.createElementNS(SVG_NS, "g");
+  gOverlays.setAttribute("clip-path", `url(#${clipId})`);
+  function smaPolyline(key, cssClass) {
+    const pts = [];
+    candles.forEach((c, i) => {
+      const v = c[key];
+      if (v == null) return;
+      pts.push(`${cx(i).toFixed(2)},${yPrice(v).toFixed(2)}`);
+    });
+    if (pts.length < 2) return null;
+    const p = document.createElementNS(SVG_NS, "polyline");
+    p.setAttribute("points", pts.join(" "));
+    p.setAttribute("class", `sma-line ${cssClass}`);
+    return p;
+  }
+  for (const [key, cls] of [
+    ["sma_20", "sma-line-20"],
+    ["sma_50", "sma-line-50"],
+    ["sma_200", "sma-line-200"],
+  ]) {
+    const line = smaPolyline(key, cls);
+    if (line) gOverlays.appendChild(line);
+  }
+  svg.appendChild(gOverlays);
+
+  // Last-price marker
+  const last = candles[n - 1];
+  if (last && last.close != null) {
+    const y = yPrice(last.close);
+    const lastCls = last.close >= last.open ? "candle-up" : "candle-down";
+    const lastLine = document.createElementNS(SVG_NS, "line");
+    lastLine.setAttribute("x1", geom.padL);
+    lastLine.setAttribute("x2", geom.w - geom.padR);
+    lastLine.setAttribute("y1", y.toFixed(2));
+    lastLine.setAttribute("y2", y.toFixed(2));
+    lastLine.setAttribute("class", `last-price-line ${lastCls}`);
+    svg.appendChild(lastLine);
+    const chip = document.createElementNS(SVG_NS, "text");
+    chip.setAttribute("x", geom.w - geom.padR + 6);
+    chip.setAttribute("y", y.toFixed(2));
+    chip.setAttribute("class", `last-price-chip ${lastCls}`);
+    chip.setAttribute("dominant-baseline", "middle");
+    chip.textContent = fmtNum(last.close);
+    svg.appendChild(chip);
+  }
+
+  // Time axis
+  const gTime = document.createElementNS(SVG_NS, "g");
+  const timeTicks = Math.min(6, n);
+  for (let t = 0; t < timeTicks; t++) {
+    const i = Math.round((t * (n - 1)) / Math.max(1, timeTicks - 1));
+    const label = document.createElementNS(SVG_NS, "text");
+    label.setAttribute("x", cx(i).toFixed(2));
+    label.setAttribute("y", geom.indBot + 18);
+    label.setAttribute("class", "chart-axis-label");
+    label.setAttribute("text-anchor", "middle");
+    label.textContent = fmtChartAxisTime(candles[i].timestamp, timeframe);
+    gTime.appendChild(label);
+  }
+  svg.appendChild(gTime);
+
+  const rsiG = rsiPanelGroup(candles, geom, cx);
+  if (rsiG) svg.appendChild(rsiG);
+
+  wrap.appendChild(svg);
+  return wrap;
+}
+
+// RSI sub-panel: fixed 0-100 domain (unlike price, needs no per-symbol
+// scaling), 70/30 overbought/oversold bands + a 50 midline. Chosen over
+// MACD for this first indicator panel -- MACD's magnitude varies by orders
+// of magnitude between symbols and needs its own normalization, while RSI's
+// Wilder-14 warm-up (14 bars) lights up ~2.5x sooner than MACD's 12/26/9
+// warm-up (~34 bars), which matters once 5m candles start from zero
+// history. `has_rsi` is checked per-call since older/short series may not
+// have any yet -- the panel is simply omitted rather than drawn empty.
+function rsiPanelGroup(candles, geom, cx) {
+  if (!candles.some((c) => c.rsi != null)) return null;
+  const g = document.createElementNS(SVG_NS, "g");
+  const yRsi = (v) => geom.indBot - (v / 100) * geom.indH;
+
+  const zone = document.createElementNS(SVG_NS, "rect");
+  zone.setAttribute("x", geom.padL);
+  zone.setAttribute("y", yRsi(70).toFixed(2));
+  zone.setAttribute("width", geom.plotW);
+  zone.setAttribute("height", (yRsi(30) - yRsi(70)).toFixed(2));
+  zone.setAttribute("class", "rsi-zone");
+  g.appendChild(zone);
+
+  for (const [level, cls] of [
+    [70, "rsi-band"],
+    [30, "rsi-band"],
+    [50, "rsi-mid"],
+  ]) {
+    const line = document.createElementNS(SVG_NS, "line");
+    line.setAttribute("x1", geom.padL);
+    line.setAttribute("x2", geom.w - geom.padR);
+    line.setAttribute("y1", yRsi(level).toFixed(2));
+    line.setAttribute("y2", yRsi(level).toFixed(2));
+    line.setAttribute("class", cls);
+    g.appendChild(line);
+    const label = document.createElementNS(SVG_NS, "text");
+    label.setAttribute("x", geom.w - geom.padR + 6);
+    label.setAttribute("y", yRsi(level).toFixed(2));
+    label.setAttribute("class", "chart-axis-label");
+    label.setAttribute("dominant-baseline", "middle");
+    label.textContent = String(level);
+    g.appendChild(label);
+  }
+
+  const pts = [];
+  candles.forEach((c, i) => {
+    if (c.rsi == null) return;
+    pts.push(`${cx(i).toFixed(2)},${yRsi(c.rsi).toFixed(2)}`);
+  });
+  if (pts.length >= 2) {
+    const line = document.createElementNS(SVG_NS, "polyline");
+    line.setAttribute("points", pts.join(" "));
+    line.setAttribute("class", "rsi-line");
+    g.appendChild(line);
+  }
+
+  return g;
+}
+
 // 8-axis radar/spider chart over real 0-100 scores -- purely a second
 // visualization of numbers already computed elsewhere (GlobalMarketScore +
 // ExecutiveSummaryEngine's market_health), no new scoring. `axes` is
@@ -1367,6 +1641,41 @@ function renderForecastSnapshotMatrix(daily) {
   return nodes;
 }
 
+// Task: open positions visible on the main page, not just inside the
+// Futures Simulator's own Positions tab. Always renders the section, even
+// with zero open positions -- an honest "No open demo positions." rather
+// than hiding the widget, so its presence itself isn't a signal.
+function renderOverviewOpenPositions(data) {
+  const positions = data ? data.positions : [];
+  const nodes = [el("h2", {}, "Open Positions")];
+  if (!positions || !positions.length) {
+    nodes.push(el("p", { class: "sub" }, "No open demo positions."));
+    return nodes;
+  }
+  nodes.push(
+    table(
+      ["Symbol", "Side", "Qty", "Entry", "Mark", "Notional", "Unrealized PnL", "ROI"],
+      positions.map((p) => [
+        p.symbol,
+        el("span", { class: p.side === "LONG" ? "up" : "down" }, p.side),
+        String(p.quantity),
+        fmtNum(p.entry_price),
+        fmtNum(p.mark_price),
+        `$${fmtNum(p.quantity * p.mark_price)}`,
+        el("span", { class: changeClass(p.unrealized_pnl) }, fmtNum(p.unrealized_pnl)),
+        el("span", { class: changeClass(p.roi_pct) }, fmtPct(p.roi_pct)),
+      ])
+    )
+  );
+  nodes.push(
+    el("p", { class: "sub nav-pointer" }, [
+      "Manage in ",
+      el("a", { href: "#futures?tab=positions" }, "Futures Simulator"),
+    ])
+  );
+  return nodes;
+}
+
 async function renderOverview() {
   const [
     forecastCenter,
@@ -1384,6 +1693,7 @@ async function renderOverview() {
     alertPerformanceByType,
     liveAlerts,
     forecastDaily,
+    openPositionsData,
   ] = await Promise.all([
     renderForecastCenter(),
     renderExecutiveSummary(),
@@ -1400,12 +1710,14 @@ async function renderOverview() {
     safe("/api/alert-performance/by-type"),
     safe("/api/watchdog/events?limit=5"),
     safe("/api/forecast/official/daily"),
+    safe(`/api/simulator/positions?name=${encodeURIComponent(futuresAccountName())}&status=OPEN`),
   ]);
 
   const nodes = [];
   if (realtimeStatus && realtimeStatus.watchlist && realtimeStatus.watchlist.length) {
     nodes.push(liveTicker(realtimeStatus.watchlist, market ? market.quotes : null));
   }
+  nodes.push(...renderOverviewOpenPositions(openPositionsData));
   nodes.push(forecastCenter);
   nodes.push(...renderForecastSnapshotMatrix(forecastDaily));
   nodes.push(execSummary, el("h2", {}, "Overview"));
@@ -5760,6 +6072,19 @@ const FUTURES_TAB_LABELS = {
   settings: "Settings",
 };
 
+const CHART_TIMEFRAMES = ["5m", "15m", "1h", "4h", "1d"];
+const CHART_TIMEFRAME_STORAGE_KEY = "futures_chart_tf";
+
+function chartTimeframeTabs(current, onSelect) {
+  const row = el("div", { class: "forecast-tabs" });
+  for (const tf of CHART_TIMEFRAMES) {
+    const btn = el("button", { class: `forecast-tab${tf === current ? " active" : ""}` }, tf);
+    btn.addEventListener("click", () => onSelect(tf));
+    row.appendChild(btn);
+  }
+  return row;
+}
+
 async function renderFuturesTradeTab() {
   const wrap = el("div", {});
   const symbolsData = await safe("/api/simulator/symbols");
@@ -5815,6 +6140,35 @@ async function renderFuturesTradeTab() {
   refreshOrderTypeVisibility();
 
   const resultBox = el("p", { class: "sub" });
+  const notionalNode = el("p", { class: "sub" });
+
+  // Task: show the order's USD value. Uses the live last price (RealtimeStore),
+  // not the simulated mark price with slippage the engine actually fills at --
+  // labeled with "~" and a caveat so it reads as an estimate, not a promise.
+  function updateNotional() {
+    const entry = RealtimeStore.get(symbolSelect.value);
+    const qty = parseFloat(quantityInput.value);
+    if (!entry || !Number.isFinite(qty)) {
+      notionalNode.textContent = "Live price unavailable -- order value cannot be shown.";
+      return;
+    }
+    const notional = qty * entry.price;
+    const lev = parseInt(leverageSelect.value, 10) || 1;
+    notionalNode.textContent =
+      `~ $${fmtNum(notional)} notional · $${fmtNum(notional / lev)} initial margin @ ${lev}x · ` +
+      `mark $${fmtNum(entry.price)} (estimate -- actual fill uses the simulated mark price with slippage)`;
+  }
+  quantityInput.addEventListener("input", updateNotional);
+  leverageSelect.addEventListener("change", updateNotional);
+  symbolSelect.addEventListener("change", updateNotional);
+  const unsubscribeNotional = RealtimeStore.subscribe((dirtySymbols) => {
+    if (!notionalNode.isConnected) {
+      unsubscribeNotional();
+      return;
+    }
+    if (dirtySymbols.has(symbolSelect.value)) updateNotional();
+  });
+  updateNotional();
 
   async function submitOrder(side) {
     resultBox.className = "sub";
@@ -5874,7 +6228,52 @@ async function renderFuturesTradeTab() {
   openLongBtn.addEventListener("click", () => submitOrder("BUY"));
   openShortBtn.addEventListener("click", () => submitOrder("SELL"));
 
-  wrap.appendChild(
+  // ---- Chart (left column) ---------------------------------------------
+  const chartContainer = el("div", {});
+  let chartTimeframe = localStorage.getItem(CHART_TIMEFRAME_STORAGE_KEY) || "1h";
+  if (!CHART_TIMEFRAMES.includes(chartTimeframe)) chartTimeframe = "1h";
+
+  async function loadChart() {
+    chartContainer.innerHTML = "";
+    chartContainer.appendChild(
+      chartTimeframeTabs(chartTimeframe, (tf) => {
+        chartTimeframe = tf;
+        localStorage.setItem(CHART_TIMEFRAME_STORAGE_KEY, tf);
+        loadChart();
+      })
+    );
+
+    if (chartTimeframe === "5m" || chartTimeframe === "15m") {
+      chartContainer.appendChild(
+        el(
+          "p",
+          { class: "sub" },
+          `Real ${chartTimeframe} candles are being recorded from the live price feed starting now -- ` +
+            "check back soon as history accumulates."
+        )
+      );
+      return;
+    }
+
+    const loadingMsg = el("p", { class: "loading" }, "Loading chart...");
+    chartContainer.appendChild(loadingMsg);
+    const data = await safe(
+      `/api/history/${encodeURIComponent(symbolSelect.value)}?timeframe=${chartTimeframe}&limit=180`
+    );
+    chartContainer.removeChild(loadingMsg);
+    if (!data || !data.candles || !data.candles.length) {
+      chartContainer.appendChild(
+        el("p", { class: "sub" }, "No chart data available for this symbol/timeframe yet.")
+      );
+      return;
+    }
+    chartContainer.appendChild(candleChart(data.candles, { timeframe: chartTimeframe }));
+  }
+  symbolSelect.addEventListener("change", loadChart);
+
+  // ---- Order panel (right column) ---------------------------------------
+  const rightCol = el("div", {});
+  rightCol.appendChild(
     el("div", { class: "controls" }, [
       symbolSelect,
       leverageSelect,
@@ -5888,21 +6287,22 @@ async function renderFuturesTradeTab() {
       openShortBtn,
     ])
   );
-  wrap.appendChild(
+  rightCol.appendChild(notionalNode);
+  rightCol.appendChild(
     el(
       "p",
       { class: "sub" },
       "reduceOnly caps a close at the existing position's size rather than flipping into the opposite side."
     )
   );
-  wrap.appendChild(resultBox);
+  rightCol.appendChild(resultBox);
 
   // ---- AI Forecast panel (task: show existing GPTAgent2 forecast, never
   // auto-trade -- USE AI SIGNAL only pre-fills fields, the user must still
   // click OPEN LONG/OPEN SHORT themselves) ------------------------------
   const aiPanel = el("div", { class: "card" });
-  wrap.appendChild(el("h3", {}, "AI Forecast"));
-  wrap.appendChild(aiPanel);
+  rightCol.appendChild(el("h3", {}, "AI Forecast"));
+  rightCol.appendChild(aiPanel);
 
   async function loadAiForecast() {
     aiPanel.innerHTML = "";
@@ -5975,7 +6375,10 @@ async function renderFuturesTradeTab() {
     );
   }
   symbolSelect.addEventListener("change", loadAiForecast);
-  await loadAiForecast();
+
+  wrap.appendChild(el("div", { class: "trade-layout" }, [chartContainer, rightCol]));
+
+  await Promise.all([loadChart(), loadAiForecast()]);
 
   return wrap;
 }
@@ -6609,6 +7012,65 @@ let refreshTimer = null;
 // subscription for the life of the tab, independent of liveTicker()'s
 // per-page mount (which only exists while Overview is the visible page).
 RealtimeStore.subscribeStatus(updateConnectionIndicator);
+
+// Task: a live scrolling ticker marquee across the top of every page.
+// Lives in #topbar (outside #content, which render() replaces on every
+// navigation) so it survives page changes without restarting its CSS
+// scroll animation. Uses RealtimeStore.subscribe() directly, not .mount()
+// -- .mount() tears down whichever component mounted previously, and
+// liveTicker() on Overview already calls .mount(); using it here too would
+// silently break one or the other depending on render order.
+async function mountTickerMarquee() {
+  const marqueeEl = document.getElementById("ticker-marquee");
+  if (!marqueeEl) return;
+  const status = await safe("/api/realtime/status");
+  const symbols = status && status.watchlist ? status.watchlist : [];
+  if (!symbols.length) return;
+
+  function marqueeItemNodes() {
+    return symbols.map((symbol) => {
+      const entry = RealtimeStore.get(symbol);
+      const item = el("span", { class: "marquee-item", "data-symbol": symbol }, [
+        el("span", { class: "marquee-symbol" }, symbol),
+        el("span", { class: "marquee-price" }, entry && entry.price != null ? fmtNum(entry.price) : "n/a"),
+        el(
+          "span",
+          { class: `marquee-change ${entry ? changeClass(entry.changePercent24h) : ""}` },
+          entry ? fmtPct(entry.changePercent24h) : ""
+        ),
+      ]);
+      item.addEventListener("click", () => navigate("assetdetail", new URLSearchParams({ symbol })));
+      return item;
+    });
+  }
+
+  function render() {
+    marqueeEl.innerHTML = "";
+    const track = el("div", { class: "marquee-track" });
+    // Rendered twice back-to-back -- the CSS -50% seamless-loop trick needs
+    // two copies of the content in the same track.
+    for (const node of [...marqueeItemNodes(), ...marqueeItemNodes()]) track.appendChild(node);
+    marqueeEl.appendChild(track);
+  }
+  render();
+
+  RealtimeStore.subscribe((dirtySymbols) => {
+    for (const symbol of dirtySymbols) {
+      if (!symbols.includes(symbol)) continue;
+      const entry = RealtimeStore.get(symbol);
+      if (!entry) continue;
+      // Both copies of the item share the same data-symbol -- update all
+      // matches, not just the first (querySelector would only hit one).
+      marqueeEl.querySelectorAll(`[data-symbol="${symbol}"]`).forEach((item) => {
+        item.querySelector(".marquee-price").textContent = entry.price != null ? fmtNum(entry.price) : "n/a";
+        const changeEl = item.querySelector(".marquee-change");
+        changeEl.className = `marquee-change ${changeClass(entry.changePercent24h)}`;
+        changeEl.textContent = fmtPct(entry.changePercent24h);
+      });
+    }
+  });
+}
+mountTickerMarquee();
 
 // Always started (cheap no-op poll when disabled/not permitted) so
 // enabling notifications from Settings takes effect immediately without
