@@ -49,6 +49,12 @@ FOREX_TICKERS: dict[str, str] = {
 
 _ALL_TIMEFRAMES: tuple[Timeframe, ...] = (Timeframe.DAILY, Timeframe.FOUR_HOUR, Timeframe.ONE_HOUR)
 _DAILY_ONLY: tuple[Timeframe, ...] = (Timeframe.DAILY,)
+# Futures Simulator chart: what the realtime aggregator writes and the
+# history API serves -- deliberately NOT part of `timeframes` above, since
+# that tuple is what HistorySyncEngine asks the *provider* to fetch, and
+# CoinGeckoHistoricalProvider has no 5m/15m support (raises ValueError).
+# Mixing the two would make every full sync fail permanently for crypto.
+_REALTIME_TIMEFRAMES: tuple[Timeframe, ...] = (Timeframe.FIVE_MINUTE, Timeframe.FIFTEEN_MINUTE)
 
 
 @dataclass(frozen=True)
@@ -58,6 +64,9 @@ class HistorySymbolConfig:
     provider: HistoricalDataProvider
     timeframes: tuple[Timeframe, ...]
     market: str  # "crypto" or "equity" -- used by validation's gap tolerance
+    # What the realtime aggregator writes / the history API additionally
+    # serves, on top of `timeframes`. Empty for every non-crypto entry.
+    realtime_timeframes: tuple[Timeframe, ...] = ()
 
 
 def build_registry() -> list[HistorySymbolConfig]:
@@ -106,7 +115,14 @@ def build_registry() -> list[HistorySymbolConfig]:
     # here is a registry entry, not new provider code.
     for symbol in ("BTC", "ETH", "SOL", "LINK", "UNI", "BNB", "XRP", "DOGE", "AVAX", "SUI"):
         registry.append(
-            HistorySymbolConfig(symbol, CryptoHistory, crypto_provider, _ALL_TIMEFRAMES, "crypto")
+            HistorySymbolConfig(
+                symbol,
+                CryptoHistory,
+                crypto_provider,
+                _ALL_TIMEFRAMES,
+                "crypto",
+                realtime_timeframes=_REALTIME_TIMEFRAMES,
+            )
         )
     for symbol in MACRO_YFINANCE_TICKERS:
         registry.append(

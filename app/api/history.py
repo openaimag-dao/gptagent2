@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.database.session import get_session_factory
 from app.services.history.registry import find_symbol_config
-from app.services.history.repository import get_series
+from app.services.history.repository import get_recent_series
 from app.services.history.schemas import Timeframe
 
 router = APIRouter(prefix="/api/history", tags=["history"])
@@ -35,7 +35,7 @@ def _serialize_row(row) -> dict:
 @router.get("/{symbol}")
 async def get_history(
     symbol: str,
-    timeframe: str = Query("1d", description="1d, 4h or 1h"),
+    timeframe: str = Query("1d", description="1d, 4h, 1h, 15m or 5m"),
     limit: int = Query(100, ge=1, le=5000),
 ) -> dict:
     config = find_symbol_config(symbol)
@@ -46,25 +46,26 @@ async def get_history(
         tf = Timeframe(timeframe)
     except ValueError as exc:
         raise HTTPException(
-            status_code=400, detail=f"Invalid timeframe: {timeframe} (expected 1d, 4h or 1h)"
+            status_code=400,
+            detail=f"Invalid timeframe: {timeframe} (expected 1d, 4h, 1h, 15m or 5m)",
         ) from exc
-    if tf not in config.timeframes:
+    all_timeframes = (*config.timeframes, *config.realtime_timeframes)
+    if tf not in all_timeframes:
         raise HTTPException(
             status_code=400,
             detail=f"{config.symbol} has no {timeframe} data (has: "
-            f"{[t.value for t in config.timeframes]})",
+            f"{[t.value for t in all_timeframes]})",
         )
 
-    rows = await get_series(get_session_factory(), config.model, config.symbol, tf)
+    rows = await get_recent_series(get_session_factory(), config.model, config.symbol, tf, limit)
     if not rows:
         raise HTTPException(
             status_code=404, detail=f"No history synced yet for {config.symbol}/{timeframe}"
         )
 
-    tail = rows[-limit:]
     return {
         "symbol": config.symbol,
         "timeframe": timeframe,
-        "count": len(tail),
-        "candles": [_serialize_row(row) for row in tail],
+        "count": len(rows),
+        "candles": [_serialize_row(row) for row in rows],
     }

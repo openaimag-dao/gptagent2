@@ -316,6 +316,21 @@ class Settings(BaseSettings):
     realtime_freshness_delayed_seconds: float = 120.0
     realtime_freshness_stale_seconds: float = 300.0
 
+    # Futures Simulator chart: real 5m/15m candles aggregated from the live
+    # tick feed (app/services/realtime/aggregator.py) rather than fetched
+    # from a provider (none support this resolution honestly). Poll cadence
+    # matches the chart's finest timeframe (5m) closely enough that a
+    # bucket's `open` is only ever off by up to about one interval, per the
+    # aggregator's own documented imprecision. State TTL comfortably
+    # outlives one bucket (300s) so a restart resumes an in-progress bucket
+    # from Redis instead of losing already-observed high/low. Retention
+    # keeps crypto_history bounded -- at 288 candles/day/symbol this would
+    # otherwise grow unbounded, and fill_missing_indicators loads the full
+    # series on every call.
+    realtime_candle_interval_minutes: float = 1.0
+    realtime_candle_state_ttl_seconds: int = 1200
+    realtime_candle_retention_days: int = 14
+
     # ---- Forecasting 2.0: official daily forecast (Part 1-4) ----
     # Comma-separated, parsed with the same app.services.realtime.config.
     # parse_watchlist() the realtime watchlist already uses. Exactly one

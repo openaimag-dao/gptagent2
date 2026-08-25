@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -80,6 +80,61 @@ async def get_series(
             .order_by(model.timestamp.asc())
         )
         return list(result)
+
+
+async def get_recent_series(
+    session_factory: async_sessionmaker[AsyncSession],
+    model: type,
+    symbol: str,
+    timeframe: Timeframe,
+    limit: int,
+) -> list:
+    """Bounded read for API/chart consumers -- ORDER BY DESC LIMIT n at the
+    database, not "fetch everything then slice in Python" (what get_series
+    would do if reused here). Matters once 5m/15m rows exist: at 288
+    candles/day/symbol, get_series's unbounded SELECT would load the whole
+    history just to return the last `limit` rows every request.
+
+    Deliberately a new function rather than a `limit` parameter on
+    get_series -- fill_missing_indicators calls get_series and genuinely
+    needs the *full* series for its recursive Wilder/EMA math; truncating
+    that input window would silently change already-persisted indicator
+    values for the remaining rows."""
+    async with session_factory() as session:
+        result = await session.scalars(
+            select(model)
+            .where(model.symbol == symbol, model.timeframe == timeframe.value)
+            .order_by(model.timestamp.desc())
+            .limit(limit)
+        )
+        return list(reversed(list(result)))
+
+
+async def prune_candles(
+    session_factory: async_sessionmaker[AsyncSession],
+    model: type,
+    symbol: str,
+    timeframe: Timeframe,
+    older_than: datetime,
+) -> int:
+    """Deletes rows strictly older than `older_than` for one (symbol,
+    timeframe). Used for the realtime-aggregated 5m/15m timeframes, which
+    have no natural upper bound on row count (288 candles/day/symbol) --
+    deleting old rows here, rather than truncating the *input* window
+    fill_missing_indicators sees, is what preserves already-persisted
+    indicator values on the rows that remain: Wilder RSI/ATR and MACD's
+    EMAs are recursive, so shrinking their input window would silently
+    change values already saved for newer rows."""
+    async with session_factory() as session:
+        result = await session.execute(
+            delete(model).where(
+                model.symbol == symbol,
+                model.timeframe == timeframe.value,
+                model.timestamp < older_than,
+            )
+        )
+        await session.commit()
+        return result.rowcount or 0
 
 
 async def fill_missing_indicators(

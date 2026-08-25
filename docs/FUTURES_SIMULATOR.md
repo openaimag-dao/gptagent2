@@ -415,9 +415,9 @@ flat**; only `4h` (resampled from several distinct hourly points) has
 genuine wicks. Rather than draw fake candle bodies for `1d`/`1h`,
 `candleChart()` detects the flat case and falls back to a close-price
 line + the same SMA/RSI overlays, with a visible caption naming the
-reason. `5m`/`15m` tabs are visible now but show "not enough data yet"
-until real 5m candles start accumulating from the live tick feed (a
-separate, already-planned increment — see Known limitations).
+reason. `5m`/`15m` render real candles once at least one has been
+aggregated (see "Real 5m/15m candles" below); until then they show a
+"not enough data yet" placeholder rather than an empty chart.
 
 The crypto history sync job (`sync_crypto_daily_history_job`,
 `app/scheduler/jobs.py`) was widened from DAILY-only to also keep 1h/4h
@@ -428,7 +428,79 @@ would have shipped the chart with visibly stale 1h/4h tabs from day one.
 Live-verified against the real running server: confirmed `4h` renders
 real (non-flat) candle bodies from real synced data, confirmed `1d`
 renders the honest flat-OHLC line fallback with its caption, and
-confirmed `5m` shows the not-enough-data-yet placeholder.
+confirmed `5m` shows the not-enough-data-yet placeholder before any
+candle had been aggregated.
+
+### Real 5m/15m candles
+
+Rather than leave `5m`/`15m` permanently on the placeholder, a new
+scheduled job (`aggregate_realtime_candles_job`,
+`app/scheduler/jobs.py`, every `realtime_candle_interval_minutes`
+— default 1 minute) rolls the live Coinbase tick feed
+(`app.services.realtime.collector`, already running for the ticker/
+marquee) forward into real 5m candles, one per symbol. `15m` candles
+are *derived* by resampling three finished 5m candles
+(`app.services.history.resample.resample_candles`, extended with a
+`"15min"` rule) — never independently aggregated from ticks, so 15m can
+never drift out of sync with 5m, mirroring this project's existing
+4h-from-1h pattern.
+
+Both new timeframes were added to `HistoryTimeframe`
+(`app/database/models.py`) and the parallel `Timeframe` enum
+(`app/services/history/schemas.py`) via migration `0047` (`ALTER TYPE
+history_timeframe ADD VALUE`, same pattern as migrations `0013`/`0017`).
+They are deliberately **not** added to the crypto registry's
+`timeframes` tuple (what `HistorySyncEngine` asks CoinGecko to fetch —
+CoinGecko has no 5m/15m support and would fail permanently) but to a
+new, separate `realtime_timeframes` tuple on `HistorySymbolConfig`,
+which `GET /api/history` now also accepts.
+
+**Sampling method, stated plainly**: the job polls once a minute rather
+than subscribing to every tick, so a candle's `open` can be up to ~60
+seconds later than the true bucket start — every value is a real
+observed price, just coarsely sampled, never fabricated. There is no
+volume data (`RealtimePriceTick` only carries a rolling 24h figure, not
+per-trade size), so `volume` and `volume_change_pct` are honestly
+`null` on every 5m/15m row — the dashboard renders "n/a", never `0`.
+Bucket state lives in Redis (`realtime:candle:5m:{SYMBOL}`, TTL
+comfortably longer than one bucket) so a process restart mid-bucket
+resumes from the last-known high/low/close instead of discarding real
+observed data — the alternative (restart the bucket fresh) would be the
+*less* honest choice, not the safer one. A stale cached tick (the feed
+having gone quiet) is skipped rather than folded into the bucket, so a
+disconnected symbol never produces a fabricated flat candle.
+
+One correctness detail worth documenting: the 15m roll-up only
+resamples 5m bars from *fully elapsed* 15-minute windows. Since
+`upsert_candles` is `ON CONFLICT DO NOTHING`, resampling the
+still-forming window and writing a premature, too-narrow 15m candle
+would permanently freeze it in place — later 5m bars for that same
+window would then be silently skipped as "already exists" once the
+window actually completed. `_roll_up_fifteen_minute` filters those out
+before resampling.
+
+Retention: a daily job (`prune_realtime_candles_job`) deletes 5m/15m
+rows older than `realtime_candle_retention_days` (default 14) — at 288
+candles/day/symbol these would otherwise grow unbounded, and
+`fill_missing_indicators` loads the full stored series on every call.
+Pruning old rows (rather than truncating the indicator-computation
+input window) is what preserves already-persisted RSI/ATR/MACD values
+on the rows that remain, since those are recursive calculations.
+
+Live-verified against the real running server and the real Coinbase
+feed: started the server fresh and watched the aggregation job run
+cleanly on its schedule with zero errors across real bucket rollovers
+for all 10 symbols at once (`Realtime candle aggregation: 10 5m
+candle(s) finalized`); confirmed a real, non-flat 5m candle (BTC:
+open 79718.62 → high 79840.55 → close 79840.55, genuine price movement
+across the bucket) landed in `crypto_history` and was servable via
+`GET /api/history/BTC?timeframe=5m` with `volume: null`; and confirmed
+the 15m roll-up correctly reflected only the single real 5m bar
+available in that already-fully-elapsed window (the server had only
+just started, so most of that particular 15-minute window's bars
+simply don't exist yet) — an honest partial-window result, not a
+fabricated one, exercising the same "resample only fully-elapsed
+windows" guard the unit tests cover for the full 3-bar case.
 
 ### Live ticker marquee and Overview Open Positions widget
 
@@ -499,10 +571,19 @@ section — summarized here:
   price point per period for those timeframes, not true OHLC (see the
   Dashboard section's "Candlestick chart" subsection). Only `4h` has
   genuine wicks today.
-- `5m`/`15m` chart timeframes show a placeholder ("not enough data yet")
-  — real 5m/15m candles accumulated from the live tick feed, plus the
-  schema/aggregation-job work that requires, is a separate, already-
-  scoped follow-up increment, not yet implemented.
+- `5m`/`15m` candles are real but coarsely sampled — the aggregation job
+  polls the tick feed once a minute rather than subscribing to every
+  tick, so a candle's `open` can be up to ~60 seconds later than the
+  true bucket start. Every value is a real observed price, never
+  fabricated; see the Dashboard section's "Real 5m/15m candles"
+  subsection. There is also no volume data on these rows (`null`, not
+  `0`) — the tick feed carries only a rolling 24h figure, not per-trade
+  size.
+- `5m`/`15m` history only exists from whenever this feature first
+  deployed forward — there is no honest historical backfill at this
+  resolution (no free provider supports it), so a freshly reset/redeployed
+  instance briefly shows the "not enough data yet" placeholder again
+  until a few candles accumulate.
 - The chart has no crosshair/hover OHLC readout yet, and only RSI (not
   MACD) is available as an indicator sub-panel — both are documented,
   deliberately deferred polish, not oversights.
