@@ -341,19 +341,29 @@ async def sync_crypto_daily_history_job() -> None:
     price" divergence users were seeing -- not a model quality problem,
     a stale-data problem.
 
+    Widened (Futures Simulator candlestick chart) to also keep 1h/4h
+    fresh, not just DAILY -- those two rows previously only existed if a
+    human had run a full manual sync at least once and were never
+    auto-refreshed after that, which would have shipped the chart with
+    visibly stale 1h/4h tabs from day one. Function name kept as-is
+    despite covering more than "daily" now, to avoid churning the
+    APScheduler job-store id (CRYPTO_HISTORY_SYNC_JOB_ID) tests and
+    ops tooling reference.
+
     Reuses run_sync/HistorySyncEngine.sync_all() verbatim
     (HistorySyncEngine.sync_symbol_timeframe's own docstring: each call
     only asks the provider for candles after the latest stored
     timestamp, so this is cheap and safe on a schedule, never a repeated
-    full backfill). Deliberately scoped to just the crypto DAILY rows
-    ForecastEngine actually reads -- build_registry()'s ~25-symbol/
-    4-provider registry (stocks/macro/forex/FRED) stays manual-trigger-
-    only, so this fix adds no load to yfinance (already confirmed
-    unreliable from this deployment's egress IP, see registry.py's own
-    comment) or other providers this bug has nothing to do with."""
+    full backfill). Deliberately scoped to just the crypto rows
+    ForecastEngine/the Futures Simulator chart actually read --
+    build_registry()'s ~25-symbol/4-provider registry (stocks/macro/
+    forex/FRED) stays manual-trigger-only, so this fix adds no load to
+    yfinance (already confirmed unreliable from this deployment's egress
+    IP, see registry.py's own comment) or other providers this bug has
+    nothing to do with."""
     session_factory = get_session_factory()
     crypto_daily_registry = [
-        replace(config, timeframes=(Timeframe.DAILY,))
+        replace(config, timeframes=(Timeframe.DAILY, Timeframe.ONE_HOUR, Timeframe.FOUR_HOUR))
         for config in build_registry()
         if config.market == "crypto"
     ]

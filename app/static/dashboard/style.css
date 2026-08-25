@@ -137,6 +137,16 @@ h3 { font-size: 14px; margin: 20px 0 10px; color: var(--text); }
   margin-bottom: 16px;
 }
 
+.trade-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(300px, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+@media (max-width: 900px) {
+  .trade-layout { grid-template-columns: 1fr; }
+}
+
 .card {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -247,6 +257,37 @@ a { color: var(--accent); }
   stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
+
+.candle-chart-wrap { margin-bottom: 16px; }
+.candle-chart {
+  width: 100%;
+  height: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: block;
+}
+.candle-up { stroke: var(--green); fill: var(--green); }
+.candle-down { stroke: var(--red); fill: var(--red); }
+.candle-wick { stroke-width: 1; fill: none; vector-effect: non-scaling-stroke; }
+.candle-body { stroke-width: 0; }
+.candle-close-line { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.sma-line { fill: none; stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+.sma-line-20 { stroke: var(--accent); }
+.sma-line-50 { stroke: var(--yellow); }
+.sma-line-200 { stroke: var(--muted); }
+.chart-grid { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.chart-axis-label { fill: var(--muted); font-size: 11px; }
+.last-price-line { stroke-width: 1; stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.last-price-line.candle-up { stroke: var(--green); }
+.last-price-line.candle-down { stroke: var(--red); }
+.last-price-chip { font-size: 11px; font-weight: 600; }
+.last-price-chip.candle-up { fill: var(--green); }
+.last-price-chip.candle-down { fill: var(--red); }
+.rsi-zone { fill: rgba(77, 163, 255, 0.06); }
+.rsi-band { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.rsi-mid { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.5; }
+.rsi-line { fill: none; stroke: var(--yellow); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 
 .ai-radar-wrap { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; margin-bottom: 16px; }
 .radar-chart { width: 320px; height: 320px; flex-shrink: 0; }
@@ -500,6 +541,43 @@ ul.structured-list { margin: 3px 0 0; padding-left: 18px; }
   0% { color: var(--red); }
   100% { color: var(--text); }
 }
+
+/* Task: a live scrolling ticker marquee across the top of every page.
+   Lives in #topbar (never inside #content) so navigation never restarts
+   the scroll animation. */
+.marquee {
+  overflow: hidden;
+  white-space: nowrap;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  margin-bottom: 12px;
+}
+.marquee-track {
+  display: inline-flex;
+  gap: 28px;
+  padding: 6px 0;
+  animation: marquee-scroll 45s linear infinite;
+  will-change: transform;
+}
+.marquee:hover .marquee-track { animation-play-state: paused; }
+@keyframes marquee-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track { animation: none; }
+  .marquee { overflow-x: auto; }
+}
+.marquee-item {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.marquee-symbol { color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.marquee-price { font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .freshness-badge {
   display: inline-block;

@@ -2663,15 +2663,27 @@ optionally prefill SL/TP from it, but the AI forecast never opens a demo
 position by itself -- every order is the result of an explicit user
 click.
 
+The TRADE tab also has a hand-rolled candlestick chart (raw SVG, no
+charting library) with SMA/RSI overlays and 5m/15m/1h/4h/1d timeframe
+switching, a live scrolling ticker marquee across the top of every page,
+and an Open Positions widget on the Overview page -- all reusing
+existing data (the `GET /api/history` endpoint, the live Coinbase tick
+feed) rather than new pipelines. Discovered along the way and handled
+honestly rather than hidden: CoinGecko's price-history source returns
+one point per period for `1d`/`1h`, not true OHLC, so those timeframes
+show a close-price line instead of fabricated candle bodies (`4h` has
+real ones); `5m`/`15m` show a placeholder until a follow-up increment
+starts accumulating real candles from the live feed.
+
 Every increment was live-verified against the real running
 Postgres+Redis-backed server (curl and headless-Chromium Playwright
 sessions) with real market data, never mocked-only. Full detail --
 every formula (margin, PnL, fees, slippage, ROI, ISOLATED/CROSS
 liquidation price derivations, mark price, funding), the complete API
 surface, the dashboard's tab-by-tab behavior, and an honestly-scoped
-"Known limitations" list (no candlestick/OHLC chart yet, no historical-
-replay trading mode yet) -- lives in `docs/FUTURES_SIMULATOR.md` and
-`docs/FUTURES_SIMULATOR_MATH.md`, kept current as a living document
+"Known limitations" list (no historical-replay trading mode yet, no
+real 5m/15m candle history yet) -- lives in `docs/FUTURES_SIMULATOR.md`
+and `docs/FUTURES_SIMULATOR_MATH.md`, kept current as a living document
 across every increment rather than summarized once here.
 
 ## Known operational limitation: Yahoo Finance

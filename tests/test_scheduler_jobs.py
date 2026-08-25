@@ -43,12 +43,12 @@ async def test_timed_preserves_the_wrapped_function_name():
     assert wrapped.__name__ == "compute_forecast_job"
 
 
-async def test_sync_crypto_daily_history_job_scopes_registry_to_crypto_daily_only():
+async def test_sync_crypto_daily_history_job_scopes_registry_to_crypto_only():
     # Root-cause fix for the stale AI Forecast Center bug: this job must
-    # only ever touch the crypto symbols/DAILY timeframe ForecastEngine
-    # actually reads -- never the full ~25-symbol/4-provider registry
-    # (stocks/macro/forex/FRED), which would add load to already-fragile
-    # providers this job has no reason to touch.
+    # only ever touch the crypto symbols ForecastEngine/the Futures
+    # Simulator chart actually read -- never the full ~25-symbol/4-provider
+    # registry (stocks/macro/forex/FRED), which would add load to
+    # already-fragile providers this job has no reason to touch.
     with patch("app.scheduler.jobs.run_sync", new=AsyncMock()) as mock_run_sync:
         await sync_crypto_daily_history_job()
 
@@ -56,7 +56,12 @@ async def test_sync_crypto_daily_history_job_scopes_registry_to_crypto_daily_onl
     _, registry_arg = mock_run_sync.call_args.args
     assert registry_arg  # non-empty
     assert all(config.market == "crypto" for config in registry_arg)
-    assert all(config.timeframes == (Timeframe.DAILY,) for config in registry_arg)
+    # Widened for the Futures Simulator candlestick chart: also keeps 1h/4h
+    # fresh, not just DAILY (those were previously only ever manually synced).
+    assert all(
+        config.timeframes == (Timeframe.DAILY, Timeframe.ONE_HOUR, Timeframe.FOUR_HOUR)
+        for config in registry_arg
+    )
     assert mock_run_sync.call_args.kwargs["years"] == 1
 
 
