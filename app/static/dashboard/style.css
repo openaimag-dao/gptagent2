@@ -295,6 +295,36 @@ a { color: var(--accent); }
 .rsi-mid { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.5; }
 .rsi-line { fill: none; stroke: var(--yellow); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 
+/* MACD sub-panel -- alternative to RSI, toggled via .chart-controls-row's
+   indicator tabs. Zero-centered scale (unlike RSI's fixed 0-100), reuses
+   --green/--red for the histogram so "positive" still means the same
+   color as everywhere else on the dashboard. */
+.macd-zero-line { stroke: var(--border); stroke-width: 1; vector-effect: non-scaling-stroke; opacity: 0.6; }
+.macd-hist-bar-up { fill: var(--green); opacity: 0.6; }
+.macd-hist-bar-down { fill: var(--red); opacity: 0.6; }
+.macd-line { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.macd-signal-line { fill: none; stroke: var(--yellow); stroke-width: 1.2; vector-effect: non-scaling-stroke; }
+
+.chart-controls-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* Crosshair + OHLC/indicator tooltip on hover -- pure SVG, no HTML overlay,
+   so it stays in the same viewBox coordinate space as everything else and
+   needs no extra positioning math. Hidden by default; shown/positioned by
+   attachCrosshair()'s mousemove handler. */
+.chart-hover-target { fill: transparent; cursor: crosshair; }
+.chart-crosshair-line { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; pointer-events: none; }
+.chart-crosshair-dot { fill: var(--text); stroke: var(--bg); stroke-width: 1.5; pointer-events: none; }
+.chart-tooltip-bg { fill: var(--panel-2); stroke: var(--border); stroke-width: 1; pointer-events: none; }
+.chart-tooltip-text { fill: var(--text); font-size: 11px; font-variant-numeric: tabular-nums; pointer-events: none; }
+.chart-tooltip-text.muted { fill: var(--muted); }
+
 .ai-radar-wrap { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; margin-bottom: 16px; }
 .radar-chart { width: 320px; height: 320px; flex-shrink: 0; }
 .radar-chart .radar-grid { fill: none; stroke: var(--border); stroke-width: 1; }

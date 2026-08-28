@@ -399,7 +399,7 @@ function fmtChartAxisTime(iso, timeframe) {
 // fake wicks, this detects that case and falls back to a close-price line +
 // SMA overlays + RSI, with a visible caption naming the reason: an honest
 // degrade, never a fabricated candle body.
-function candleChart(candles, { timeframe = "1d" } = {}) {
+function candleChart(candles, { timeframe = "1d", indicatorKind = "rsi" } = {}) {
   const geom = _candleGeom();
   const wrap = el("div", { class: "candle-chart-wrap" });
 
@@ -578,8 +578,10 @@ function candleChart(candles, { timeframe = "1d" } = {}) {
   }
   svg.appendChild(gTime);
 
-  const rsiG = rsiPanelGroup(candles, geom, cx);
-  if (rsiG) svg.appendChild(rsiG);
+  const indicatorG = indicatorPanelGroup(candles, geom, cx, indicatorKind);
+  if (indicatorG) svg.appendChild(indicatorG);
+
+  attachCrosshair(svg, geom, candles, cx, yPrice, indicatorKind);
 
   wrap.appendChild(svg);
   return wrap;
@@ -640,6 +642,215 @@ function rsiPanelGroup(candles, geom, cx) {
   }
 
   return g;
+}
+
+// MACD sub-panel -- the second indicator kind, toggled via indicatorKindTabs.
+// Unlike RSI's fixed 0-100 domain, MACD's line/signal/histogram vary by
+// symbol and price magnitude, so the panel scales to the visible series'
+// own min/max, symmetric around zero (a MACD panel with no visible zero
+// line would be unreadable -- crossovers are the whole point).
+function macdPanelGroup(candles, geom, cx) {
+  if (!candles.some((c) => c.macd != null)) return null;
+  const g = document.createElementNS(SVG_NS, "g");
+
+  let absMax = 0;
+  for (const c of candles) {
+    for (const v of [c.macd, c.macd_signal, c.macd_histogram]) {
+      if (v != null) absMax = Math.max(absMax, Math.abs(v));
+    }
+  }
+  if (absMax === 0) absMax = 1;
+  absMax *= 1.15; // headroom so the extremes aren't flush against the panel edges
+
+  const yMacd = (v) => geom.indBot - ((v + absMax) / (2 * absMax)) * geom.indH;
+
+  const zero = document.createElementNS(SVG_NS, "line");
+  zero.setAttribute("x1", geom.padL);
+  zero.setAttribute("x2", geom.w - geom.padR);
+  zero.setAttribute("y1", yMacd(0).toFixed(2));
+  zero.setAttribute("y2", yMacd(0).toFixed(2));
+  zero.setAttribute("class", "macd-zero-line");
+  g.appendChild(zero);
+  const zeroLabel = document.createElementNS(SVG_NS, "text");
+  zeroLabel.setAttribute("x", geom.w - geom.padR + 6);
+  zeroLabel.setAttribute("y", yMacd(0).toFixed(2));
+  zeroLabel.setAttribute("class", "chart-axis-label");
+  zeroLabel.setAttribute("dominant-baseline", "middle");
+  zeroLabel.textContent = "0";
+  g.appendChild(zeroLabel);
+
+  const n = candles.length;
+  const slot = geom.plotW / n;
+  const barW = Math.max(1, slot * 0.62);
+  candles.forEach((c, i) => {
+    if (c.macd_histogram == null) return;
+    const y0 = yMacd(0);
+    const y1 = yMacd(c.macd_histogram);
+    const rect = document.createElementNS(SVG_NS, "rect");
+    rect.setAttribute("x", (cx(i) - barW / 2).toFixed(2));
+    rect.setAttribute("y", Math.min(y0, y1).toFixed(2));
+    rect.setAttribute("width", barW.toFixed(2));
+    rect.setAttribute("height", Math.max(1, Math.abs(y1 - y0)).toFixed(2));
+    rect.setAttribute("class", c.macd_histogram >= 0 ? "macd-hist-bar-up" : "macd-hist-bar-down");
+    g.appendChild(rect);
+  });
+
+  function macdPolyline(key, cls) {
+    const pts = [];
+    candles.forEach((c, i) => {
+      const v = c[key];
+      if (v == null) return;
+      pts.push(`${cx(i).toFixed(2)},${yMacd(v).toFixed(2)}`);
+    });
+    if (pts.length < 2) return null;
+    const p = document.createElementNS(SVG_NS, "polyline");
+    p.setAttribute("points", pts.join(" "));
+    p.setAttribute("class", cls);
+    return p;
+  }
+  const macdLine = macdPolyline("macd", "macd-line");
+  if (macdLine) g.appendChild(macdLine);
+  const signalLine = macdPolyline("macd_signal", "macd-signal-line");
+  if (signalLine) g.appendChild(signalLine);
+
+  return g;
+}
+
+// Dispatches to whichever indicator sub-panel is currently selected --
+// both read fields already present on each candle from GET /api/history,
+// no extra fetch needed to switch.
+function indicatorPanelGroup(candles, geom, cx, kind) {
+  return kind === "macd" ? macdPanelGroup(candles, geom, cx) : rsiPanelGroup(candles, geom, cx);
+}
+
+const INDICATOR_KINDS = ["rsi", "macd"];
+const INDICATOR_KIND_LABELS = { rsi: "RSI", macd: "MACD" };
+const INDICATOR_KIND_STORAGE_KEY = "futures_chart_indicator";
+
+function indicatorKindTabs(current, onSelect) {
+  const row = el("div", { class: "forecast-tabs" });
+  for (const kind of INDICATOR_KINDS) {
+    const btn = el(
+      "button",
+      { class: `forecast-tab${kind === current ? " active" : ""}` },
+      INDICATOR_KIND_LABELS[kind]
+    );
+    btn.addEventListener("click", () => onSelect(kind));
+    row.appendChild(btn);
+  }
+  return row;
+}
+
+// Crosshair + OHLC/indicator tooltip on hover. Pure SVG (a transparent hit
+// rect over the plot area + a hidden-until-hover <g>), not an HTML overlay
+// -- getScreenCTM()/matrixTransform() convert the mouse's client coords
+// into the same viewBox coordinate space everything else in this chart
+// already uses, so no separate pixel-position math is needed to keep the
+// tooltip aligned as the SVG scales to its container width.
+function attachCrosshair(svg, geom, candles, cx, yPrice, indicatorKind) {
+  const n = candles.length;
+  const slot = geom.plotW / n;
+
+  const crosshairG = document.createElementNS(SVG_NS, "g");
+  crosshairG.setAttribute("class", "chart-crosshair-group");
+  crosshairG.style.display = "none";
+
+  const vLine = document.createElementNS(SVG_NS, "line");
+  vLine.setAttribute("class", "chart-crosshair-line");
+  vLine.setAttribute("y1", geom.priceTop);
+  vLine.setAttribute("y2", geom.indBot);
+  crosshairG.appendChild(vLine);
+
+  const dot = document.createElementNS(SVG_NS, "circle");
+  dot.setAttribute("r", 3);
+  dot.setAttribute("class", "chart-crosshair-dot");
+  crosshairG.appendChild(dot);
+
+  const tooltipG = document.createElementNS(SVG_NS, "g");
+  const TOOLTIP_W = 168;
+  const LINES = 5;
+  const tooltipBg = document.createElementNS(SVG_NS, "rect");
+  tooltipBg.setAttribute("class", "chart-tooltip-bg");
+  tooltipBg.setAttribute("rx", 4);
+  tooltipBg.setAttribute("width", TOOLTIP_W);
+  tooltipBg.setAttribute("height", LINES * 15 + 8);
+  tooltipG.appendChild(tooltipBg);
+  const textNodes = [];
+  for (let i = 0; i < LINES; i++) {
+    const t = document.createElementNS(SVG_NS, "text");
+    t.setAttribute("class", "chart-tooltip-text");
+    t.setAttribute("x", 8);
+    t.setAttribute("y", 15 + i * 15);
+    tooltipG.appendChild(t);
+    textNodes.push(t);
+  }
+  crosshairG.appendChild(tooltipG);
+  svg.appendChild(crosshairG);
+
+  const hoverTarget = document.createElementNS(SVG_NS, "rect");
+  hoverTarget.setAttribute("x", geom.padL);
+  hoverTarget.setAttribute("y", geom.priceTop);
+  hoverTarget.setAttribute("width", geom.plotW);
+  hoverTarget.setAttribute("height", geom.indBot - geom.priceTop);
+  hoverTarget.setAttribute("class", "chart-hover-target");
+  svg.appendChild(hoverTarget);
+
+  function svgPoint(evt) {
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = evt.clientX;
+    pt.y = evt.clientY;
+    return pt.matrixTransform(ctm.inverse());
+  }
+
+  hoverTarget.addEventListener("mousemove", (evt) => {
+    const p = svgPoint(evt);
+    if (!p) return;
+    let i = Math.round((p.x - geom.padL - slot / 2) / slot);
+    i = Math.max(0, Math.min(n - 1, i));
+    const c = candles[i];
+    const x = cx(i);
+
+    vLine.setAttribute("x1", x.toFixed(2));
+    vLine.setAttribute("x2", x.toFixed(2));
+    if (c.close != null) {
+      dot.setAttribute("cx", x.toFixed(2));
+      dot.setAttribute("cy", yPrice(c.close).toFixed(2));
+      dot.style.display = "";
+    } else {
+      dot.style.display = "none";
+    }
+
+    const lines = [
+      new Date(c.timestamp).toLocaleString(),
+      `O ${fmtNum(c.open)}   H ${fmtNum(c.high)}`,
+      `L ${fmtNum(c.low)}   C ${fmtNum(c.close)}`,
+      c.volume != null ? `Vol ${fmtNum(c.volume)}` : "Vol n/a",
+      indicatorKind === "macd"
+        ? c.macd != null
+          ? `MACD ${fmtNum(c.macd, 3)}  Sig ${fmtNum(c.macd_signal, 3)}`
+          : "MACD n/a"
+        : c.rsi != null
+          ? `RSI ${fmtNum(c.rsi)}`
+          : "RSI n/a",
+    ];
+    lines.forEach((text, idx) => {
+      textNodes[idx].textContent = text;
+      textNodes[idx].setAttribute("class", idx === 0 ? "chart-tooltip-text muted" : "chart-tooltip-text");
+    });
+
+    // Flip the tooltip to the left of the crosshair once there isn't room
+    // to its right, so it never overflows past the price-axis gutter.
+    const flip = x + 10 + TOOLTIP_W > geom.w - geom.padR;
+    const tx = flip ? x - 10 - TOOLTIP_W : x + 10;
+    tooltipG.setAttribute("transform", `translate(${tx.toFixed(2)}, ${geom.priceTop + 6})`);
+
+    crosshairG.style.display = "";
+  });
+  hoverTarget.addEventListener("mouseleave", () => {
+    crosshairG.style.display = "none";
+  });
 }
 
 // 8-axis radar/spider chart over real 0-100 scores -- purely a second
@@ -6260,15 +6471,24 @@ async function renderFuturesTradeTab() {
   const chartContainer = el("div", {});
   let chartTimeframe = localStorage.getItem(CHART_TIMEFRAME_STORAGE_KEY) || "1h";
   if (!CHART_TIMEFRAMES.includes(chartTimeframe)) chartTimeframe = "1h";
+  let indicatorKind = localStorage.getItem(INDICATOR_KIND_STORAGE_KEY) || "rsi";
+  if (!INDICATOR_KINDS.includes(indicatorKind)) indicatorKind = "rsi";
 
   async function loadChart() {
     chartContainer.innerHTML = "";
     chartContainer.appendChild(
-      chartTimeframeTabs(chartTimeframe, (tf) => {
-        chartTimeframe = tf;
-        localStorage.setItem(CHART_TIMEFRAME_STORAGE_KEY, tf);
-        loadChart();
-      })
+      el("div", { class: "chart-controls-row" }, [
+        chartTimeframeTabs(chartTimeframe, (tf) => {
+          chartTimeframe = tf;
+          localStorage.setItem(CHART_TIMEFRAME_STORAGE_KEY, tf);
+          loadChart();
+        }),
+        indicatorKindTabs(indicatorKind, (kind) => {
+          indicatorKind = kind;
+          localStorage.setItem(INDICATOR_KIND_STORAGE_KEY, kind);
+          loadChart();
+        }),
+      ])
     );
 
     const isRealtimeTimeframe = chartTimeframe === "5m" || chartTimeframe === "15m";
@@ -6302,7 +6522,7 @@ async function renderFuturesTradeTab() {
         )
       );
     }
-    chartContainer.appendChild(candleChart(data.candles, { timeframe: chartTimeframe }));
+    chartContainer.appendChild(candleChart(data.candles, { timeframe: chartTimeframe, indicatorKind }));
   }
   symbolSelect.addEventListener("change", loadChart);
 

@@ -431,6 +431,41 @@ renders the honest flat-OHLC line fallback with its caption, and
 confirmed `5m` shows the not-enough-data-yet placeholder before any
 candle had been aggregated.
 
+### MACD panel and crosshair tooltip
+
+The chart's indicator sub-panel now has two kinds, toggled via a small
+RSI/MACD tab row next to the timeframe tabs (`indicatorKindTabs()`,
+persisted in `localStorage` the same way the timeframe selection is).
+`macdPanelGroup()` draws the MACD line, signal line, and histogram
+(green/red via the same `--green`/`--red` tokens the candle bodies use)
+from the `macd`/`macd_signal`/`macd_histogram` fields `GET /api/history`
+already serves — no backend change, same reuse-not-recompute rule as
+the RSI panel. Unlike RSI's fixed 0–100 domain, the MACD panel scales to
+the visible series' own min/max, symmetric around a zero line, since a
+MACD panel with no visible zero crossing point is unreadable.
+
+Hovering the chart shows a crosshair (a dashed vertical line + a dot on
+the price line) and a tooltip with the hovered candle's timestamp, O/H/L/C,
+volume, and the currently-selected indicator's value(s)
+(`attachCrosshair()`). It's built entirely in SVG — a transparent hit-test
+rect over the plot area plus a hidden-until-hover `<g>` — rather than an
+HTML overlay, so `getScreenCTM()`/`matrixTransform()` convert the mouse's
+client coordinates directly into the same viewBox coordinate space
+everything else in the chart already uses; no separate pixel-position
+math was needed to keep the tooltip aligned as the SVG scales to its
+container's width. The tooltip flips from the right to the left side of
+the crosshair once there's no longer room for it before the price-axis
+gutter, so it never renders off-chart near the right edge.
+
+Live-verified against the real running server with Playwright: toggled
+between RSI and MACD on both a real-candle (`4h`) and a flat-fallback
+(`1d`) chart, confirmed the MACD line/signal/histogram render with a
+visible zero line, hovered the chart and confirmed the tooltip shows
+correct OHLC/volume/indicator values matching the underlying data
+(including the honest `O=H=L=C` on the flat `1d` fallback), and
+confirmed the tooltip flips sides near the right edge instead of
+overflowing.
+
 ### Real 5m/15m candles
 
 Rather than leave `5m`/`15m` permanently on the placeholder, a new
