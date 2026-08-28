@@ -555,6 +555,21 @@ dashboard page is affected:
   used elsewhere on the dashboard rather than inventing a new color.
 - Tables inside `.futures-sim` get `font-variant-numeric: tabular-nums`
   on every cell (so numeric columns line up) and a row-hover highlight.
+- **Order status badges** — the Order History table's status column
+  (NEW/FILLED/REJECTED/CANCELLED) is now a `decisionPill()` badge too
+  (FILLED green, REJECTED red, NEW/CANCELLED neutral), with any reject
+  reason kept as trailing text next to it.
+- **Ledger event-type badges** — the Account History (ledger) table's
+  Event column renders each `event_type` (DEPOSIT, FEE, FUNDING,
+  REALIZED_PNL, ...) as a small neutral pill (new `.pill.neutral` CSS
+  class — `var(--muted)` on `var(--panel-2)`, not the yellow `.warning`
+  pill, since a category label isn't a caution signal) instead of plain
+  text, for the same at-a-glance scannability as the side badges.
+- **Settings tab and Max Risk Settings** — both used to be bare
+  `<h3>`/`<p>`/`.controls` rows with no visual grouping. They're now
+  `.card` panels matching the rest of the dashboard's card language, and
+  the "Reset Demo Account" button uses the existing `.sell` (red) button
+  style to read as the destructive action it is.
 
 Live-verified against the real running server with Playwright: opened
 one LONG and one SHORT demo position and confirmed the badges, stat

@@ -206,6 +206,10 @@ pre.summary {
 .pill.available { background: #113322; color: var(--green); }
 .pill.unavailable { background: #331313; color: var(--red); }
 .pill.warning { background: #332a10; color: var(--yellow); }
+/* Purely descriptive category label (e.g. a ledger event type) -- not a
+   good/bad/caution signal, so it stays var(--muted) rather than reusing
+   .warning's yellow, which would falsely read as "needs attention". */
+.pill.neutral { background: var(--panel-2); color: var(--muted); }
 
 .bar-track { background: var(--panel-2); border-radius: 4px; height: 8px; overflow: hidden; margin-top: 6px; }
 .bar-fill { background: var(--accent); height: 100%; }
