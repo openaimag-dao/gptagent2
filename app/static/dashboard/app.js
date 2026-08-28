@@ -6546,6 +6546,12 @@ async function renderFuturesOpenOrdersTab() {
   return wrap;
 }
 
+function orderStatusTone(status) {
+  if (status === "FILLED") return "good";
+  if (status === "REJECTED") return "bad";
+  return "neutral"; // NEW / CANCELLED
+}
+
 async function renderFuturesOrderHistoryTab() {
   const data = await safe(`/api/simulator/orders?name=${encodeURIComponent(futuresAccountName())}&limit=100`);
   const orders = data ? data.orders : [];
@@ -6565,7 +6571,10 @@ async function renderFuturesOrderHistoryTab() {
         String(o.filled_quantity),
         o.actual_fill_price != null ? fmtNum(o.actual_fill_price) : "n/a",
         o.fee_amount != null ? fmtNum(o.fee_amount, 4) : "n/a",
-        o.status + (o.reject_reason ? ` (${o.reject_reason})` : ""),
+        el("span", {}, [
+          decisionPill(o.status, orderStatusTone(o.status)),
+          o.reject_reason ? ` ${o.reject_reason}` : "",
+        ]),
         new Date(o.created_at).toLocaleString(),
       ])
     )
@@ -6774,7 +6783,9 @@ const RISK_SETTINGS_FIELDS = [
 // when a warning fires (same permissive-by-default philosophy as the
 // rest of the RISK tab).
 function futuresMaxRiskSettingsSection(riskSettings) {
-  const section = el("div", {}, [el("h3", {}, "Max Risk Settings")]);
+  const section = el("div", { class: "card", style: "margin-top:16px" }, [
+    el("h3", { style: "margin-top:0" }, "Max Risk Settings"),
+  ]);
   section.appendChild(
     el(
       "p",
@@ -6905,7 +6916,7 @@ async function renderFuturesAccountHistoryTab() {
     table(
       ["Event", "Amount", "Balance After", "Description", "Time"],
       entries.map((e) => [
-        e.event_type,
+        el("span", { class: "pill neutral" }, e.event_type),
         el("span", { class: changeClass(e.amount) }, fmtNum(e.amount, 4)),
         fmtNum(e.balance_after),
         e.description,
@@ -6918,32 +6929,34 @@ async function renderFuturesAccountHistoryTab() {
 
 async function renderFuturesSettingsTab() {
   const wrap = el("div", {});
-  wrap.appendChild(el("h3", {}, "Demo Account"));
-  wrap.appendChild(
+
+  const accountCard = el("div", { class: "card" }, [
+    el("h3", { style: "margin-top:0" }, "Demo Account"),
     el(
       "p",
       { class: "sub" },
       "Switching the account name starts (or resumes) a separate demo account -- useful for comparing strategies side by side."
-    )
-  );
+    ),
+  ]);
   const nameInput = el("input", { type: "text", value: futuresAccountName(), placeholder: "Account name" });
   const switchBtn = el("button", {}, "Switch Account");
   switchBtn.addEventListener("click", () => {
     localStorage.setItem(FUTURES_ACCOUNT_NAME_KEY, nameInput.value.trim() || "default");
     navigate("futures", new URLSearchParams({ tab: "settings" }));
   });
-  wrap.appendChild(el("div", { class: "controls" }, [nameInput, switchBtn]));
+  accountCard.appendChild(el("div", { class: "controls" }, [nameInput, switchBtn]));
+  wrap.appendChild(accountCard);
 
-  wrap.appendChild(el("h3", {}, "Reset Demo Account"));
-  wrap.appendChild(
+  const resetCard = el("div", { class: "card", style: "margin-top:16px" }, [
+    el("h3", { style: "margin-top:0" }, "Reset Demo Account"),
     el(
       "p",
       { class: "sub" },
       "Resets this account's balance back to the initial demo balance. The old session's full history (orders/trades/ledger) stays queryable forever -- nothing is deleted, only a fresh session starts."
-    )
-  );
+    ),
+  ]);
   const resetStatus = el("p", { class: "sub" });
-  const resetBtn = el("button", {}, "Reset Demo Account");
+  const resetBtn = el("button", { class: "sell" }, "Reset Demo Account");
   resetBtn.addEventListener("click", async () => {
     if (!confirm("Reset this demo account? Balance returns to the initial demo balance.")) return;
     try {
@@ -6957,8 +6970,10 @@ async function renderFuturesSettingsTab() {
       resetStatus.textContent = `Error: ${err.message}`;
     }
   });
-  wrap.appendChild(el("div", { class: "controls" }, [resetBtn]));
-  wrap.appendChild(resetStatus);
+  resetCard.appendChild(el("div", { class: "controls" }, [resetBtn]));
+  resetCard.appendChild(resetStatus);
+  wrap.appendChild(resetCard);
+
   return wrap;
 }
 
