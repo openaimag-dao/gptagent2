@@ -384,7 +384,7 @@ function _candleGeom() {
 function fmtChartAxisTime(iso, timeframe) {
   const d = new Date(iso);
   const p2 = (x) => String(x).padStart(2, "0");
-  if (timeframe === "1d") return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+  if (timeframe === "1d" || timeframe === "4d") return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
   if (timeframe === "4h" || timeframe === "1h") return `${p2(d.getUTCDate())} ${p2(d.getUTCHours())}:00`;
   return `${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}`;
 }
@@ -6283,7 +6283,7 @@ const FUTURES_TAB_LABELS = {
   settings: "Settings",
 };
 
-const CHART_TIMEFRAMES = ["5m", "15m", "1h", "4h", "1d"];
+const CHART_TIMEFRAMES = ["5m", "15m", "30m", "1h", "4h", "1d", "4d"];
 const CHART_TIMEFRAME_STORAGE_KEY = "futures_chart_tf";
 
 function chartTimeframeTabs(current, onSelect) {
@@ -6492,6 +6492,7 @@ async function renderFuturesTradeTab() {
     );
 
     const isRealtimeTimeframe = chartTimeframe === "5m" || chartTimeframe === "15m";
+    const isNativeOhlcTimeframe = chartTimeframe === "30m" || chartTimeframe === "4d";
     const loadingMsg = el("p", { class: "loading" }, "Loading chart...");
     chartContainer.appendChild(loadingMsg);
     const data = await safe(
@@ -6519,6 +6520,15 @@ async function renderFuturesTradeTab() {
           `Built from the live Coinbase feed, sampled about once a minute since ` +
             `${new Date(data.candles[0].timestamp).toLocaleString()} -- real prices, not a full ` +
             "trade tape. No volume data available."
+        )
+      );
+    }
+    if (isNativeOhlcTimeframe) {
+      chartContainer.appendChild(
+        el(
+          "p",
+          { class: "sub" },
+          "Real OHLC candles from CoinGecko, refreshed roughly hourly. No volume data available for this timeframe."
         )
       );
     }

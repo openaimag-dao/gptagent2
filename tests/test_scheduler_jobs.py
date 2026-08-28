@@ -57,9 +57,17 @@ async def test_sync_crypto_daily_history_job_scopes_registry_to_crypto_only():
     assert registry_arg  # non-empty
     assert all(config.market == "crypto" for config in registry_arg)
     # Widened for the Futures Simulator candlestick chart: also keeps 1h/4h
-    # fresh, not just DAILY (those were previously only ever manually synced).
+    # and the native-OHLC 30m/4d tabs fresh, not just DAILY (those were
+    # previously only ever manually synced).
     assert all(
-        config.timeframes == (Timeframe.DAILY, Timeframe.ONE_HOUR, Timeframe.FOUR_HOUR)
+        config.timeframes
+        == (
+            Timeframe.DAILY,
+            Timeframe.ONE_HOUR,
+            Timeframe.FOUR_HOUR,
+            Timeframe.THIRTY_MINUTE,
+            Timeframe.FOUR_DAY,
+        )
         for config in registry_arg
     )
     assert mock_run_sync.call_args.kwargs["years"] == 1

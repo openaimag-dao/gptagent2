@@ -13,6 +13,10 @@ class Timeframe(str, enum.Enum):
     # realtime_timeframes. Not part of any provider's fetchable timeframes.
     FIFTEEN_MINUTE = "15m"
     FIVE_MINUTE = "5m"
+    # Native OHLC from CoinGecko's /ohlc endpoint -- real high/low wicks,
+    # fetchable directly (see providers/coingecko.py).
+    THIRTY_MINUTE = "30m"
+    FOUR_DAY = "4d"
 
 
 class Candle(BaseModel):

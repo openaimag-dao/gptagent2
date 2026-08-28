@@ -93,3 +93,18 @@ def test_realtime_timeframes_are_never_in_the_syncable_timeframes_tuple():
     registry = build_registry()
     for config in registry:
         assert not (set(config.timeframes) & set(config.realtime_timeframes))
+
+
+def test_only_crypto_symbols_declare_the_native_ohlc_timeframes():
+    # THIRTY_MINUTE/FOUR_DAY are fetched via CoinGecko's /ohlc endpoint --
+    # no other provider (yfinance/TwelveData/FRED) supports them, so any
+    # non-crypto entry declaring them would be a lie about what actually
+    # gets synced.
+    registry = build_registry()
+    for config in registry:
+        if config.market == "crypto":
+            assert Timeframe.THIRTY_MINUTE in config.timeframes
+            assert Timeframe.FOUR_DAY in config.timeframes
+        else:
+            assert Timeframe.THIRTY_MINUTE not in config.timeframes
+            assert Timeframe.FOUR_DAY not in config.timeframes

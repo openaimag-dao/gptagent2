@@ -35,7 +35,7 @@ def _serialize_row(row) -> dict:
 @router.get("/{symbol}")
 async def get_history(
     symbol: str,
-    timeframe: str = Query("1d", description="1d, 4h, 1h, 15m or 5m"),
+    timeframe: str = Query("1d", description="4d, 1d, 4h, 1h, 30m, 15m or 5m"),
     limit: int = Query(100, ge=1, le=5000),
 ) -> dict:
     config = find_symbol_config(symbol)
@@ -47,7 +47,7 @@ async def get_history(
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid timeframe: {timeframe} (expected 1d, 4h, 1h, 15m or 5m)",
+            detail=f"Invalid timeframe: {timeframe} (expected 4d, 1d, 4h, 1h, 30m, 15m or 5m)",
         ) from exc
     all_timeframes = (*config.timeframes, *config.realtime_timeframes)
     if tf not in all_timeframes:

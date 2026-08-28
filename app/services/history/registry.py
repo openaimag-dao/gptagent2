@@ -49,6 +49,15 @@ FOREX_TICKERS: dict[str, str] = {
 
 _ALL_TIMEFRAMES: tuple[Timeframe, ...] = (Timeframe.DAILY, Timeframe.FOUR_HOUR, Timeframe.ONE_HOUR)
 _DAILY_ONLY: tuple[Timeframe, ...] = (Timeframe.DAILY,)
+# Crypto-only: THIRTY_MINUTE/FOUR_DAY are fetched via CoinGecko's separate
+# `/ohlc` endpoint (see providers/coingecko.py) -- no other provider
+# (yfinance/TwelveData/FRED) supports them, so this tuple is deliberately
+# not used for the equity/forex/macro registry entries below.
+_CRYPTO_TIMEFRAMES: tuple[Timeframe, ...] = (
+    *_ALL_TIMEFRAMES,
+    Timeframe.THIRTY_MINUTE,
+    Timeframe.FOUR_DAY,
+)
 # Futures Simulator chart: what the realtime aggregator writes and the
 # history API serves -- deliberately NOT part of `timeframes` above, since
 # that tuple is what HistorySyncEngine asks the *provider* to fetch, and
@@ -119,7 +128,7 @@ def build_registry() -> list[HistorySymbolConfig]:
                 symbol,
                 CryptoHistory,
                 crypto_provider,
-                _ALL_TIMEFRAMES,
+                _CRYPTO_TIMEFRAMES,
                 "crypto",
                 realtime_timeframes=_REALTIME_TIMEFRAMES,
             )
