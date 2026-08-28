@@ -234,6 +234,12 @@ class HistoryTimeframe(str, enum.Enum):
     # written for crypto symbols; see registry.py's realtime_timeframes.
     FIFTEEN_MINUTE = "15m"
     FIVE_MINUTE = "5m"
+    # Native OHLC from CoinGecko's /coins/{id}/ohlc endpoint -- real
+    # high/low wicks (unlike DAILY/ONE_HOUR's /market_chart-derived flat
+    # candles), auto-selected by the `days` window requested. See
+    # providers/coingecko.py's _OHLC_DAYS_BY_TIMEFRAME.
+    THIRTY_MINUTE = "30m"
+    FOUR_DAY = "4d"
 
 
 class _HistoryCandleMixin:

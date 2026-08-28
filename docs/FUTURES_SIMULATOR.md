@@ -349,7 +349,7 @@ colors).
   NOT USED" banner always visible.
 - TRADE is a two-column layout (`.trade-layout`, chart left / order panel
   right, collapsing to one column under 900px): a candlestick chart with
-  timeframe tabs (5m/15m/1h/4h/1d) on the left, and OPEN LONG (green)/OPEN
+  timeframe tabs (5m/15m/30m/1h/4h/1d/4d) on the left, and OPEN LONG (green)/OPEN
   SHORT (red) buttons, symbol/leverage/margin-mode/order-type selectors,
   a live USD notional line, and price/stop-price fields that show only
   for the order types that need them, on the right.
@@ -392,18 +392,19 @@ warning naming the position all matched the API response exactly.
 
 ### Candlestick chart
 
-`candleChart()`/`rsiPanel()` (`app/static/dashboard/app.js`) are hand-
-rolled raw-SVG functions, following the same `document.createElementNS`
+`candleChart()` (`app/static/dashboard/app.js`) is a hand-rolled
+raw-SVG function, following the same `document.createElementNS`
 convention as the dashboard's existing `svgLineChart`/`svgRadarChart` —
 no charting library, matching this project's no-build-step rule.
-Candles + SMA 20/50/200 + RSI come straight from the existing
+Candles + SMA 20/50/200 + RSI/MACD come straight from the existing
 `GET /api/history/{symbol}?timeframe=X&limit=180` endpoint (no new
 backend work for 1h/4h/1d) — every indicator drawn was already computed
 and stored by `app.services.history.indicators`, reused, not
-recomputed. RSI (not MACD) is the sub-panel: it has a fixed 0–100 domain
-independent of the symbol's price magnitude, and its Wilder-14 warm-up
-lights up ~2.5x sooner than MACD's 12/26/9, which matters once 5m
-candles (below) start from zero history.
+recomputed. RSI shipped first as the only indicator sub-panel (fixed
+0–100 domain, Wilder-14 warm-up lighting up ~2.5x sooner than MACD's
+12/26/9 — which mattered once 5m candles, below, started from zero
+history); MACD was added later as a toggle alongside it — see "MACD
+panel and crosshair tooltip".
 
 **Honesty limitation, discovered and handled deliberately, not
 papered over**: CoinGecko's `/market_chart` endpoint (the source behind
@@ -537,6 +538,57 @@ simply don't exist yet) — an honest partial-window result, not a
 fabricated one, exercising the same "resample only fully-elapsed
 windows" guard the unit tests cover for the full 3-bar case.
 
+### Real (non-flat) OHLC for 30m and 4d
+
+`1d`/`1h` candles are flat (`/market_chart` returns one price point per
+period, see "Candlestick chart" above) and `4h` only has real wicks
+because a 4h resample bucket happens to span several distinct hourly
+points. Two more timeframes — `30m` and `4d` — now have **genuinely**
+real OHLC, sourced from CoinGecko's separate `/coins/{id}/ohlc`
+endpoint (`CoinGeckoHistoricalProvider._fetch_ohlc_candles`,
+`app/services/history/providers/coingecko.py`), which CoinGecko builds
+from actual intra-period price action rather than one sampled point.
+
+That endpoint's free-tier granularity auto-selects by the `days`
+window requested, on its own schedule distinct from `/market_chart`'s:
+1–2 days → 30-minutely, 3–30 days → 4-hourly, 31+ days → 4-daily. The
+middle bucket is intentionally not used — it would duplicate the
+existing `4h` timeframe — so only the two new granularities were
+added. The `days` parameter itself is **not** a free-form integer on
+the free/demo tier, unlike `/market_chart` — it's an enum of exactly
+`{1, 7, 14, 30, 90, 180, 365, max}`, live-verified the hard way: an
+initial `days=2` (which would also land in the 30-minutely bucket)
+400'd with "Bad Request" against the real API even though it's
+perfectly reasonable-looking. `days=1` is the only enum value in that
+bucket, so that's what `THIRTY_MINUTE` requests; `FOUR_DAY` requests
+`days=365`, the same window `DAILY` already uses.
+
+`/ohlc` has no volume field at all — `volume`/`volume_change_pct` are
+honestly `null` on every `30m`/`4d` row, the dashboard shows "n/a".
+Its timestamps also mark each candle's **close** time, unlike this
+project's UTC-candle-**open** convention (`Candle`'s own docstring) —
+`_fetch_ohlc_candles` shifts every timestamp back by one candle's
+duration (30 minutes or 4 days) so `timestamp` means the same thing
+here as it does for every other timeframe in this codebase.
+
+`THIRTY_MINUTE`/`FOUR_DAY` were added to `HistoryTimeframe`
+(`app/database/models.py`) and `Timeframe` (`schemas.py`) via migration
+`0048`, and to a new crypto-only `_CRYPTO_TIMEFRAMES` tuple in
+`registry.py` (kept separate from `_ALL_TIMEFRAMES` since no other
+provider supports them). `sync_crypto_daily_history_job` was widened
+to keep both fresh on its existing hourly schedule, same as it already
+does for `1h`/`4h`.
+
+Live-verified against the real CoinGecko API and the real local
+server: fetched both timeframes directly (confirmed real, non-flat
+high/low and `volume: None` on every candle), ran them through
+`HistorySyncEngine` into Postgres (48 real `30m` candles and 90 real
+`4d` candles for BTC, indicators computed on both), confirmed
+`GET /api/history/BTC?timeframe=30m` and `...timeframe=4d` served the
+stored rows correctly, and confirmed both new tabs render real candle
+bodies (not the flat-line fallback) with correct axis labels in the
+dashboard.
+
 ### Live ticker marquee and Overview Open Positions widget
 
 A horizontally auto-scrolling ticker marquee (`mountTickerMarquee()`,
@@ -654,8 +706,11 @@ section — summarized here:
 - The candlestick chart's `1d`/`1h` timeframes render a close-price line,
   not real candle bodies — CoinGecko's price-history endpoint returns one
   price point per period for those timeframes, not true OHLC (see the
-  Dashboard section's "Candlestick chart" subsection). Only `4h` has
-  genuine wicks today.
+  Dashboard section's "Candlestick chart" subsection). `4h`, `30m`, and
+  `4d` all have genuine wicks; `30m`/`4d` use CoinGecko's separate
+  `/ohlc` endpoint (see "Real (non-flat) OHLC for 30m and 4d") and carry
+  no volume data (`null`, not `0`) since that endpoint has no volume
+  field at all.
 - `5m`/`15m` candles are real but coarsely sampled — the aggregation job
   polls the tick feed once a minute rather than subscribing to every
   tick, so a candle's `open` can be up to ~60 seconds later than the
@@ -669,9 +724,6 @@ section — summarized here:
   resolution (no free provider supports it), so a freshly reset/redeployed
   instance briefly shows the "not enough data yet" placeholder again
   until a few candles accumulate.
-- The chart has no crosshair/hover OHLC readout yet, and only RSI (not
-  MACD) is available as an indicator sub-panel — both are documented,
-  deliberately deferred polish, not oversights.
 - No historical-replay trading mode yet.
 - The AI signal's suggested SL/TP levels come from the forecast's own
   `key_levels` (support/resistance) and `target_price` — a reasonable

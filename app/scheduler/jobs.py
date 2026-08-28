@@ -350,10 +350,13 @@ async def sync_crypto_daily_history_job() -> None:
     fresh, not just DAILY -- those two rows previously only existed if a
     human had run a full manual sync at least once and were never
     auto-refreshed after that, which would have shipped the chart with
-    visibly stale 1h/4h tabs from day one. Function name kept as-is
-    despite covering more than "daily" now, to avoid churning the
-    APScheduler job-store id (CRYPTO_HISTORY_SYNC_JOB_ID) tests and
-    ops tooling reference.
+    visibly stale 1h/4h tabs from day one. Widened again to cover
+    THIRTY_MINUTE/FOUR_DAY (real native OHLC from CoinGecko's `/ohlc`
+    endpoint, see providers/coingecko.py) for the same reason -- those two
+    tabs would otherwise never refresh after their first manual sync
+    either. Function name kept as-is despite covering more than "daily"
+    now, to avoid churning the APScheduler job-store id
+    (CRYPTO_HISTORY_SYNC_JOB_ID) tests and ops tooling reference.
 
     Reuses run_sync/HistorySyncEngine.sync_all() verbatim
     (HistorySyncEngine.sync_symbol_timeframe's own docstring: each call
@@ -368,7 +371,16 @@ async def sync_crypto_daily_history_job() -> None:
     nothing to do with."""
     session_factory = get_session_factory()
     crypto_daily_registry = [
-        replace(config, timeframes=(Timeframe.DAILY, Timeframe.ONE_HOUR, Timeframe.FOUR_HOUR))
+        replace(
+            config,
+            timeframes=(
+                Timeframe.DAILY,
+                Timeframe.ONE_HOUR,
+                Timeframe.FOUR_HOUR,
+                Timeframe.THIRTY_MINUTE,
+                Timeframe.FOUR_DAY,
+            ),
+        )
         for config in build_registry()
         if config.market == "crypto"
     ]
