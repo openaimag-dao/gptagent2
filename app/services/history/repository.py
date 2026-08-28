@@ -35,12 +35,38 @@ async def get_latest_timestamp(
 
 
 async def upsert_candles(
-    session_factory: async_sessionmaker[AsyncSession], model: type, candles: list[Candle]
+    session_factory: async_sessionmaker[AsyncSession],
+    model: type,
+    candles: list[Candle],
+    *,
+    do_update: bool = False,
 ) -> int:
-    """Inserts candles, silently skipping any that already exist for
+    """Inserts candles. By default silently skips any that already exist for
     (symbol, timeframe, timestamp) -- the unique constraint is the single
     source of truth for "is this a duplicate", so re-running a sync over an
-    already-covered range is always safe."""
+    already-covered range is always safe.
+
+    `do_update=True` instead overwrites the OHLCV/source columns on
+    conflict. Only meant for a timeframe that's *resampled* from another
+    timeframe's freshly-fetched data on every single sync call (FOUR_HOUR,
+    resampled from ONE_HOUR by every provider that supports it -- see
+    providers/coingecko.py and providers/yfinance_provider.py) rather than
+    fetched directly. A resampled bucket can legitimately start out
+    incomplete: e.g. only one real hourly point has landed yet for a
+    still-forming or just-elapsed 4h window, since the upstream provider's
+    own "hourly" granularity is itself irregular near the live edge (not
+    reliably 4 points per 4h window on the first sync that covers it). With
+    the default DO NOTHING, that first incomplete value -- sometimes a
+    fully flat open=high=low=close candle -- freezes there forever, even
+    after later syncs' fetches contain the window's true, more complete
+    hourly coverage; live-verified against production (12 of the last 180
+    stored BTC 4h candles were stuck exactly this way, including ones
+    several days old). DO UPDATE instead lets each bucket self-correct
+    across the next few incremental syncs while it's still the newest
+    stored row for that (symbol, timeframe) -- safe here specifically
+    because a resampled candle is always recomputed fresh from the source
+    data on every call, never accumulated state, so overwriting only ever
+    moves it toward a more complete version of the same real data."""
     if not candles:
         return 0
 
@@ -61,7 +87,20 @@ async def upsert_candles(
 
     async with session_factory() as session:
         stmt = pg_insert(model).values(rows)
-        stmt = stmt.on_conflict_do_nothing(index_elements=["symbol", "timeframe", "timestamp"])
+        if do_update:
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["symbol", "timeframe", "timestamp"],
+                set_={
+                    "open": stmt.excluded.open,
+                    "high": stmt.excluded.high,
+                    "low": stmt.excluded.low,
+                    "close": stmt.excluded.close,
+                    "volume": stmt.excluded.volume,
+                    "source": stmt.excluded.source,
+                },
+            )
+        else:
+            stmt = stmt.on_conflict_do_nothing(index_elements=["symbol", "timeframe", "timestamp"])
         result = await session.execute(stmt)
         await session.commit()
         return result.rowcount or 0

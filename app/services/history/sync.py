@@ -51,7 +51,18 @@ class HistorySyncEngine:
         since = latest_stored if latest_stored is not None else earliest_allowed
 
         candles = await config.provider.fetch_candles(config.symbol, timeframe, since)
-        inserted = await upsert_candles(self._session_factory, config.model, candles)
+        # FOUR_HOUR is always resampled fresh from ONE_HOUR data on every
+        # sync (never fetched directly) -- do_update lets a bucket that
+        # started incomplete (e.g. a flat single-point candle) self-correct
+        # as later syncs' fetches contain fuller hourly coverage for that
+        # window, instead of freezing its first value forever. See
+        # upsert_candles' own docstring for the full reasoning.
+        inserted = await upsert_candles(
+            self._session_factory,
+            config.model,
+            candles,
+            do_update=(timeframe == Timeframe.FOUR_HOUR),
+        )
         indicators_computed = await fill_missing_indicators(
             self._session_factory, config.model, config.symbol, timeframe
         )
