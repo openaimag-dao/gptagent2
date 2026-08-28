@@ -589,6 +589,54 @@ stored rows correctly, and confirmed both new tabs render real candle
 bodies (not the flat-line fallback) with correct axis labels in the
 dashboard.
 
+### 4h candle self-correction (`upsert_candles(..., do_update=)`)
+
+A real bug found and fixed while re-verifying the whole dashboard
+against production: `4h` candles are always resampled fresh from
+`1h` data on every sync (`resample_candles`, called from both
+`CoinGeckoHistoricalProvider.fetch_candles` and
+`YFinanceProvider.fetch_candles`), never fetched directly. The
+upstream provider's own "hourly" granularity is itself irregular near
+the live edge — not reliably 4 real points per 4h window on the first
+sync that happens to cover it — so a freshly-formed `4h` bucket can
+legitimately start out resampled from just one real point, sometimes
+producing a fully flat `open=high=low=close` candle.
+
+`upsert_candles` (`app/services/history/repository.py`) previously
+always used `ON CONFLICT DO NOTHING`, which is correct for every
+*directly fetched* timeframe (a stored historical fact shouldn't move)
+but wrong here: it froze that first, incomplete `4h` value **forever**,
+even after later syncs' fetches contained the window's true, more
+complete hourly coverage — live-verified directly against production:
+12 of the last 180 stored BTC `4h` candles were stuck exactly this
+way, several of them days old, permanently. The `since`-based
+incremental sync design means a stuck bucket is never revisited once a
+newer one exists, so this doesn't self-heal on its own.
+
+Fixed with a new `do_update: bool = False` parameter on
+`upsert_candles`, used only for `FOUR_HOUR` syncs
+(`HistorySyncEngine.sync_symbol_timeframe`,
+`app/services/history/sync.py`): `ON CONFLICT DO UPDATE` instead,
+safe specifically because a resampled candle is always recomputed
+fresh from source data on every call, never accumulated state, so
+overwriting only ever moves it toward a more complete version of the
+same real data. This lets each new `4h` bucket self-correct across the
+~4 hourly syncs while it remains the newest stored row for that
+symbol, before the next bucket takes over. Every other timeframe
+keeps the default `do_update=False`.
+
+**Known residual limitation**: this fixes the freeze going forward but
+doesn't retroactively repair already-stuck old candles (the
+`since` cursor never looks backward) — those age out of the chart's
+180-candle window over time rather than being backfilled by a
+one-off repair pass.
+
+Live-verified directly against the real local Postgres: reproduced
+the exact freeze (wrote a flat candle, confirmed a corrected write
+without `do_update` left it frozen at 0 rows affected) and then
+confirmed `do_update=True` overwrote it to the true OHLC in one
+`ON CONFLICT DO UPDATE` call.
+
 ### Live ticker marquee and Overview Open Positions widget
 
 A horizontally auto-scrolling ticker marquee (`mountTickerMarquee()`,
@@ -711,6 +759,11 @@ section — summarized here:
   `/ohlc` endpoint (see "Real (non-flat) OHLC for 30m and 4d") and carry
   no volume data (`null`, not `0`) since that endpoint has no volume
   field at all.
+- A small number of `4h` candles written before the "4h candle
+  self-correction" fix (see the Dashboard section) may still be stuck
+  flat/incomplete — the fix prevents new occurrences and lets recent
+  buckets self-correct, but doesn't retroactively repair older already-
+  stuck rows; those age out of the chart's 180-candle window over time.
 - `5m`/`15m` candles are real but coarsely sampled — the aggregation job
   polls the tick feed once a minute rather than subscribing to every
   tick, so a candle's `open` can be up to ~60 seconds later than the
