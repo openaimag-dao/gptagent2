@@ -232,9 +232,11 @@ pre.summary {
 }
 /* Futures Simulator: LONG/SHORT (BUY/SELL) buttons reuse the existing
    --green/--red tokens .up/.down/.pill already use, never a new color --
-   "positive"/"negative" must mean the same color everywhere. */
-.controls button.buy { background: var(--green); color: #04140a; }
-.controls button.sell { background: var(--red); color: #200604; }
+   "positive"/"negative" must mean the same color everywhere. Selector is
+   unscoped (not `.controls button.buy`) so the same classes also work on
+   the bigger order-ticket buttons below. */
+button.buy { background: var(--green); color: #04140a; }
+button.sell { background: var(--red); color: #200604; }
 .controls button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .error { color: var(--red); font-size: 13px; }
@@ -684,4 +686,110 @@ ul.structured-list { margin: 3px 0 0; padding-left: 18px; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .ticker { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
   .connection-indicator { margin-right: 0; }
+}
+
+/* Futures Simulator terminal redesign -- scoped entirely under
+   .futures-sim so nothing here touches any other dashboard page. Goal:
+   read as a Binance/Bybit-style dark trading terminal (compact account
+   bar, a real order ticket instead of a flat row of controls, LONG/SHORT
+   tags instead of plain colored text) using only tokens already defined
+   above -- no new colors invented. */
+.futures-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.futures-header h2 { margin: 0; }
+
+.futures-stat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 0;
+  margin-bottom: 16px;
+}
+.futures-stat {
+  flex: 1 1 140px;
+  padding: 0 20px;
+  border-right: 1px solid var(--border);
+}
+.futures-stat:last-child { border-right: none; }
+.futures-stat .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.futures-stat .value { font-size: 19px; font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+.futures-tabs-row { border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 16px; }
+
+/* Order ticket -- replaces the old flat .controls row of unlabeled
+   selects in the Trade tab's right column. */
+.order-ticket {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-bottom: 10px;
+}
+.order-ticket-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.order-ticket-price-block { text-align: right; }
+.order-ticket-price { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; display: block; }
+.order-field { margin-bottom: 12px; }
+.order-field:last-child { margin-bottom: 0; }
+.order-field label {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 5px;
+}
+.order-field select,
+.order-field input[type="number"],
+.order-field input[type="text"] {
+  width: 100%;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13.5px;
+}
+.order-field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.order-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.order-checkbox-row input { margin: 0; }
+.order-side-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 14px 0 10px; }
+.order-side-buttons button {
+  width: 100%;
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+}
+
+.futures-sim table td { font-variant-numeric: tabular-nums; }
+.futures-sim table tr:hover { background: var(--panel-2); }
+
+@media (max-width: 800px) {
+  .futures-stat { flex: 1 1 45%; border-right: none; border-bottom: 1px solid var(--border); padding: 8px 12px; }
+  .futures-stat:last-child { border-bottom: none; }
 }

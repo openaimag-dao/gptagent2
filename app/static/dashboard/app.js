@@ -6114,7 +6114,6 @@ async function renderFuturesTradeTab() {
   const priceInput = el("input", { type: "number", step: "any", placeholder: "Limit price" });
   const stopPriceInput = el("input", { type: "number", step: "any", placeholder: "Stop price" });
   const reduceOnlyInput = el("input", { type: "checkbox" });
-  const reduceOnlyLabel = el("label", {}, [reduceOnlyInput, " Reduce Only"]);
   // Filled only by the "USE AI SIGNAL" button below, never automatically --
   // applied to the resulting position only if the user goes on to click
   // OPEN LONG/OPEN SHORT themselves (task: the AI forecast must never open
@@ -6131,9 +6130,12 @@ async function renderFuturesTradeTab() {
   symbolSelect.addEventListener("change", refreshLeverageOptions);
   refreshLeverageOptions();
 
+  const priceField = el("div", { class: "order-field" }, [el("label", {}, "Limit Price"), priceInput]);
+  const stopPriceField = el("div", { class: "order-field" }, [el("label", {}, "Stop Price"), stopPriceInput]);
+
   function refreshOrderTypeVisibility() {
-    priceInput.style.display = orderTypeSelect.value === "LIMIT" ? "" : "none";
-    stopPriceInput.style.display =
+    priceField.style.display = orderTypeSelect.value === "LIMIT" ? "" : "none";
+    stopPriceField.style.display =
       orderTypeSelect.value === "STOP_MARKET" || orderTypeSelect.value === "TAKE_PROFIT_MARKET" ? "" : "none";
   }
   orderTypeSelect.addEventListener("change", refreshOrderTypeVisibility);
@@ -6141,6 +6143,25 @@ async function renderFuturesTradeTab() {
 
   const resultBox = el("p", { class: "sub" });
   const notionalNode = el("p", { class: "sub" });
+
+  // Order-ticket header: symbol's live last price + 24h change, right next
+  // to the symbol picker -- same RealtimeStore data updateNotional() below
+  // already reads, just surfaced as a Binance-style pair header instead of
+  // buried in the notional caption.
+  const headerPriceNode = el("span", { class: "order-ticket-price" }, "—");
+  const headerChangeNode = el("span", { class: "sub" }, "");
+  function updateHeaderPrice() {
+    const entry = RealtimeStore.get(symbolSelect.value);
+    if (!entry || entry.price == null) {
+      headerPriceNode.textContent = "—";
+      headerChangeNode.textContent = "";
+      headerChangeNode.className = "sub";
+      return;
+    }
+    headerPriceNode.textContent = `$${fmtNum(entry.price)}`;
+    headerChangeNode.textContent = fmtPct(entry.changePercent24h);
+    headerChangeNode.className = changeClass(entry.changePercent24h);
+  }
 
   // Task: show the order's USD value. Uses the live last price (RealtimeStore),
   // not the simulated mark price with slippage the engine actually fills at --
@@ -6160,15 +6181,22 @@ async function renderFuturesTradeTab() {
   }
   quantityInput.addEventListener("input", updateNotional);
   leverageSelect.addEventListener("change", updateNotional);
-  symbolSelect.addEventListener("change", updateNotional);
+  symbolSelect.addEventListener("change", () => {
+    updateNotional();
+    updateHeaderPrice();
+  });
   const unsubscribeNotional = RealtimeStore.subscribe((dirtySymbols) => {
     if (!notionalNode.isConnected) {
       unsubscribeNotional();
       return;
     }
-    if (dirtySymbols.has(symbolSelect.value)) updateNotional();
+    if (dirtySymbols.has(symbolSelect.value)) {
+      updateNotional();
+      updateHeaderPrice();
+    }
   });
   updateNotional();
+  updateHeaderPrice();
 
   async function submitOrder(side) {
     resultBox.className = "sub";
@@ -6280,21 +6308,34 @@ async function renderFuturesTradeTab() {
 
   // ---- Order panel (right column) ---------------------------------------
   const rightCol = el("div", {});
-  rightCol.appendChild(
-    el("div", { class: "controls" }, [
-      symbolSelect,
-      leverageSelect,
-      marginModeSelect,
-      orderTypeSelect,
-      quantityInput,
-      priceInput,
-      stopPriceInput,
-      reduceOnlyLabel,
-      openLongBtn,
-      openShortBtn,
+  const ticket = el("div", { class: "order-ticket" });
+
+  ticket.appendChild(
+    el("div", { class: "order-ticket-header" }, [
+      el("div", { class: "order-field", style: "margin-bottom:0; min-width:130px;" }, [
+        el("label", {}, "Symbol"),
+        symbolSelect,
+      ]),
+      el("div", { class: "order-ticket-price-block" }, [headerPriceNode, headerChangeNode]),
     ])
   );
-  rightCol.appendChild(notionalNode);
+  ticket.appendChild(
+    el("div", { class: "order-field-row" }, [
+      el("div", { class: "order-field" }, [el("label", {}, "Leverage"), leverageSelect]),
+      el("div", { class: "order-field" }, [el("label", {}, "Margin Mode"), marginModeSelect]),
+    ])
+  );
+  ticket.appendChild(el("div", { class: "order-field" }, [el("label", {}, "Order Type"), orderTypeSelect]));
+  ticket.appendChild(el("div", { class: "order-field" }, [el("label", {}, "Quantity"), quantityInput]));
+  ticket.appendChild(priceField);
+  ticket.appendChild(stopPriceField);
+  ticket.appendChild(
+    el("label", { class: "order-checkbox-row" }, [reduceOnlyInput, "Reduce Only"])
+  );
+  ticket.appendChild(notionalNode);
+  ticket.appendChild(el("div", { class: "order-side-buttons" }, [openLongBtn, openShortBtn]));
+  ticket.appendChild(resultBox);
+  rightCol.appendChild(ticket);
   rightCol.appendChild(
     el(
       "p",
@@ -6302,7 +6343,6 @@ async function renderFuturesTradeTab() {
       "reduceOnly caps a close at the existing position's size rather than flipping into the opposite side."
     )
   );
-  rightCol.appendChild(resultBox);
 
   // ---- AI Forecast panel (task: show existing GPTAgent2 forecast, never
   // auto-trade -- USE AI SIGNAL only pre-fills fields, the user must still
@@ -6440,7 +6480,7 @@ async function renderFuturesPositionsTab() {
 
     return [
       p.symbol,
-      el("span", { class: p.side === "LONG" ? "up" : "down" }, p.side),
+      decisionPill(p.side, p.side === "LONG" ? "good" : "bad"),
       String(p.quantity),
       fmtNum(p.entry_price),
       fmtNum(p.mark_price),
@@ -6489,7 +6529,7 @@ async function renderFuturesOpenOrdersTab() {
     const triggerPrice = o.price != null ? fmtNum(o.price) : o.stop_price != null ? fmtNum(o.stop_price) : "market";
     return [
       o.symbol,
-      el("span", { class: o.side === "BUY" ? "up" : "down" }, o.side),
+      decisionPill(o.side, o.side === "BUY" ? "good" : "bad"),
       o.order_type,
       String(o.quantity),
       triggerPrice,
@@ -6519,7 +6559,7 @@ async function renderFuturesOrderHistoryTab() {
       ["Symbol", "Side", "Type", "Qty", "Filled", "Fill Price", "Fee", "Status", "Created"],
       orders.map((o) => [
         o.symbol,
-        el("span", { class: o.side === "BUY" ? "up" : "down" }, o.side),
+        decisionPill(o.side, o.side === "BUY" ? "good" : "bad"),
         o.order_type,
         String(o.quantity),
         String(o.filled_quantity),
@@ -6637,7 +6677,7 @@ async function renderFuturesTradeHistoryTab() {
         editBtn.addEventListener("click", () => openEditPanel(t));
         return [
           t.symbol,
-          el("span", { class: t.side === "LONG" ? "up" : "down" }, t.side),
+          decisionPill(t.side, t.side === "LONG" ? "good" : "bad"),
           String(t.quantity),
           fmtNum(t.entry_price),
           fmtNum(t.exit_price),
@@ -6840,7 +6880,7 @@ async function renderFuturesRiskTab() {
         ["Symbol", "Side", "Notional", "Concentration", "Distance to Liquidation"],
         risk.positions.map((p) => [
           p.symbol,
-          p.side,
+          decisionPill(p.side, p.side === "LONG" ? "good" : "bad"),
           fmtNum(p.notional),
           p.concentration_pct != null ? `${p.concentration_pct}%` : "n/a",
           p.distance_to_liquidation_pct != null ? `${p.distance_to_liquidation_pct}%` : "n/a",
@@ -6934,28 +6974,36 @@ const FUTURES_TAB_RENDERERS = {
   settings: renderFuturesSettingsTab,
 };
 
+function futuresStat(label, value, cls) {
+  return el("div", { class: "futures-stat" }, [
+    el("div", { class: "label" }, label),
+    el("div", { class: `value ${cls || ""}` }, String(value)),
+  ]);
+}
+
 async function renderFuturesSimulator(params) {
   const root = el("div", { class: "futures-sim" });
-  root.appendChild(el("h2", {}, "FUTURES SIMULATOR"));
   root.appendChild(
-    el("p", {}, [el("span", { class: "pill warning" }, "PAPER TRADING / DEMO — REAL FUNDS NOT USED")])
+    el("div", { class: "futures-header" }, [
+      el("h2", {}, "FUTURES SIMULATOR"),
+      el("span", { class: "pill warning" }, "PAPER TRADING / DEMO — REAL FUNDS NOT USED"),
+    ])
   );
 
   const accountState = await safe(`/api/simulator/account?name=${encodeURIComponent(futuresAccountName())}`);
   if (accountState) {
     root.appendChild(
-      el("div", { class: "grid" }, [
-        card("Demo Balance", fmtNum(accountState.wallet_balance)),
-        card("Equity", fmtNum(accountState.equity)),
-        card("Available", fmtNum(accountState.available_margin)),
-        card("Unrealized PnL", fmtNum(accountState.unrealized_pnl), null, changeClass(accountState.unrealized_pnl)),
-        card(
+      el("div", { class: "futures-stat-strip" }, [
+        futuresStat("Demo Balance", fmtNum(accountState.wallet_balance)),
+        futuresStat("Equity", fmtNum(accountState.equity)),
+        futuresStat("Available", fmtNum(accountState.available_margin)),
+        futuresStat("Unrealized PnL", fmtNum(accountState.unrealized_pnl), changeClass(accountState.unrealized_pnl)),
+        futuresStat(
           "Realized PnL",
           fmtNum(accountState.realized_pnl_total),
-          null,
           changeClass(accountState.realized_pnl_total)
         ),
-        card("Margin Ratio", accountState.margin_ratio != null ? `${accountState.margin_ratio}%` : "n/a"),
+        futuresStat("Margin Ratio", accountState.margin_ratio != null ? `${accountState.margin_ratio}%` : "n/a"),
       ])
     );
   } else {
@@ -6965,7 +7013,7 @@ async function renderFuturesSimulator(params) {
   const requestedTab = params.get("tab");
   const currentTab = FUTURES_TABS.includes(requestedTab) ? requestedTab : "trade";
 
-  const tabsRow = el("div", { class: "forecast-tabs" });
+  const tabsRow = el("div", { class: "forecast-tabs futures-tabs-row" });
   for (const tab of FUTURES_TABS) {
     const btn = el("button", { class: `forecast-tab${tab === currentTab ? " active" : ""}` }, FUTURES_TAB_LABELS[tab]);
     btn.addEventListener("click", () => navigate("futures", new URLSearchParams({ tab })));
