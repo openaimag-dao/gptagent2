@@ -527,6 +527,41 @@ states — zero open positions, and a real opened ETH position (correct
 symbol/side/qty/entry/mark/notional/PnL/ROI, matching the Positions tab
 exactly).
 
+### Terminal-style UI
+
+The Futures Simulator's own pages (Trade, Positions, Orders, History,
+Performance, Risk, Account History, Settings — everything under the
+`#futures` route) were restyled to read as a compact dark trading
+terminal, scoped entirely under the `.futures-sim` CSS class so no other
+dashboard page is affected:
+
+- **Account stat strip** — the old grid of six separate cards (Balance,
+  Equity, Available, Unrealized PnL, Realized PnL, Margin Ratio) is now
+  one compact bordered row (`.futures-stat-strip`), matching how
+  Binance/Bybit show the account summary above the trading pane.
+- **Order ticket** — the Trade tab's right column used to be a single
+  flat `.controls` row of unlabeled `<select>`/`<input>` elements. It's
+  now a proper order ticket card (`.order-ticket`): a header showing the
+  selected symbol next to its live last price and 24h change (reusing
+  `RealtimeStore`, no new data source), then labeled fields (Leverage,
+  Margin Mode, Order Type, Quantity, and the LIMIT/STOP-only Price/Stop
+  Price fields that show or hide based on order type), and full-width
+  OPEN LONG / OPEN SHORT buttons at the bottom.
+- **LONG/SHORT/BUY/SELL badges** — every table that shows a position or
+  order side (Positions, Open Orders, Order History, Trade History, and
+  the Risk tab's Open Position Risk table) now renders the side as a
+  colored pill badge via the existing `decisionPill()` helper instead of
+  plain colored text, reusing the same green/red `.pill` styling already
+  used elsewhere on the dashboard rather than inventing a new color.
+- Tables inside `.futures-sim` get `font-variant-numeric: tabular-nums`
+  on every cell (so numeric columns line up) and a row-hover highlight.
+
+Live-verified against the real running server with Playwright: opened
+one LONG and one SHORT demo position and confirmed the badges, stat
+strip, and order ticket all render correctly on desktop (1440px) and
+mobile (390px) viewports, and that the Overview page (out of scope for
+this pass) is unaffected.
+
 ## AI integration
 
 The TRADE tab shows the existing GPTAgent2 forecast for the selected
