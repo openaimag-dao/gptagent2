@@ -1,8 +1,13 @@
 """Futures Simulator API -- 100% demo/paper trading, no real money, no real
-exchange orders. Every mutating endpoint is gated by require_admin_key, the
+exchange orders. Most mutating endpoints are gated by require_admin_key, the
 same single-shared-key mechanism app/api/portfolio.py and app/api/admin.py
 already use (this project has no user/auth model at all -- see
-FuturesSimAccount's own docstring). Read endpoints stay open, matching how
+FuturesSimAccount's own docstring). Opening (`POST /orders`) and closing
+(`POST /positions/{id}/close`) a position are deliberately ungated -- task:
+no password prompt on the two core demo-trading actions, only fake money is
+ever at stake either way. Every other mutating action (account reset,
+cancelling a resting order, setting SL/TP, journal notes, risk-settings
+overrides) keeps the admin-key gate. Read endpoints stay open, matching how
 every other read endpoint in this app already behaves."""
 
 from datetime import UTC, datetime
@@ -243,7 +248,7 @@ async def reset_account(name: str = DEFAULT_ACCOUNT_NAME) -> dict:
     return _serialize_account_state(state)
 
 
-@router.post("/orders", dependencies=[Depends(require_admin_key)])
+@router.post("/orders")
 async def place_order(request: PlaceOrderRequest) -> dict:
     engine = build_futures_sim_engine()
     account = await engine.get_or_create_account(request.account_name)
@@ -384,7 +389,7 @@ async def get_positions(name: str = DEFAULT_ACCOUNT_NAME, status: str = "OPEN") 
     return {"positions": serialized}
 
 
-@router.post("/positions/{position_id}/close", dependencies=[Depends(require_admin_key)])
+@router.post("/positions/{position_id}/close")
 async def close_position_endpoint(position_id: int, request: ClosePositionRequest) -> dict:
     engine = build_futures_sim_engine()
     account = await engine.get_or_create_account(request.account_name)

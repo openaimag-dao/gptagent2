@@ -128,6 +128,15 @@ _ADMIN_GATED_ROUTES = [
     ("/api/hypothesis/test-all", "POST"),
     ("/api/knowledge/rules", "POST"),
     ("/api/knowledge/rules/{rule_id}/backtest", "POST"),
+    # Futures Simulator: every mutating action except opening/closing a
+    # position (see below) keeps the admin-key gate -- account reset,
+    # cancelling a resting order, SL/TP, journal notes, and risk-settings
+    # overrides all still need it.
+    ("/api/simulator/account/reset", "POST"),
+    ("/api/simulator/orders/{order_id}", "DELETE"),
+    ("/api/simulator/positions/{position_id}/sl-tp", "POST"),
+    ("/api/simulator/trades/{trade_id}/journal", "POST"),
+    ("/api/simulator/risk-settings", "POST"),
 ]
 
 # Reads (even of gated resources) and pure-compute endpoints with no $
@@ -140,6 +149,12 @@ _UNGATED_ROUTES = [
     ("/api/alerts/history", "GET"),
     ("/api/backtest", "POST"),
     ("/api/strategy", "POST"),
+    # Futures Simulator: task -- no admin-key prompt on the two core demo-
+    # trading actions (opening and closing a position), since only fake
+    # demo money is ever at stake either way. Every other mutating action
+    # on this router stays gated -- see _ADMIN_GATED_ROUTES above.
+    ("/api/simulator/orders", "POST"),
+    ("/api/simulator/positions/{position_id}/close", "POST"),
 ]
 
 

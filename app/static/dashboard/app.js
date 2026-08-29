@@ -6581,7 +6581,9 @@ async function renderFuturesTradeTab() {
       if (orderTypeSelect.value === "STOP_MARKET" || orderTypeSelect.value === "TAKE_PROFIT_MARKET") {
         body.stop_price = parseFloat(stopPriceInput.value);
       }
-      const result = await fetchJSONWithAdminKey("/api/simulator/orders", {
+      // Opening a position needs no admin key -- see futures_sim.py's
+      // module docstring: only fake demo money is ever at stake.
+      const result = await fetchJSON("/api/simulator/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -6854,7 +6856,9 @@ async function renderFuturesPositionsTab() {
       btn.addEventListener("click", async () => {
         if (!confirm(`Close ${pct}% of this ${p.symbol} ${p.side} position?`)) return;
         try {
-          await fetchJSONWithAdminKey(`/api/simulator/positions/${p.position_id}/close`, {
+          // Closing a position needs no admin key -- see futures_sim.py's
+          // module docstring: only fake demo money is ever at stake.
+          await fetchJSON(`/api/simulator/positions/${p.position_id}/close`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ percent: pct, account_name: futuresAccountName() }),
