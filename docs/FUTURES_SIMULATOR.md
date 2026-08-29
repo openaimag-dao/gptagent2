@@ -33,9 +33,15 @@ financial risk.
   already uses.
 - **Admin auth** (`app.api.admin.require_admin_key`) — the only
   authentication mechanism anywhere in this single-tenant app (there is no
-  user/login model). Every mutating simulator endpoint is gated by it,
+  user/login model). Most mutating simulator endpoints are gated by it,
   exactly like `app/api/portfolio.py` and every other mutating endpoint in
-  the app.
+  the app — **except** opening (`POST /orders`) and closing
+  (`POST /positions/{id}/close`) a position, deliberately left ungated
+  (task: no password prompt on the two core demo-trading actions, since
+  only fake demo money is ever at stake either way). Every other mutating
+  action — account reset, cancelling a resting order, SL/TP, journal
+  notes, risk-settings overrides — keeps the gate. See "API surface"
+  below for the full list.
 - **Backtest performance metrics** (`app.services.backtest.metrics`) —
   identified as directly reusable for a future performance-analytics
   endpoint (Sharpe, Sortino, max drawdown, profit factor, expectancy,
@@ -310,11 +316,11 @@ three stayed `null`), then opened a real BTC position and confirmed
 GET    /api/simulator/account
 POST   /api/simulator/account/reset        [admin]
 GET    /api/simulator/symbols
-POST   /api/simulator/orders               [admin]
+POST   /api/simulator/orders                       (opens a position)
 DELETE /api/simulator/orders/{id}          [admin]  (cancels a resting order)
 GET    /api/simulator/orders
 GET    /api/simulator/positions
-POST   /api/simulator/positions/{id}/close [admin]
+POST   /api/simulator/positions/{id}/close          (closes a position)
 POST   /api/simulator/positions/{id}/sl-tp [admin]
 GET    /api/simulator/trades
 POST   /api/simulator/trades/{id}/journal  [admin]
@@ -326,10 +332,14 @@ POST   /api/simulator/risk-settings        [admin]
 GET    /api/simulator/ledger
 ```
 
-All mutating endpoints require the `X-Admin-Key` header
-(`require_admin_key`). No endpoint accepts or stores Binance API keys or
-any real exchange credential. No endpoint places, modifies, or cancels a
-real order on any real exchange.
+Every mutating endpoint requires the `X-Admin-Key` header
+(`require_admin_key`) **except** opening and closing a position — task:
+no password prompt on the two core demo-trading actions, since only fake
+demo money is ever at stake either way (`tests/test_api_app.py`'s
+`_ADMIN_GATED_ROUTES`/`_UNGATED_ROUTES` pin down exactly which endpoints
+are which, per-route, as a regression guard). No endpoint accepts or
+stores Binance API keys or any real exchange credential. No endpoint
+places, modifies, or cancels a real order on any real exchange.
 
 ## Dashboard
 
@@ -798,6 +808,12 @@ section — summarized here:
 - Resting orders (LIMIT/STOP_MARKET/TAKE_PROFIT_MARKET) do not reserve
   margin at placement time; they are re-checked at fill time and can be
   REJECTED then if margin has become insufficient in the meantime.
+- Opening/closing a position needs no admin key, but the automatic
+  SL/TP application that follows an OPEN LONG/OPEN SHORT click after
+  "USE AI SIGNAL" was used still calls the (still-gated)
+  `POST /positions/{id}/sl-tp` endpoint — so that specific combo can
+  still prompt for the admin key even though the open itself didn't.
+  Setting SL/TP manually afterward (Positions tab) has the same gate.
 - The candlestick chart's `1d`/`1h` timeframes render a close-price line,
   not real candle bodies — CoinGecko's price-history endpoint returns one
   price point per period for those timeframes, not true OHLC (see the
