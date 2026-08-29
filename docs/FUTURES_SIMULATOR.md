@@ -637,6 +637,53 @@ without `do_update` left it frozen at 0 rows affected) and then
 confirmed `do_update=True` overwrote it to the true OHLC in one
 `ON CONFLICT DO UPDATE` call.
 
+### Trading-workflow UX: equity curve, order-ticket shortcuts, liquidation-distance bars
+
+Three small, targeted usability additions, each reusing existing data
+and CSS rather than introducing new endpoints or design language:
+
+- **Equity Curve** (`equityCurveChart()`) — the Performance tab now
+  opens with an account-balance-over-time chart, sourced from the
+  ledger's own `balance_after` column (`GET /api/simulator/ledger`,
+  reversed to chronological order client-side; no new backend work).
+  Visually it's the candlestick chart's price panel with the candle
+  bodies replaced by a single line — same gridlines, axis labels, and
+  last-value chip classes, one new CSS rule (`.equity-line`) for the
+  line itself, colored green/red by whether the curve ended above or
+  below where it started.
+- **Order-ticket quick-picks** — a row of common-leverage chips
+  (1x/5x/10x/25x/50x/75x, filtered to whatever the selected symbol's
+  own `leverage_options` actually allow) under the Leverage field, and
+  a row of 25/50/75/100%-of-available-margin chips under Quantity that
+  compute a quantity from `available_margin × pct × leverage ÷ live
+  mark price` (the same live-price basis the notional line already
+  uses). Both are purely additive convenience shortcuts — clicking one
+  just sets the existing `<select>`/`<input>`'s value and fires its
+  existing change/input handler, never a second source of truth
+  alongside the dropdown or text field.
+- **Liquidation-distance bars** — the Positions tab gains a "Liq
+  Distance" column, and the Risk tab's existing "Distance to
+  Liquidation" column is upgraded from plain text to the same visual:
+  a small `.bar-track`/`.bar-fill` bar (already used elsewhere on the
+  dashboard for score bars) colored red/yellow/green by proximity
+  (≤5% danger, ≤20% caution, safe above that — 5% matches this
+  project's own `near_liquidation_pct` warning default, so "red" on
+  the bar and the Risk tab's `NEAR_LIQUIDATION` warning always agree).
+  The Positions tab computes this client-side with the identical
+  formula `app/services/futures_sim/risk.py`'s `_position_risk`
+  already uses server-side for the Risk tab, deliberately kept in sync
+  rather than inventing a second definition of the same metric.
+
+Live-verified against the real running server with Playwright: seeded
+real ledger history and confirmed the equity curve renders correctly;
+clicked a leverage quick-pick and a quantity quick-pick and confirmed
+both the underlying `<select>`/`<input>` values and the notional line
+updated correctly (verified the exact quantity math against the
+formula above); opened two positions at different distances from
+liquidation and confirmed the bars render in the correct color on both
+the Positions and Risk tabs, matching the Risk tab's own
+`NEAR_LIQUIDATION` warning for the closer one.
+
 ### Live ticker marquee and Overview Open Positions widget
 
 A horizontally auto-scrolling ticker marquee (`mountTickerMarquee()`,

@@ -368,6 +368,113 @@ function svgLineChart(values, { width = 600, height = 160 } = {}) {
   return svg;
 }
 
+const EQUITY_CHART_GEOM = { w: 900, h: 220, padL: 6, padR: 64, padT: 10, priceH: 160 };
+
+// Account balance over time (Performance tab) -- sourced from the ledger's
+// own balance_after column (GET /api/simulator/ledger, entries reversed to
+// chronological order by the caller), no new backend work. Reuses the
+// candle chart's grid/axis-label/last-price CSS classes -- those are just
+// colored lines/text, not visually tied to being "a candle" -- so this adds
+// only one new class (.equity-line) rather than duplicating that styling.
+function equityCurveChart(entries) {
+  const wrap = el("div", { class: "candle-chart-wrap" });
+  if (!entries || entries.length < 2) {
+    wrap.appendChild(
+      el("p", { class: "sub" }, "Not enough account history yet to chart equity over time.")
+    );
+    return wrap;
+  }
+
+  const g = EQUITY_CHART_GEOM;
+  const plotW = g.w - g.padL - g.padR;
+  const priceTop = g.padT;
+  const priceBot = priceTop + g.priceH;
+
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const e of entries) {
+    lo = Math.min(lo, e.balance_after);
+    hi = Math.max(hi, e.balance_after);
+  }
+  const padV = (hi - lo) * 0.08 || Math.abs(hi) * 0.01 || 1;
+  lo -= padV;
+  hi += padV;
+  const span = hi - lo || 1;
+  const yPrice = (v) => priceBot - ((v - lo) / span) * g.priceH;
+
+  const n = entries.length;
+  const stepX = n > 1 ? plotW / (n - 1) : 0;
+  const cx = (i) => g.padL + stepX * i;
+
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${g.w} ${g.h}`);
+  svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+  svg.setAttribute("class", "candle-chart");
+
+  const gGrid = document.createElementNS(SVG_NS, "g");
+  const TICKS = 4;
+  for (let t = 0; t <= TICKS; t++) {
+    const v = lo + (span * t) / TICKS;
+    const y = yPrice(v);
+    const line = document.createElementNS(SVG_NS, "line");
+    line.setAttribute("x1", g.padL);
+    line.setAttribute("x2", g.w - g.padR);
+    line.setAttribute("y1", y.toFixed(2));
+    line.setAttribute("y2", y.toFixed(2));
+    line.setAttribute("class", "chart-grid");
+    gGrid.appendChild(line);
+    const label = document.createElementNS(SVG_NS, "text");
+    label.setAttribute("x", g.w - g.padR + 6);
+    label.setAttribute("y", y.toFixed(2));
+    label.setAttribute("class", "chart-axis-label");
+    label.setAttribute("dominant-baseline", "middle");
+    label.textContent = fmtNum(v);
+    gGrid.appendChild(label);
+  }
+  svg.appendChild(gGrid);
+
+  const trendCls = entries[n - 1].balance_after >= entries[0].balance_after ? "candle-up" : "candle-down";
+  const points = entries.map((e, i) => `${cx(i).toFixed(2)},${yPrice(e.balance_after).toFixed(2)}`).join(" ");
+  const line = document.createElementNS(SVG_NS, "polyline");
+  line.setAttribute("points", points);
+  line.setAttribute("class", `equity-line ${trendCls}`);
+  svg.appendChild(line);
+
+  const last = entries[n - 1];
+  const y = yPrice(last.balance_after);
+  const lastLine = document.createElementNS(SVG_NS, "line");
+  lastLine.setAttribute("x1", g.padL);
+  lastLine.setAttribute("x2", g.w - g.padR);
+  lastLine.setAttribute("y1", y.toFixed(2));
+  lastLine.setAttribute("y2", y.toFixed(2));
+  lastLine.setAttribute("class", `last-price-line ${trendCls}`);
+  svg.appendChild(lastLine);
+  const chip = document.createElementNS(SVG_NS, "text");
+  chip.setAttribute("x", g.w - g.padR + 6);
+  chip.setAttribute("y", y.toFixed(2));
+  chip.setAttribute("class", `last-price-chip ${trendCls}`);
+  chip.setAttribute("dominant-baseline", "middle");
+  chip.textContent = fmtNum(last.balance_after);
+  svg.appendChild(chip);
+
+  const gTime = document.createElementNS(SVG_NS, "g");
+  const timeTicks = Math.min(6, n);
+  for (let t = 0; t < timeTicks; t++) {
+    const i = Math.round((t * (n - 1)) / Math.max(1, timeTicks - 1));
+    const label = document.createElementNS(SVG_NS, "text");
+    label.setAttribute("x", cx(i).toFixed(2));
+    label.setAttribute("y", priceBot + 18);
+    label.setAttribute("class", "chart-axis-label");
+    label.setAttribute("text-anchor", "middle");
+    label.textContent = new Date(entries[i].created_at).toLocaleDateString();
+    gTime.appendChild(label);
+  }
+  svg.appendChild(gTime);
+
+  wrap.appendChild(svg);
+  return wrap;
+}
+
 const CANDLE_CHART_GEOM = { w: 900, h: 440, padL: 6, padR: 64, padT: 10, priceH: 300, gap: 12, indH: 84 };
 let _candleClipCounter = 0;
 
@@ -6298,7 +6405,10 @@ function chartTimeframeTabs(current, onSelect) {
 
 async function renderFuturesTradeTab() {
   const wrap = el("div", {});
-  const symbolsData = await safe("/api/simulator/symbols");
+  const [symbolsData, accountState] = await Promise.all([
+    safe("/api/simulator/symbols"),
+    safe(`/api/simulator/account?name=${encodeURIComponent(futuresAccountName())}`),
+  ]);
   const symbols = symbolsData ? symbolsData.symbols : [];
   if (!symbols.length) {
     wrap.appendChild(el("p", { class: "error" }, "No symbols available."));
@@ -6340,6 +6450,50 @@ async function renderFuturesTradeTab() {
   }
   symbolSelect.addEventListener("change", refreshLeverageOptions);
   refreshLeverageOptions();
+
+  // Quick-pick shortcuts for common leverage levels -- purely a convenience
+  // that sets leverageSelect.value and fires its existing change handler,
+  // never a second source of truth. Filtered to whatever this symbol's own
+  // leverage_options actually allow, so a quick-pick can never offer a
+  // level the dropdown itself wouldn't.
+  const LEVERAGE_QUICK_PICKS = [1, 5, 10, 25, 50, 75];
+  const leverageQuickRow = el("div", { class: "quick-pick-row" });
+  function refreshLeverageQuickPicks() {
+    const symbolRow = symbols.find((s) => s.symbol === symbolSelect.value);
+    const options = symbolRow ? symbolRow.leverage_options : [1];
+    leverageQuickRow.innerHTML = "";
+    for (const lev of LEVERAGE_QUICK_PICKS) {
+      if (!options.includes(lev)) continue;
+      const btn = el("button", {}, `${lev}x`);
+      btn.addEventListener("click", () => {
+        leverageSelect.value = String(lev);
+        leverageSelect.dispatchEvent(new Event("change"));
+      });
+      leverageQuickRow.appendChild(btn);
+    }
+  }
+  symbolSelect.addEventListener("change", refreshLeverageQuickPicks);
+  refreshLeverageQuickPicks();
+
+  // Quantity shortcuts sized off available margin -- also purely a
+  // convenience that fills quantityInput and fires its existing input
+  // handler (which drives the notional line below). Uses the live last
+  // price (RealtimeStore), the same estimate basis the notional line
+  // itself already uses, not the simulated fill price.
+  const quantityQuickRow = el("div", { class: "quick-pick-row" });
+  for (const pct of [25, 50, 75, 100]) {
+    const btn = el("button", {}, `${pct}%`);
+    btn.addEventListener("click", () => {
+      const entry = RealtimeStore.get(symbolSelect.value);
+      const available = accountState ? accountState.available_margin : null;
+      const lev = parseInt(leverageSelect.value, 10) || 1;
+      if (!entry || entry.price == null || !Number.isFinite(available)) return;
+      const qty = (available * (pct / 100) * lev) / entry.price;
+      quantityInput.value = qty > 0 ? qty.toFixed(6) : "";
+      quantityInput.dispatchEvent(new Event("input"));
+    });
+    quantityQuickRow.appendChild(btn);
+  }
 
   const priceField = el("div", { class: "order-field" }, [el("label", {}, "Limit Price"), priceInput]);
   const stopPriceField = el("div", { class: "order-field" }, [el("label", {}, "Stop Price"), stopPriceInput]);
@@ -6555,8 +6709,10 @@ async function renderFuturesTradeTab() {
       el("div", { class: "order-field" }, [el("label", {}, "Margin Mode"), marginModeSelect]),
     ])
   );
+  ticket.appendChild(leverageQuickRow);
   ticket.appendChild(el("div", { class: "order-field" }, [el("label", {}, "Order Type"), orderTypeSelect]));
   ticket.appendChild(el("div", { class: "order-field" }, [el("label", {}, "Quantity"), quantityInput]));
+  ticket.appendChild(quantityQuickRow);
   ticket.appendChild(priceField);
   ticket.appendChild(stopPriceField);
   ticket.appendChild(
@@ -6660,6 +6816,29 @@ async function renderFuturesTradeTab() {
   return wrap;
 }
 
+// Same formula as app/services/futures_sim/risk.py's _position_risk --
+// how far the mark price would have to move, in the adverse direction, to
+// liquidate this position, as a percent of the current mark price. Kept in
+// sync deliberately: this is the identical calculation the Risk tab already
+// shows per-position, just also surfaced right on the Positions table
+// itself so a trader doesn't have to switch tabs to see it.
+function liqDistancePct(p) {
+  if (p.liquidation_price == null || !p.mark_price) return null;
+  return p.side === "LONG"
+    ? (100 * (p.mark_price - p.liquidation_price)) / p.mark_price
+    : (100 * (p.liquidation_price - p.mark_price)) / p.mark_price;
+}
+
+function liqDistanceBar(pct) {
+  if (pct == null) return "n/a";
+  const clamped = Math.max(0, Math.min(100, pct));
+  const cls = pct <= 5 ? "danger" : pct <= 20 ? "caution" : "safe";
+  return el("div", { class: "liq-distance-bar" }, [
+    el("div", { class: "sub" }, `${pct.toFixed(2)}%`),
+    el("div", { class: "bar-track" }, [el("div", { class: `bar-fill ${cls}`, style: `width:${clamped}%` })]),
+  ]);
+}
+
 async function renderFuturesPositionsTab() {
   const data = await safe(`/api/simulator/positions?name=${encodeURIComponent(futuresAccountName())}&status=OPEN`);
   const positions = data ? data.positions : [];
@@ -6715,6 +6894,7 @@ async function renderFuturesPositionsTab() {
       fmtNum(p.entry_price),
       fmtNum(p.mark_price),
       p.liquidation_price != null ? fmtNum(p.liquidation_price) : "n/a",
+      liqDistanceBar(liqDistancePct(p)),
       `${p.leverage}x`,
       fmtNum(p.initial_margin),
       el("span", { class: changeClass(p.unrealized_pnl) }, fmtNum(p.unrealized_pnl)),
@@ -6726,7 +6906,21 @@ async function renderFuturesPositionsTab() {
 
   wrap.appendChild(
     table(
-      ["Symbol", "Side", "Size", "Entry", "Mark", "Liq Price", "Leverage", "Margin", "PnL", "ROI", "SL / TP", "Close"],
+      [
+        "Symbol",
+        "Side",
+        "Size",
+        "Entry",
+        "Mark",
+        "Liq Price",
+        "Liq Distance",
+        "Leverage",
+        "Margin",
+        "PnL",
+        "ROI",
+        "SL / TP",
+        "Close",
+      ],
       rows
     )
   );
@@ -6975,12 +7169,22 @@ function futuresBreakdownTable(title, breakdown) {
 }
 
 async function renderFuturesPerformanceTab() {
-  const stats = await safe(`/api/simulator/performance?name=${encodeURIComponent(futuresAccountName())}`);
+  const [stats, ledgerData] = await Promise.all([
+    safe(`/api/simulator/performance?name=${encodeURIComponent(futuresAccountName())}`),
+    safe(`/api/simulator/ledger?name=${encodeURIComponent(futuresAccountName())}&limit=200`),
+  ]);
   const wrap = el("div", {});
   if (!stats) {
     wrap.appendChild(el("p", { class: "error" }, "Performance data unavailable."));
     return wrap;
   }
+
+  // Ledger comes back newest-first (for the Account History tab); reverse
+  // to chronological order for a left-to-right equity curve.
+  const ledgerChronological = ledgerData ? ledgerData.ledger.slice().reverse() : [];
+  wrap.appendChild(el("h3", {}, "Equity Curve"));
+  wrap.appendChild(equityCurveChart(ledgerChronological));
+
   wrap.appendChild(el("h3", {}, "Overall"));
   wrap.appendChild(futuresPerformanceStatsGrid(stats.overall));
 
@@ -7124,7 +7328,7 @@ async function renderFuturesRiskTab() {
           decisionPill(p.side, p.side === "LONG" ? "good" : "bad"),
           fmtNum(p.notional),
           p.concentration_pct != null ? `${p.concentration_pct}%` : "n/a",
-          p.distance_to_liquidation_pct != null ? `${p.distance_to_liquidation_pct}%` : "n/a",
+          liqDistanceBar(p.distance_to_liquidation_pct),
         ])
       )
     );
