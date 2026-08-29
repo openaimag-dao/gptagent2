@@ -6598,7 +6598,9 @@ async function renderFuturesTradeTab() {
       // explicit click, and only when the order actually opened a position.
       if (result.position && (aiSlInput.value !== "" || aiTpInput.value !== "")) {
         try {
-          await fetchJSONWithAdminKey(`/api/simulator/positions/${result.position.position_id}/sl-tp`, {
+          // Setting SL/TP needs no admin key either -- see futures_sim.py's
+          // module docstring: only fake demo money is ever at stake.
+          await fetchJSON(`/api/simulator/positions/${result.position.position_id}/sl-tp`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -6876,7 +6878,9 @@ async function renderFuturesPositionsTab() {
     const setSlTpBtn = el("button", {}, "Set");
     setSlTpBtn.addEventListener("click", async () => {
       try {
-        await fetchJSONWithAdminKey(`/api/simulator/positions/${p.position_id}/sl-tp`, {
+        // Setting SL/TP needs no admin key either -- see futures_sim.py's
+        // module docstring: only fake demo money is ever at stake.
+        await fetchJSON(`/api/simulator/positions/${p.position_id}/sl-tp`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
